@@ -1,0 +1,22 @@
+[package]
+name = "dds-rtps"
+version = "0.1.0"
+edition = "2021"
+description = "DDSI-RTPS 2.5 wire protocol engine"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+dds-types = { workspace = true }
+dds-cdr = { workspace = true }
+bytes = { workspace = true }
+byteorder = { workspace = true }
+tokio = { workspace = true }
+socket2 = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

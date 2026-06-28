@@ -1,0 +1,18 @@
+[package]
+name = "dds-discovery"
+version = "0.1.0"
+edition = "2021"
+description = "SPDP/SEDP discovery protocols for DDS"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+dds-types = { workspace = true }
+dds-cdr = { workspace = true }
+dds-rtps = { workspace = true }
+dds-xtypes = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

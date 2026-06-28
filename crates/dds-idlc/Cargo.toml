@@ -1,0 +1,20 @@
+[package]
+name = "dds-idlc"
+version = "0.1.0"
+edition = "2021"
+description = "IDL to Rust code generator"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "dds-idlc"
+path = "src/main.rs"
+
+[dependencies]
+dds-idl = { path = "../dds-idl" }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

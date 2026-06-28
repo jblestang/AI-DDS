@@ -1,0 +1,26 @@
+[package]
+name = "dds"
+version = "0.1.0"
+edition = "2021"
+description = "Full DDS stack façade — re-exports all DDS crates"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+dds-types = { workspace = true }
+dds-cdr = { workspace = true }
+dds-rtps = { workspace = true }
+dds-discovery = { workspace = true }
+dds-core = { workspace = true }
+dds-xtypes = { workspace = true }
+
+[features]
+default = ["core", "security"]
+core = []
+security = ["dds-security"]
+
+[dependencies.dds-security]
+workspace = true
+optional = true
+
+[lints]
+workspace = true

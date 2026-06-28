@@ -1,0 +1,17 @@
+[package]
+name = "dds-types"
+version = "0.1.0"
+edition = "2021"
+description = "Foundation types for the DDS stack: GUIDs, QoS policies, time, locators, status"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+thiserror = { workspace = true }
+bytes = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

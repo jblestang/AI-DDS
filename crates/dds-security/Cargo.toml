@@ -1,0 +1,23 @@
+[package]
+name = "dds-security"
+version = "0.1.0"
+edition = "2021"
+description = "DDS Security 1.2 — SPI traits and builtin plugins"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+dds-types = { workspace = true }
+dds-cdr = { workspace = true }
+dds-rtps = { workspace = true }
+aes-gcm = { workspace = true }
+p256 = { workspace = true, features = ["ecdh"] }
+p384 = { workspace = true }
+rsa = { workspace = true }
+x509-cert = { workspace = true }
+cms = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

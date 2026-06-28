@@ -1,0 +1,13 @@
+[package]
+name = "dds-idl"
+version = "0.1.0"
+edition = "2021"
+description = "IDL 4.2 parser producing a typed AST"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+nom = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,94 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dds-types",
+    "crates/dds-cdr",
+    "crates/dds-rtps",
+    "crates/dds-discovery",
+    "crates/dds-core",
+    "crates/dds-monitor",
+    "crates/dds-idl",
+    "crates/dds-idlc",
+    "crates/dds-xtypes",
+    "crates/dds-security",
+    "crates/dds",
+]
+
+# Shared dependencies — all crates reference these via `workspace = true`
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+bytes = "1"
+byteorder = "1"
+
+# Crypto (pure Rust — no OpenSSL)
+aes-gcm = "0.10"
+p256 = "0.13"
+p384 = "0.13"
+rsa = "0.9"
+x509-cert = "0.2"
+cms = "0.2"
+sha2 = "0.10"
+rand = "0.8"
+
+# Networking
+socket2 = { version = "0.5", features = ["all"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Error handling
+thiserror = "2"
+
+# GUI (monitor)
+eframe = "0.31"
+egui = "0.31"
+egui_extras = "0.31"
+
+# IDL parsing
+nom = "7"
+
+# Code generation
+quote = "1"
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
+
+# Testing
+proptest = "1"
+
+# Internal workspace crates
+dds-types = { path = "crates/dds-types" }
+dds-cdr = { path = "crates/dds-cdr" }
+dds-rtps = { path = "crates/dds-rtps" }
+dds-discovery = { path = "crates/dds-discovery" }
+dds-core = { path = "crates/dds-core" }
+dds-idl = { path = "crates/dds-idl" }
+dds-xtypes = { path = "crates/dds-xtypes" }
+dds-security = { path = "crates/dds-security" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+elided_lifetimes_in_paths = "allow"
+elided-lifetimes-in-paths = "allow"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -4 }
+restriction = { level = "warn", priority = -3 }
+pedantic = { level = "warn", priority = -2 }
+nursery = { level = "warn", priority = -1 }
+
+# No allows, enforce warn on all rules
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
