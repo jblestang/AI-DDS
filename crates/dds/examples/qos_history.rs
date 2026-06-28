@@ -176,13 +176,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[Reader] Configuring History: KeepLast, Depth: 3");
 
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;
-            let reader = subscriber.create_datareader(&topic, reader_qos, ts.clone())?;
+            let reader = subscriber.create_datareader(&topic, reader_qos, ts)?;
 
             let socket = UdpSocket::bind("127.0.0.1:7927")?;
             socket.set_read_timeout(Some(Duration::from_secs(30)))?;
             println!("[Reader] Listening on UDP port 7927...");
 
-            let mut buf = [0_u8; 1024];
+            let mut buf = [0u8; 1024];
             for _ in 1..=4 {
                 let (len, _) = socket.recv_from(&mut buf)?;
                 reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec());

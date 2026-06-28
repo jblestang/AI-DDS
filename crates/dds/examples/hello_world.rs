@@ -156,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let topic = participant.create_topic("HelloTopic", "HelloWorld", TopicQos::default())?;
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;
-            let reader = subscriber.create_datareader(&topic, DataReaderQos::default(), ts.clone())?;
+            let reader = subscriber.create_datareader(&topic, DataReaderQos::default(), ts)?;
             println!("[Subscriber] Created Participant, Topic, Subscriber, and DataReader.");
 
             // Bind to receive packet from Publisher process.
@@ -248,4 +248,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-}
+

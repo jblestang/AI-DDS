@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[Reader] Configuring Requested Reliability: Reliable");
 
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;
-            let reader = subscriber.create_datareader(&topic, reader_qos, ts.clone())?;
+            let reader = subscriber.create_datareader(&topic, reader_qos, ts)?;
 
             // Bind UDP to receive package.
             let socket = UdpSocket::bind("127.0.0.1:7926")?;
