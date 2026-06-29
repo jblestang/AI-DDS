@@ -87,15 +87,33 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use x509_cert::der::Decode as _;
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Crypto Architecture Constants
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Standard AES-GCM MAC Tag length in bytes.
+pub const GCM_MAC_TAG_LENGTH: usize = 16;
+
+/// Standard AES-GCM Initialization Vector (Nonce) length in bytes.
+pub const GCM_IV_LENGTH: usize = 12;
+
+/// Length of the AES-128 Key in bytes.
+pub const AES128_KEY_LENGTH: usize = 16;
+
+/// DDS Security Session ID length in bytes.
+pub const SESSION_ID_LENGTH: usize = 16;
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CryptoFooter {
-    pub mac_tag: [u8; 16],
+    pub mac_tag: [u8; GCM_MAC_TAG_LENGTH],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CryptoHeader {
-    pub initialization_vector: [u8; 12],
-    pub session_id: [u8; 16],
+    pub initialization_vector: [u8; GCM_IV_LENGTH],
+    pub session_id: [u8; SESSION_ID_LENGTH],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -170,7 +188,7 @@ impl CdrSerialize for CryptoFooter {
 
 impl CdrDeserialize for CryptoFooter {
     fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        let mut mac_tag = [0_u8; 16];
+        let mut mac_tag = [0_u8; GCM_MAC_TAG_LENGTH];
         for b in &mut mac_tag {
             *b = deserializer.deserialize_u8()?;
         }
@@ -192,11 +210,11 @@ impl CdrSerialize for CryptoHeader {
 
 impl CdrDeserialize for CryptoHeader {
     fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        let mut initialization_vector = [0_u8; 12];
+        let mut initialization_vector = [0_u8; GCM_IV_LENGTH];
         for b in &mut initialization_vector {
             *b = deserializer.deserialize_u8()?;
         }
-        let mut session_id = [0_u8; 16];
+        let mut session_id = [0_u8; SESSION_ID_LENGTH];
         for b in &mut session_id {
             *b = deserializer.deserialize_u8()?;
         }
@@ -901,7 +919,7 @@ impl Cryptography for BuiltinCryptography {
             .map_err(|e| SecurityError::CryptoError(e.to_string()))?;
 
         // Generate nonce
-        let mut iv = [0_u8; 12];
+        let mut iv = [0_u8; GCM_IV_LENGTH];
         let mut rng = rand::thread_rng();
         rng.fill_bytes(&mut iv);
         let nonce = Nonce::from(iv);
@@ -912,12 +930,12 @@ impl Cryptography for BuiltinCryptography {
             .map_err(|e| SecurityError::CryptoError(e.to_string()))?;
 
         // Split cipher and tag. aes-gcm crate places tag at the end of the returning vector.
-        let tag_start = ciphertext.len() - 16;
+        let tag_start = ciphertext.len() - GCM_MAC_TAG_LENGTH;
         let encrypted_payload = ciphertext[..tag_start].to_vec();
-        let mut mac_tag = [0_u8; 16];
+        let mut mac_tag = [0_u8; GCM_MAC_TAG_LENGTH];
         mac_tag.copy_from_slice(&ciphertext[tag_start..]);
 
-        let mut session_id = [0_u8; 16];
+        let mut session_id = [0_u8; SESSION_ID_LENGTH];
         rng.fill_bytes(&mut session_id);
 
         let header = CryptoHeader {
@@ -941,7 +959,7 @@ impl Cryptography for BuiltinCryptography {
             ret
         };
         // Local fallback key
-        self.keys.lock().unwrap().insert(handle, [0_u8; 16]);
+        self.keys.lock().unwrap().insert(handle, [0_u8; AES128_KEY_LENGTH]);
         Ok(handle)
     }
 
@@ -959,14 +977,11 @@ impl Cryptography for BuiltinCryptography {
         };
 
         // Derive 16-byte key from shared secret bytes
-        let mut key = [0_u8; 16];
-        let bytes_len = shared_secret.0.len();
-        if bytes_len >= 16 {
-            key.copy_from_slice(&shared_secret.0[0..16]);
-        } else {
-            key[..bytes_len].copy_from_slice(&shared_secret.0);
-        }
-
+        let mut key = [0_u8; AES128_KEY_LENGTH];
+        let shared = &shared_secret.0;
+        let copy_len = std::cmp::min(key.len(), shared.len());
+        key[..copy_len].copy_from_slice(&shared[..copy_len]);
+        
         self.keys.lock().unwrap().insert(handle, key);
         Ok(handle)
     }

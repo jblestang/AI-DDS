@@ -84,6 +84,33 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
+// ──────────────────────────────────────────────────────────────────────────────
+// DDS Core Constants
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// RTPS Base Port number (PB)
+pub const PORT_BASE: u16 = 7400;
+
+/// RTPS Domain ID Gain (DG)
+pub const DOMAIN_ID_GAIN: u16 = 250;
+
+/// RTPS Participant ID Gain (PG)
+pub const PARTICIPANT_ID_GAIN: u16 = 2;
+
+/// RTPS User Multicast Port Offset (d0)
+pub const USER_MULTICAST_OFFSET: u16 = 2;
+
+/// RTPS User Unicast Port Offset (d1)
+pub const USER_UNICAST_OFFSET: u16 = 11;
+
+/// RTPS SPDP Multicast Port Offset (d2)
+pub const SPDP_MULTICAST_OFFSET: u16 = 0;
+
+/// RTPS SPDP Unicast Port Offset (d3)
+pub const SPDP_UNICAST_OFFSET: u16 = 10;
+
+/// Maximum UDP Payload Size
+pub const UDP_MAX_PAYLOAD_SIZE: usize = 65535;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // TypeSupport — Type-erased serialization bridge
@@ -646,6 +673,7 @@ impl Subscriber {
 pub struct DomainParticipant {
     guid_prefix: GuidPrefix,
     domain_id: u32,
+    participant_idx: u32,
     qos: DomainParticipantQos,
     topics: Mutex<HashMap<String, Topic>>,
     types: Mutex<HashMap<String, Arc<dyn TypeSupport>>>,
@@ -655,7 +683,8 @@ pub struct DomainParticipant {
     writer_registry: Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
     /// Shared UDP socket used by all Publishers/DataWriters in this participant.
     transport: Arc<UdpTransport>,
-    /// RTPS unicast port: 7400 + 250 * domain_id + 10 + 2 * participantId
+    /// RTPS unicast port: PORT_BASE + DOMAIN_ID_GAIN * domain_id + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * participantId
+    /// RTPS multicast port: PORT_BASE + DOMAIN_ID_GAIN * domain_id + SPDP_MULTICAST_OFFSET
     unicast_port: u32,
     pub security_auth: Arc<dds_security::BuiltinAuthentication>,
     pub security_access: Arc<dds_security::BuiltinAccessControl>,
@@ -669,7 +698,7 @@ pub struct DomainParticipant {
 
 impl DomainParticipant {
     #[must_use]
-    pub fn new(guid_prefix: GuidPrefix, domain_id: u32, qos: DomainParticipantQos, transport: Arc<UdpTransport>, unicast_port: u32) -> Self {
+    pub fn new(guid_prefix: GuidPrefix, domain_id: u32, participant_idx: u32, qos: DomainParticipantQos, transport: Arc<UdpTransport>, unicast_port: u32) -> Self {
         let security_auth = Arc::new(dds_security::BuiltinAuthentication::new());
         let security_access = Arc::new(dds_security::BuiltinAccessControl::new());
         let security_crypto = Arc::new(dds_security::BuiltinCryptography::new());
@@ -697,6 +726,7 @@ impl DomainParticipant {
         Self {
             guid_prefix,
             domain_id,
+            participant_idx,
             qos: qos.clone(),
             topics: Mutex::new(HashMap::new()),
             types: Mutex::new(HashMap::new()),
@@ -713,6 +743,14 @@ impl DomainParticipant {
             discovery,
             is_enabled: std::sync::atomic::AtomicBool::new(qos.entity_factory.autoenable_created_entities),
         }
+    }
+
+    /// Computes the unicast port for user traffic (DataWriter/DataReader)
+    /// RTPS Formula: PB + DG * domainId + d1 + PG * participantId
+    /// where PB=PORT_BASE, DG=DOMAIN_ID_GAIN, d1=USER_UNICAST_OFFSET.
+    fn compute_user_unicast_port(&self) -> u16 {
+        let domain_id = self.domain_id as u16;
+        PORT_BASE + DOMAIN_ID_GAIN * domain_id + USER_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * self.participant_idx as u16
     }
 
     /// Get the domain ID this participant is bound to.
@@ -859,6 +897,7 @@ impl DomainParticipant {
             received_mask: Vec<bool>,
         }
 
+        let (_shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             let mut reassembly_buffers: HashMap<(Guid, SequenceNumber), FragmentBuffer> = HashMap::new();
 
@@ -872,7 +911,7 @@ impl DomainParticipant {
             };
             println!("[spawn_receiver_loop] Bound receiver socket to {}", socket.local_addr().unwrap());
             // Start an additional thread for the SPDP Multicast Port
-            let multicast_port = 7400 + 250 * domain_id; // + 0 for participant discovery
+            let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16 + SPDP_MULTICAST_OFFSET;
             let discovery_clone = discovery.clone();
             std::thread::spawn(move || {
                 let mcast_socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", multicast_port)) {
@@ -885,7 +924,7 @@ impl DomainParticipant {
                 let multicast_addr = Ipv4Addr::new(239, 255, 0, 1);
                 let _ = mcast_socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED);
                 
-                let mut buf = [0u8; 65535];
+                let mut buf = [0u8; UDP_MAX_PAYLOAD_SIZE];
                 loop {
                     if let Ok((len, _)) = mcast_socket.recv_from(&mut buf) {
                         let data = &buf[..len];
@@ -904,8 +943,9 @@ impl DomainParticipant {
                 }
             });
 
-            let mut buf = [0u8; 65535];
+            let mut buf = vec![0u8; UDP_MAX_PAYLOAD_SIZE];
             loop {
+                if shutdown_rx.try_recv().is_ok() { break; }
                 let (len, from) = match socket.recv_from(&mut buf) {
                     Ok(r) => r,
                     Err(e) => {
@@ -1171,7 +1211,7 @@ impl DomainParticipantFactory {
     /// Binds a UDP socket for sending on a random ephemeral port, and
     /// computes the standard RTPS unicast receive port per RTPS §9.6.2:
     /// `PB + DG * domain_id + PO + 2 * participant_idx`
-    /// where PB=7400, DG=250, PO=10 (user unicast offset).
+    /// where PB=PORT_BASE, DG=DOMAIN_ID_GAIN, PO=SPDP_UNICAST_OFFSET.
     pub fn create_participant(
         domain_id: u32,
         qos: DomainParticipantQos,
@@ -1185,7 +1225,7 @@ impl DomainParticipantFactory {
         let mut participant_idx = 0;
         let mut unicast_port = 0;
         while participant_idx < 100 {
-            let port = 7400 + 250 * domain_id + 10 + 2 * participant_idx;
+            let port = PORT_BASE + DOMAIN_ID_GAIN * (domain_id as u16) + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * participant_idx;
             if std::net::UdpSocket::bind(format!("127.0.0.1:{port}")).is_ok() {
                 unicast_port = port;
                 // Add participant index to prefix to keep it unique
@@ -1209,9 +1249,10 @@ impl DomainParticipantFactory {
         Ok(DomainParticipant::new(
             GuidPrefix::new(prefix),
             domain_id,
+            participant_idx as u32,
             qos,
             transport,
-            unicast_port,
+            unicast_port as u32,
         ))
     }
 }
