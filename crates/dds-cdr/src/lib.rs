@@ -15,6 +15,7 @@
     clippy::pedantic,
     clippy::nursery
 )]
+#![allow(elided_lifetimes_in_paths)]
 #![allow(
     clippy::blanket_clippy_restriction_lints,
     clippy::implicit_return,
@@ -163,8 +164,9 @@ pub trait CdrSerialize {
 /// Standard trait for deserializing types from CDR wire representation.
 pub trait CdrDeserialize: Sized {
     /// Deserialize an instance from the given deserializer.
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self>;
+    fn deserialize<'a>(deserializer: &mut CdrDeserializer<'a>) -> CdrResult<Self>;
 }
+
 
 // ──────────────────────────────────────────────────────────────────────────────
 // CdrSerializer
@@ -318,6 +320,32 @@ impl CdrSerializer {
         self.serialize_u32(len);
         self.buf.put_slice(val.as_bytes());
         self.buf.put_u8(0); // NULL terminator
+    }
+
+    /// XCDR2: Write a Delimiting Header (DHEADER) with an initial zero value. Returns the offset to patch later.
+    pub fn write_dheader_placeholder(&mut self) -> usize {
+        self.align(4);
+        let offset = self.position();
+        self.serialize_u32(0); // Initial length value (patched later)
+        offset
+    }
+
+    /// XCDR2: Patch a previously written DHEADER with the actual length.
+    pub fn patch_dheader(&mut self, offset: usize) {
+        let length = (self.position() - offset - 4) as u32;
+        self.write_u32_at(offset, length);
+    }
+
+    /// XCDR2: Write an Extended Member Header (EMHEADER).
+    /// Format: [1 bit (MustUnderstand) | 1 bit (Reserved) | 14 bits (Length) | 16 bits (MemberId)]
+    /// Or a larger version if length > 7. We'll use the short version for simplicity (assuming len < 65536).
+    pub fn serialize_emheader(&mut self, member_id: u32, length: u32) {
+        self.align(4);
+        // Short EMHEADER:
+        // [ 0 | 0 | Length (14 bits) | MemberId (16 bits) ]
+        // We'll write it as a u32
+        let header = ((length & 0x3FFF) << 16) | (member_id & 0xFFFF);
+        self.serialize_u32(header);
     }
 }
 
@@ -581,6 +609,20 @@ impl<'a> CdrDeserializer<'a> {
         self.offset += len;
         Ok(())
     }
+
+    /// XCDR2: Read a Delimiting Header (DHEADER)
+    pub fn deserialize_dheader(&mut self) -> CdrResult<u32> {
+        self.deserialize_u32()
+    }
+
+    /// XCDR2: Read an Extended Member Header (EMHEADER)
+    /// Returns (member_id, length)
+    pub fn deserialize_emheader(&mut self) -> CdrResult<(u32, u32)> {
+        let header = self.deserialize_u32()?;
+        let length = (header >> 16) & 0x3FFF;
+        let member_id = header & 0xFFFF;
+        Ok((member_id, length))
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -656,6 +698,8 @@ pub struct ParameterId(pub u16);
 impl ParameterId {
     pub const PID_SENTINEL: Self = Self(0x0001);
     pub const PID_PAD: Self = Self(0x0000);
+    pub const PID_KEY_HASH: Self = Self(0x0070);
+    pub const PID_STATUS_INFO: Self = Self(0x0071);
 }
 
 /// A parameter is a (key, value) pair representing a field in a `ParameterList`.

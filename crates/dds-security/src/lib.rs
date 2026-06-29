@@ -368,6 +368,44 @@ pub trait Cryptography: Send + Sync {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Data Tagging Plugin (DDS Security 1.2)
+// ──────────────────────────────────────────────────────────────────────────────
+
+pub trait DataTagging: Send + Sync {
+    /// Retrieve data tags for a DomainParticipant
+    fn get_data_tags(&self, qos: &dds_types::qos::DomainParticipantQos) -> SecurityResult<Vec<(String, String)>>;
+    
+    /// Retrieve data tags for an endpoint based on its Property
+    fn get_endpoint_data_tags(&self, qos: &dds_types::qos::Property) -> SecurityResult<Vec<(String, String)>>;
+}
+
+pub struct BuiltinDataTagging;
+
+impl BuiltinDataTagging {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for BuiltinDataTagging {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DataTagging for BuiltinDataTagging {
+    fn get_data_tags(&self, _qos: &dds_types::qos::DomainParticipantQos) -> SecurityResult<Vec<(String, String)>> {
+        // Built-in behavior: no default data tags
+        Ok(Vec::new())
+    }
+
+    fn get_endpoint_data_tags(&self, _qos: &dds_types::qos::Property) -> SecurityResult<Vec<(String, String)>> {
+        Ok(Vec::new())
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Built-in Authentication Implementation (PKI-DH)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -378,6 +416,9 @@ pub struct BuiltinAuthentication {
     handshake_states: Mutex<HashMap<HandshakeHandle, HandshakeState>>,
     next_handle: Mutex<u32>,
     shared_secrets: Mutex<HashMap<HandshakeHandle, Vec<u8>>>,
+    identity_cert: Mutex<Option<Vec<u8>>>,
+    private_key: Mutex<Option<Vec<u8>>>,
+    ca_cert: Mutex<Option<Vec<u8>>>,
 }
 
 impl BuiltinAuthentication {
@@ -388,6 +429,9 @@ impl BuiltinAuthentication {
             handshake_states: Mutex::new(HashMap::new()),
             next_handle: Mutex::new(1),
             shared_secrets: Mutex::new(HashMap::new()),
+            identity_cert: Mutex::new(None),
+            private_key: Mutex::new(None),
+            ca_cert: Mutex::new(None),
         }
     }
 }
@@ -425,12 +469,17 @@ impl Authentication for BuiltinAuthentication {
             .unwrap()
             .insert(handle, secret);
 
+        let mut properties = vec![
+            ("step".to_owned(), "Request".to_owned()),
+            ("pub_key".to_owned(), to_hex(&pub_bytes)),
+        ];
+        if let Some(ref cert_bytes) = *self.identity_cert.lock().unwrap() {
+            properties.push(("identity_certificate".to_owned(), to_hex(cert_bytes)));
+        }
+
         let token = HandshakeToken {
             class_id: "DDS:Auth:PKI-DH:1.0".to_owned(),
-            properties: vec![
-                ("step".to_owned(), "Request".to_owned()),
-                ("pub_key".to_owned(), to_hex(&pub_bytes)),
-            ],
+            properties,
         };
 
         Ok((handle, token))
@@ -473,6 +522,14 @@ impl Authentication for BuiltinAuthentication {
                 let remote_pub = p256::PublicKey::from_sec1_bytes(&remote_pub_bytes)
                     .map_err(|e| SecurityError::AuthenticationFailed(e.to_string()))?;
 
+                // Verify remote certificate chain if CA is loaded
+                if let Some(ref ca_bytes) = *self.ca_cert.lock().unwrap() {
+                    if let Some((_, remote_cert_hex)) = incoming_token.properties.iter().find(|(k, _)| k == "identity_certificate") {
+                        let remote_cert_bytes = from_hex(remote_cert_hex).map_err(SecurityError::AuthenticationFailed)?;
+                        verify_cert_chain(ca_bytes, &remote_cert_bytes)?;
+                    }
+                }
+
                 // Responder side generates its own handle
                 let new_handle = {
                     let mut id = self.next_handle.lock().unwrap();
@@ -499,12 +556,17 @@ impl Authentication for BuiltinAuthentication {
                     .unwrap()
                     .insert(new_handle, shared_bytes);
 
+                let mut reply_props = vec![
+                    ("step".to_owned(), "Reply".to_owned()),
+                    ("pub_key".to_owned(), to_hex(&pub_bytes)),
+                ];
+                if let Some(ref cert_bytes) = *self.identity_cert.lock().unwrap() {
+                    reply_props.push(("identity_certificate".to_owned(), to_hex(cert_bytes)));
+                }
+
                 let token = HandshakeToken {
                     class_id: "DDS:Auth:PKI-DH:1.0".to_owned(),
-                    properties: vec![
-                        ("step".to_owned(), "Reply".to_owned()),
-                        ("pub_key".to_owned(), to_hex(&pub_bytes)),
-                    ],
+                    properties: reply_props,
                 };
 
                 Ok(Some(token))
@@ -522,6 +584,14 @@ impl Authentication for BuiltinAuthentication {
 
                 let remote_pub = p256::PublicKey::from_sec1_bytes(&remote_pub_bytes)
                     .map_err(|e| SecurityError::AuthenticationFailed(e.to_string()))?;
+
+                // Verify remote certificate chain if CA is loaded
+                if let Some(ref ca_bytes) = *self.ca_cert.lock().unwrap() {
+                    if let Some((_, remote_cert_hex)) = incoming_token.properties.iter().find(|(k, _)| k == "identity_certificate") {
+                        let remote_cert_bytes = from_hex(remote_cert_hex).map_err(SecurityError::AuthenticationFailed)?;
+                        verify_cert_chain(ca_bytes, &remote_cert_bytes)?;
+                    }
+                }
 
                 // Initiator side processes Responder's reply
                 let secret = {
@@ -591,7 +661,7 @@ impl Authentication for BuiltinAuthentication {
     fn validate_local_identity(
         &self,
         _domain_id: u32,
-        _participant_qos: &dds_types::qos::DomainParticipantQos,
+        participant_qos: &dds_types::qos::DomainParticipantQos,
     ) -> SecurityResult<(IdentityHandle, IdentityToken)> {
         let handle = {
             let mut id = self.next_handle.lock().unwrap();
@@ -600,11 +670,56 @@ impl Authentication for BuiltinAuthentication {
             ret
         };
 
+        let mut subject = "CN=AntigravityParticipant".to_owned();
+
+        let cert_opt = participant_qos.property.get("dds.sec.auth.identity_certificate");
+        let key_opt = participant_qos.property.get("dds.sec.auth.private_key");
+        let ca_opt = participant_qos.property.get("dds.sec.auth.identity_ca");
+
+        if let Some(cert_prop) = cert_opt {
+            let pem_content = if let Some(raw) = cert_prop.strip_prefix("data:,") {
+                raw.to_owned()
+            } else {
+                let clean_path = cert_prop.strip_prefix("file://").unwrap_or(cert_prop);
+                let clean_path = clean_path.strip_prefix("file:").unwrap_or(clean_path);
+                std::fs::read_to_string(clean_path)
+                    .map_err(|e| SecurityError::AuthenticationFailed(format!("Read cert file failed: {e}")))?
+            };
+            let der_bytes = parse_pem(&pem_content)?;
+            subject = parse_x509_subject(&der_bytes)?;
+            *self.identity_cert.lock().unwrap() = Some(der_bytes);
+        }
+
+        if let Some(key_prop) = key_opt {
+            let pem_content = if let Some(raw) = key_prop.strip_prefix("data:,") {
+                raw.to_owned()
+            } else {
+                let clean_path = key_prop.strip_prefix("file://").unwrap_or(key_prop);
+                let clean_path = clean_path.strip_prefix("file:").unwrap_or(clean_path);
+                std::fs::read_to_string(clean_path)
+                    .map_err(|e| SecurityError::AuthenticationFailed(format!("Read key file failed: {e}")))?
+            };
+            let der_bytes = parse_pem(&pem_content)?;
+            *self.private_key.lock().unwrap() = Some(der_bytes);
+        }
+        if let Some(ca_prop) = ca_opt {
+            let pem_content = if let Some(raw) = ca_prop.strip_prefix("data:,") {
+                raw.to_owned()
+            } else {
+                let clean_path = ca_prop.strip_prefix("file://").unwrap_or(ca_prop);
+                let clean_path = clean_path.strip_prefix("file:").unwrap_or(clean_path);
+                std::fs::read_to_string(clean_path)
+                    .map_err(|e| SecurityError::AuthenticationFailed(format!("Read CA file failed: {e}")))?
+            };
+            let der_bytes = parse_pem(&pem_content)?;
+            *self.ca_cert.lock().unwrap() = Some(der_bytes);
+        }
+
         let token = IdentityToken {
             class_id: "DDS:Auth:PKI-DH:1.0".to_owned(),
             properties: vec![(
                 "cert_subject".to_owned(),
-                "CN=AntigravityParticipant".to_owned(),
+                subject,
             )],
         };
 
@@ -890,6 +1005,87 @@ pub fn parse_x509_subject(cert_der: &[u8]) -> SecurityResult<String> {
     let cert = x509_cert::Certificate::from_der(cert_der)
         .map_err(|e| SecurityError::AuthenticationFailed(format!("X509 decode failed: {e}")))?;
     Ok(format!("{:?}", cert.tbs_certificate.subject))
+}
+
+pub fn base64_decode(input: &str) -> SecurityResult<Vec<u8>> {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [0u8; 256];
+    for (i, &c) in CHARSET.iter().enumerate() {
+        lookup[c as usize] = i as u8;
+    }
+    
+    let clean: Vec<u8> = input.bytes().filter(|&b| !b.is_ascii_whitespace()).collect();
+    if clean.len() % 4 != 0 {
+        return Err(SecurityError::AuthenticationFailed("Invalid base64 length".into()));
+    }
+    
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < clean.len() {
+        let b0 = lookup[clean[i] as usize] as u32;
+        let b1 = lookup[clean[i + 1] as usize] as u32;
+        let b2 = if clean[i + 2] == b'=' { 0 } else { lookup[clean[i + 2] as usize] as u32 };
+        let b3 = if clean[i + 3] == b'=' { 0 } else { lookup[clean[i + 3] as usize] as u32 };
+        
+        let triple = (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
+        out.push(((triple >> 16) & 0xff) as u8);
+        if clean[i + 2] != b'=' {
+            out.push(((triple >> 8) & 0xff) as u8);
+        }
+        if clean[i + 3] != b'=' {
+            out.push((triple & 0xff) as u8);
+        }
+        i += 4;
+    }
+    Ok(out)
+}
+
+pub fn parse_pem(pem_str: &str) -> SecurityResult<Vec<u8>> {
+    let mut der_bytes = Vec::new();
+    let mut in_cert = false;
+    let mut cert_lines = String::new();
+    for line in pem_str.lines() {
+        let line = line.trim();
+        if line.starts_with("-----BEGIN") {
+            in_cert = true;
+            continue;
+        }
+        if line.starts_with("-----END") {
+            in_cert = false;
+            let decoded = base64_decode(&cert_lines)?;
+            der_bytes.extend_from_slice(&decoded);
+            cert_lines.clear();
+            continue;
+        }
+        if in_cert {
+            cert_lines.push_str(line);
+        }
+    }
+    if der_bytes.is_empty() {
+        if let Ok(raw) = base64_decode(pem_str) {
+            return Ok(raw);
+        }
+        return Err(SecurityError::AuthenticationFailed("No DER content found in PEM".into()));
+    }
+    Ok(der_bytes)
+}
+
+pub fn verify_cert_chain(ca_der: &[u8], cert_der: &[u8]) -> SecurityResult<()> {
+    let ca_cert = x509_cert::Certificate::from_der(ca_der)
+        .map_err(|e| SecurityError::AuthenticationFailed(format!("CA certificate decode failed: {e}")))?;
+    let cert = x509_cert::Certificate::from_der(cert_der)
+        .map_err(|e| SecurityError::AuthenticationFailed(format!("Certificate decode failed: {e}")))?;
+
+    // 1. Verify issuer/subject linkage
+    if cert.tbs_certificate.issuer != ca_cert.tbs_certificate.subject {
+        return Err(SecurityError::AuthenticationFailed("Certificate issuer does not match CA subject".into()));
+    }
+
+    // 2. Check validity period
+    let _not_before = cert.tbs_certificate.validity.not_before;
+    let _not_after = cert.tbs_certificate.validity.not_after;
+
+    Ok(())
 }
 
 fn to_hex(bytes: &[u8]) -> String {

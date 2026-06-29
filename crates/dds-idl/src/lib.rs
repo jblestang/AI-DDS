@@ -147,6 +147,22 @@ pub struct ModuleDef {
     pub nodes: Vec<AstNode>,
 }
 
+/// Represents an IDL Bitmask definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitmaskDef {
+    pub name: String,
+    pub bit_bound: usize,
+    pub flags: Vec<String>,
+}
+
+/// Represents an IDL Const definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstDef {
+    pub name: String,
+    pub const_type: PrimitiveType,
+    pub value: String,
+}
+
 /// Root AST node representing an IDL file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AstNode {
@@ -154,6 +170,8 @@ pub enum AstNode {
     Enum(EnumDef),
     Union(UnionDef),
     Module(ModuleDef),
+    Bitmask(BitmaskDef),
+    Const(ConstDef),
 }
 
 /// Parser helpers
@@ -413,6 +431,65 @@ pub fn parse_module(input: &str) -> IResult<&str, ModuleDef> {
     ))
 }
 
+/// Parses a single IDL bitmask block.
+pub fn parse_bitmask(input: &str) -> IResult<&str, BitmaskDef> {
+    let (input, (_, _, name, _, _, flags, _, _, _)) = tuple((
+        tag("bitmask"),
+        multispace1,
+        identifier,
+        multispace0,
+        tag("{"),
+        delimited(
+            multispace0,
+            separated_list0(
+                preceded(multispace0, tag(",")),
+                preceded(multispace0, identifier),
+            ),
+            multispace0,
+        ),
+        tag("}"),
+        multispace0,
+        tag(";"),
+    ))(input)?;
+
+    let flags = flags.into_iter().map(|s| s.to_owned()).collect();
+
+    Ok((
+        input,
+        BitmaskDef {
+            name: name.to_owned(),
+            bit_bound: 32, // Default bound
+            flags,
+        },
+    ))
+}
+
+/// Parses a single IDL const definition.
+pub fn parse_const(input: &str) -> IResult<&str, ConstDef> {
+    let (input, (_, _, const_type, _, name, _, _, _, value, _, _)) = tuple((
+        tag("const"),
+        multispace1,
+        parse_primitive_type,
+        multispace1,
+        identifier,
+        multispace0,
+        tag("="),
+        multispace0,
+        take_while1(|c: char| c.is_alphanumeric() || c == '.' || c == '-'),
+        multispace0,
+        tag(";"),
+    ))(input)?;
+
+    Ok((
+        input,
+        ConstDef {
+            name: name.to_owned(),
+            const_type,
+            value: value.to_owned(),
+        },
+    ))
+}
+
 fn parse_ast_node(input: &str) -> IResult<&str, AstNode> {
     if let Ok((rem, m)) = parse_module(input) {
         Ok((rem, AstNode::Module(m)))
@@ -420,6 +497,10 @@ fn parse_ast_node(input: &str) -> IResult<&str, AstNode> {
         Ok((rem, AstNode::Enum(e)))
     } else if let Ok((rem, u)) = parse_union(input) {
         Ok((rem, AstNode::Union(u)))
+    } else if let Ok((rem, b)) = parse_bitmask(input) {
+        Ok((rem, AstNode::Bitmask(b)))
+    } else if let Ok((rem, c)) = parse_const(input) {
+        Ok((rem, AstNode::Const(c)))
     } else {
         let (rem, s) = parse_struct(input)?;
         Ok((rem, AstNode::Struct(s)))

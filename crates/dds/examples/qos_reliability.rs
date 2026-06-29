@@ -188,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket.set_read_timeout(Some(StdDuration::from_secs(30)))?;
             println!("[Reader] Listening on UDP port 7926...");
 
-            let mut buf = [0_u8; 1024];
+            let mut buf = [0u8; 1024];
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Reader] Received sample packet over UDP (len = {}).", len);
 

@@ -18,10 +18,8 @@ impl VendorId {
     /// Unknown vendor — the default/sentinel value.
     pub const UNKNOWN: Self = Self([0x00, 0x00]);
 
-    /// Our vendor ID. Using a placeholder value in the "experimental" range.
-    /// A real vendor ID should be registered with the OMG.
-    // TODO: Register a proper vendor ID with OMG when ready.
-    pub const THIS_IMPLEMENTATION: Self = Self([0x01, 0x42]);
+    /// AI-DDS Vendor ID.
+    pub const THIS_IMPLEMENTATION: Self = Self([0x01, 0x1A]);
 
     /// Create a `VendorId` from raw bytes.
     #[must_use]

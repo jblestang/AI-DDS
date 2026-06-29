@@ -188,6 +188,20 @@ impl EntityId {
     /// Participant message reader (used for liveliness).
     pub const PARTICIPANT_MESSAGE_READER: Self = Self([0x00, 0x02, 0x00, 0xc7]);
 
+    // ── Builtin TypeLookup endpoints (XTypes 1.3) ──
+
+    /// TypeLookup request writer.
+    pub const BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER: Self = Self([0x00, 0x03, 0x00, 0xc3]);
+
+    /// TypeLookup request reader.
+    pub const BUILTIN_TYPE_LOOKUP_REQUEST_DATA_READER: Self = Self([0x00, 0x03, 0x00, 0xc4]);
+
+    /// TypeLookup reply writer.
+    pub const BUILTIN_TYPE_LOOKUP_REPLY_DATA_WRITER: Self = Self([0x00, 0x03, 0x01, 0xc3]);
+
+    /// TypeLookup reply reader.
+    pub const BUILTIN_TYPE_LOOKUP_REPLY_DATA_READER: Self = Self([0x00, 0x03, 0x01, 0xc4]);
+
     /// Create a new `EntityId` from raw bytes.
     #[must_use]
     pub const fn new(bytes: [u8; 4]) -> Self {

@@ -586,6 +586,44 @@ impl Default for EntityFactory {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Policy: Property (RTPS §8.2.4, DDS Security §9.1)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A name/value property pair used to pass configuration to the middleware
+/// and security plugins through `DomainParticipantQos`.
+///
+/// Standard property key prefixes:
+/// - `dds.sec.auth.*`   — Authentication plugin configuration
+/// - `dds.sec.access.*` — Access control plugin configuration
+/// - `dds.sec.crypto.*` — Cryptography plugin configuration
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct Property {
+    /// List of (name, value) string pairs.
+    pub value: Vec<(String, String)>,
+}
+
+impl Property {
+    /// Look up a property value by name. Returns `None` if not set.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.value
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Insert or overwrite a property.
+    pub fn set(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        let name = name.into();
+        if let Some(entry) = self.value.iter_mut().find(|(k, _)| k == &name) {
+            entry.1 = value.into();
+        } else {
+            self.value.push((name, value.into()));
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Policy 21: WriterDataLifecycle (DCPS §2.2.3.21)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -644,6 +682,9 @@ pub struct DomainParticipantQos {
     pub user_data: UserData,
     /// Whether child entities are auto-enabled.
     pub entity_factory: EntityFactory,
+    /// Key/value property pairs for middleware and security plugin configuration.
+    /// Standard prefixes: `dds.sec.auth.*`, `dds.sec.access.*`, `dds.sec.crypto.*`.
+    pub property: Property,
 }
 
 /// QoS policies applicable to a `Topic`.

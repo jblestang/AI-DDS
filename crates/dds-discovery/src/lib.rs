@@ -73,6 +73,42 @@ use std::collections::HashMap;
 use dds_types::guid::Guid;
 use dds_types::qos::{DataReaderQos, DataWriterQos};
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Discovery Parameter IDs (PIDs)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// PID for Topic Name
+pub const PID_TOPIC_NAME: u16 = 0x0005;
+
+/// PID for Type Name
+pub const PID_TYPE_NAME: u16 = 0x0007;
+
+/// PID for Reliability QoS
+pub const PID_RELIABILITY: u16 = 0x001A;
+
+/// PID for Durability QoS
+pub const PID_DURABILITY: u16 = 0x001D;
+
+/// PID for History QoS
+pub const PID_HISTORY: u16 = 0x0040;
+
+/// PID for Participant GUID
+pub const PID_PARTICIPANT_GUID: u16 = 0x0050;
+
+/// PID for Endpoint GUID
+pub const PID_ENDPOINT_GUID: u16 = 0x005A;
+
+/// PID for Lease Duration
+pub const PID_LEASE_DURATION: u16 = 0x0002;
+
+/// PID for Default Unicast Locator
+pub const PID_DEFAULT_UNICAST_LOCATOR: u16 = 0x0031;
+
+/// PID for Default Multicast Locator
+pub const PID_DEFAULT_MULTICAST_LOCATOR: u16 = 0x0048;
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 /// Represents a remote `DataWriter` or `DataReader` discovered via SEDP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredEndpoint {
@@ -142,25 +178,36 @@ impl DiscoveryManager {
     }
 
     /// Spawn SPDP announcer background thread
-    pub fn spawn_spdp_announcer<F>(
+    pub fn spawn_spdp_announcer(
         &self,
         interval: core::time::Duration,
-        broadcast_fn: F,
-    ) -> std::thread::JoinHandle<()>
-    where
-        F: Fn(DiscoveredParticipant) + Send + Sync + 'static,
-    {
+        transport: std::sync::Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        destination_locator: Option<dds_types::locator::Locator>,
+    ) -> std::thread::JoinHandle<()> {
         let local_prefix = self.local_prefix;
-        std::thread::spawn(move || loop {
-            let info = DiscoveredParticipant {
-                guid_prefix: local_prefix,
-                unicast_locators: vec![],
-                multicast_locators: vec![],
-                lease_duration: Duration::from_secs(100),
-                last_contact: std::time::Instant::now(),
-            };
-            broadcast_fn(info);
-            std::thread::sleep(interval);
+        std::thread::spawn(move || {
+            // Multicast address: 239.255.0.1
+            let multicast_port = 7400 + 250 * domain_id;
+            let dest_locator = destination_locator.unwrap_or_else(|| {
+                dds_types::locator::Locator::udpv4(
+                    std::net::Ipv4Addr::new(239, 255, 0, 1),
+                    multicast_port,
+                )
+            });
+            loop {
+                let info = DiscoveredParticipant {
+                    guid_prefix: local_prefix,
+                    unicast_locators: vec![],
+                    multicast_locators: vec![],
+                    lease_duration: Duration::from_secs(100),
+                    last_contact: std::time::Instant::now(),
+                };
+                if let Ok(bytes) = spdp_to_plcdr(&info) {
+                    let _ = transport.send(&bytes, &dest_locator);
+                }
+                std::thread::sleep(interval);
+            }
         })
     }
 
@@ -225,8 +272,271 @@ impl DiscoveryManager {
                 | EntityId::SEDP_BUILTIN_PUBLICATIONS_READER
                 | EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
                 | EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER
+                | EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER
+                | EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_READER
+                | EntityId::BUILTIN_TYPE_LOOKUP_REPLY_DATA_WRITER
+                | EntityId::BUILTIN_TYPE_LOOKUP_REPLY_DATA_READER
         )
     }
+}
+
+/// Serializes a `DiscoveredParticipant` to a PL-CDR parameter list.
+///
+/// Reference: RTPS §9.6.3 — ParameterList values
+pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<Vec<u8>> {
+    use dds_cdr::{ParameterList, ParameterId, serialize_to_bytes, Endianness};
+
+    let mut plist = ParameterList::new();
+
+    // 1. Participant GUID (0x0050)
+    let mut guid_bytes = Vec::new();
+    guid_bytes.extend_from_slice(participant.guid_prefix.as_bytes());
+    guid_bytes.extend_from_slice(&dds_types::guid::EntityId::PARTICIPANT.0);
+    plist.add(ParameterId(PID_PARTICIPANT_GUID), guid_bytes);
+
+    // 2. Lease Duration (0x0002)
+    let mut lease_bytes = Vec::new();
+    lease_bytes.extend_from_slice(&participant.lease_duration.seconds.to_le_bytes());
+    lease_bytes.extend_from_slice(&participant.lease_duration.nanoseconds.to_le_bytes());
+    plist.add(ParameterId(PID_LEASE_DURATION), lease_bytes);
+
+    // 3. Unicast Locators (0x0031)
+    for locator in &participant.unicast_locators {
+        let mut loc_bytes = Vec::new();
+        loc_bytes.extend_from_slice(&(locator.kind as i32).to_le_bytes());
+        loc_bytes.extend_from_slice(&locator.port.to_le_bytes());
+        loc_bytes.extend_from_slice(&locator.address);
+        plist.add(ParameterId(PID_DEFAULT_UNICAST_LOCATOR), loc_bytes);
+    }
+
+    // 4. Multicast Locators (0x0048)
+    for locator in &participant.multicast_locators {
+        let mut loc_bytes = Vec::new();
+        loc_bytes.extend_from_slice(&(locator.kind as i32).to_le_bytes());
+        loc_bytes.extend_from_slice(&locator.port.to_le_bytes());
+        loc_bytes.extend_from_slice(&locator.address);
+        plist.add(ParameterId(PID_DEFAULT_MULTICAST_LOCATOR), loc_bytes);
+    }
+
+    let serialized = serialize_to_bytes(&plist, Endianness::LittleEndian)?;
+    Ok(serialized.to_vec())
+}
+
+/// Parses a `DiscoveredParticipant` from a PL-CDR parameter list byte buffer.
+pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
+    use dds_cdr::{ParameterList, deserialize_from_slice, Endianness};
+
+    let plist: ParameterList = deserialize_from_slice(bytes, Endianness::LittleEndian).ok()?;
+
+    let mut guid_prefix = GuidPrefix::UNKNOWN;
+    let mut lease_duration = Duration::INFINITE;
+    let mut unicast_locators = Vec::new();
+    let mut multicast_locators = Vec::new();
+
+    for param in &plist.parameters {
+        match param.parameter_id.0 {
+            PID_PARTICIPANT_GUID => {
+                if param.value.len() >= 16 {
+                    let mut prefix_bytes = [0u8; 12];
+                    prefix_bytes.copy_from_slice(&param.value[0..12]);
+                    guid_prefix = GuidPrefix::new(prefix_bytes);
+                }
+            }
+            PID_LEASE_DURATION => {
+                if param.value.len() >= 8 {
+                    let seconds = i32::from_le_bytes(param.value[0..4].try_into().ok()?);
+                    let nanoseconds = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
+                    lease_duration = Duration::new(seconds, nanoseconds);
+                }
+            }
+            PID_DEFAULT_UNICAST_LOCATOR => {
+                if param.value.len() >= 24 {
+                    let kind_val = i32::from_le_bytes(param.value[0..4].try_into().ok()?);
+                    let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
+                    let mut address = [0u8; 16];
+                    address.copy_from_slice(&param.value[8..24]);
+                    unicast_locators.push(Locator {
+                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+                        port,
+                        address,
+                    });
+                }
+            }
+            PID_DEFAULT_MULTICAST_LOCATOR => {
+                if param.value.len() >= 24 {
+                    let kind_val = i32::from_le_bytes(param.value[0..4].try_into().ok()?);
+                    let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
+                    let mut address = [0u8; 16];
+                    address.copy_from_slice(&param.value[8..24]);
+                    multicast_locators.push(Locator {
+                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+                        port,
+                        address,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if guid_prefix.is_unknown() {
+        return None;
+    }
+
+    Some(DiscoveredParticipant {
+        guid_prefix,
+        unicast_locators,
+        multicast_locators,
+        lease_duration,
+        last_contact: std::time::Instant::now(),
+    })
+}
+
+/// Serializes a `DiscoveredEndpoint` to a PL-CDR parameter list.
+pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8>> {
+    use dds_cdr::{ParameterList, ParameterId, Parameter, serialize_to_bytes, Endianness};
+    let mut plist = ParameterList::new();
+
+    // PID_TOPIC_NAME (0x0005)
+    let mut topic_name_bytes = endpoint.topic_name.as_bytes().to_vec();
+    topic_name_bytes.push(0); // null terminator
+    // Padding to 4 bytes
+    while topic_name_bytes.len() % 4 != 0 {
+        topic_name_bytes.push(0);
+    }
+    plist.parameters.push(Parameter {
+        parameter_id: ParameterId(PID_TOPIC_NAME),
+        value: topic_name_bytes,
+    });
+
+    // PID_TYPE_NAME (0x0007)
+    let mut type_name_bytes = endpoint.type_name.as_bytes().to_vec();
+    type_name_bytes.push(0);
+    while type_name_bytes.len() % 4 != 0 {
+        type_name_bytes.push(0);
+    }
+    plist.parameters.push(Parameter {
+        parameter_id: ParameterId(PID_TYPE_NAME),
+        value: type_name_bytes,
+    });
+
+    // PID_ENDPOINT_GUID (0x005A)
+    let mut guid_bytes = Vec::with_capacity(16);
+    guid_bytes.extend_from_slice(&endpoint.guid.prefix.0);
+    guid_bytes.extend_from_slice(&endpoint.guid.entity_id.0);
+    plist.parameters.push(Parameter {
+        parameter_id: ParameterId(PID_ENDPOINT_GUID),
+        value: guid_bytes,
+    });
+
+    serialize_to_bytes(&plist, Endianness::LittleEndian).map(|b| b.to_vec())
+}
+
+/// Parses an SEDP PL-CDR parameter list into a `DiscoveredEndpoint`.
+pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
+    use dds_cdr::{ParameterList, deserialize_from_slice, Endianness};
+    let plist: ParameterList = deserialize_from_slice(bytes, Endianness::LittleEndian).ok()?;
+
+    let mut guid = dds_types::guid::Guid::new(
+        GuidPrefix::new([0; 12]),
+        dds_types::guid::EntityId::new([0; 4]),
+    );
+    let mut topic_name = String::new();
+    let mut type_name = String::new();
+    
+    let mut qos_writer = None;
+    let mut qos_reader = None;
+
+    for param in &plist.parameters {
+        match param.parameter_id.0 {
+            PID_ENDPOINT_GUID => { // PID_ENDPOINT_GUID
+                if param.value.len() >= 16 {
+                    let mut prefix_bytes = [0u8; 12];
+                    prefix_bytes.copy_from_slice(&param.value[0..12]);
+                    let mut entity_bytes = [0u8; 4];
+                    entity_bytes.copy_from_slice(&param.value[12..16]);
+                    guid = dds_types::guid::Guid::new(
+                        GuidPrefix::new(prefix_bytes),
+                        dds_types::guid::EntityId::new(entity_bytes),
+                    );
+                    
+                    if guid.entity_id.0[3] & 0x02 != 0 {
+                        // Reader
+                        let mut qr = dds_types::qos::DataReaderQos::default();
+                        qr.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
+                        qos_reader = Some(qr);
+                    } else {
+                        // Writer
+                        let mut qw = dds_types::qos::DataWriterQos::default();
+                        qw.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
+                        qos_writer = Some(qw);
+                    }
+                }
+            }
+            PID_TOPIC_NAME => { // PID_TOPIC_NAME
+                if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value) {
+                    topic_name = s.to_string_lossy().into_owned();
+                }
+            }
+            PID_TYPE_NAME => { // PID_TYPE_NAME
+                if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value) {
+                    type_name = s.to_string_lossy().into_owned();
+                }
+            }
+            PID_DURABILITY => { // PID_DURABILITY
+                if param.value.len() >= 4 {
+                    let kind_val = u32::from_le_bytes([param.value[0], param.value[1], param.value[2], param.value[3]]);
+                    let kind = match kind_val {
+                        0 => dds_types::qos::DurabilityKind::Volatile,
+                        1 => dds_types::qos::DurabilityKind::TransientLocal,
+                        2 => dds_types::qos::DurabilityKind::Transient,
+                        3 => dds_types::qos::DurabilityKind::Persistent,
+                        _ => dds_types::qos::DurabilityKind::Volatile,
+                    };
+                    if let Some(ref mut qw) = qos_writer { qw.durability.kind = kind; }
+                    if let Some(ref mut qr) = qos_reader { qr.durability.kind = kind; }
+                }
+            }
+            PID_RELIABILITY => { // PID_RELIABILITY
+                if param.value.len() >= 4 {
+                    let kind_val = u32::from_le_bytes([param.value[0], param.value[1], param.value[2], param.value[3]]);
+                    let kind = match kind_val {
+                        1 => dds_types::qos::ReliabilityKind::BestEffort,
+                        2 => dds_types::qos::ReliabilityKind::Reliable,
+                        _ => dds_types::qos::ReliabilityKind::BestEffort,
+                    };
+                    if let Some(ref mut qw) = qos_writer { qw.reliability.kind = kind; }
+                    if let Some(ref mut qr) = qos_reader { qr.reliability.kind = kind; }
+                }
+            }
+            PID_HISTORY => { // PID_HISTORY
+                if param.value.len() >= 4 {
+                    let kind_val = u32::from_le_bytes([param.value[0], param.value[1], param.value[2], param.value[3]]);
+                    let kind = match kind_val {
+                        0 => dds_types::qos::HistoryKind::KeepLast,
+                        1 => dds_types::qos::HistoryKind::KeepAll,
+                        _ => dds_types::qos::HistoryKind::KeepLast,
+                    };
+                    if let Some(ref mut qw) = qos_writer { qw.history.kind = kind; }
+                    if let Some(ref mut qr) = qos_reader { qr.history.kind = kind; }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if topic_name.is_empty() || type_name.is_empty() {
+        return None;
+    }
+
+    Some(DiscoveredEndpoint {
+        guid,
+        topic_name,
+        type_name,
+        qos_writer,
+        qos_reader,
+        type_info: None,
+    })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -237,7 +547,7 @@ impl DiscoveryManager {
 mod tests {
     use super::*;
     use dds_types::guid::EntityId;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     #[test]
     fn test_discovery_manager() {
@@ -359,17 +669,61 @@ mod tests {
         assert_eq!(mappings.len(), 1);
 
         // Test spawning the SPDP announcer
-        let count = Arc::new(Mutex::new(0));
-        let count_clone = count.clone();
-        let _handle =
-            manager.spawn_spdp_announcer(std::time::Duration::from_millis(10), move |_p| {
-                let mut c = count_clone.lock().unwrap();
-                *c += 1;
-            });
+        let transport = Arc::new(dds_rtps::UdpTransport::bind(0).unwrap());
+        let domain_id = 12;
 
-        // Wait a tiny bit and confirm callbacks are triggered
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let receiver_port = receiver.local_addr().unwrap().port();
+        receiver.set_nonblocking(true).unwrap();
+
+        let dest_locator = dds_types::locator::Locator::udpv4(
+            std::net::Ipv4Addr::new(127, 0, 0, 1),
+            u32::from(receiver_port),
+        );
+
+        let _handle = manager.spawn_spdp_announcer(
+            std::time::Duration::from_millis(10),
+            transport,
+            domain_id,
+            Some(dest_locator),
+        );
+
+        // Wait a tiny bit and confirm packet is received and parsed
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(*count.lock().unwrap() > 0);
+        let mut buf = [0u8; 1024];
+        let mut received = false;
+        if let Ok((len, _)) = receiver.recv_from(&mut buf) {
+            if let Some(parsed) = parse_spdp_packet(&buf[..len]) {
+                assert_eq!(parsed.guid_prefix, local_prefix);
+                received = true;
+            }
+        }
+        assert!(received, "Should have received SPDP announcement over UDP");
+    }
+
+    #[test]
+    fn test_spdp_roundtrip() {
+        let participant = DiscoveredParticipant {
+            guid_prefix: GuidPrefix::new([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+            unicast_locators: vec![
+                Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), 7410),
+            ],
+            multicast_locators: vec![
+                Locator::udpv4(std::net::Ipv4Addr::new(239, 255, 0, 1), 7400),
+            ],
+            lease_duration: Duration::from_secs(120),
+            last_contact: std::time::Instant::now(),
+        };
+
+        let bytes = spdp_to_plcdr(&participant).unwrap();
+        let decoded = parse_spdp_packet(&bytes).unwrap();
+
+        assert_eq!(decoded.guid_prefix, participant.guid_prefix);
+        assert_eq!(decoded.lease_duration, participant.lease_duration);
+        assert_eq!(decoded.unicast_locators.len(), 1);
+        assert_eq!(decoded.unicast_locators[0].port, 7410);
+        assert_eq!(decoded.multicast_locators.len(), 1);
+        assert_eq!(decoded.multicast_locators[0].port, 7400);
     }
 
     #[test]
@@ -389,7 +743,11 @@ mod tests {
         manager.process_spdp_packet(remote_participant);
 
         // Define a type, compute type information and type_id
-        let r_obj = dds_xtypes::TypeObject::Primitive("long".to_string());
+        let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType {
+            name: "Dummy".to_string(),
+            extensibility: dds_xtypes::ExtensibilityKind::Final,
+            members: vec![],
+        });
         let r_id = r_obj.get_identifier();
         let type_info = dds_xtypes::TypeInformation {
             type_name: "MyInt".to_string(),

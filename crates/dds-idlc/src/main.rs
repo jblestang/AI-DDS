@@ -63,7 +63,7 @@
     reason = "IDL compiler CLI tool requires IO operations, print debugging, standard returns, and CLI arguments."
 )]
 
-use dds_idl::{parse_idl, AstNode, EnumDef, IdlType, PrimitiveType, StructDef, UnionDef};
+use dds_idl::{parse_idl, AstNode, EnumDef, IdlType, PrimitiveType, StructDef, UnionDef, BitmaskDef, ConstDef};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -404,6 +404,48 @@ pub enum {name} {{
     )
 }
 
+/// Generates Rust representation for an IDL Bitmask.
+#[must_use]
+pub fn generate_rust_bitmask(bitmask_def: &BitmaskDef) -> String {
+    let name = &bitmask_def.name;
+    let mut flags = String::new();
+    for (i, flag) in bitmask_def.flags.iter().enumerate() {
+        flags.push_str(&format!("        const {flag} = 1 << {i};\n"));
+    }
+
+    format!(
+        r#"bitflags::bitflags! {{
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct {name}: u32 {{
+{flags}    }}
+}}
+
+impl dds_cdr::CdrSerialize for {name} {{
+    fn serialize(&self, serializer: &mut dds_cdr::CdrSerializer) -> dds_cdr::CdrResult<()> {{
+        serializer.serialize_u32(self.bits());
+        Ok(())
+    }}
+}}
+
+impl dds_cdr::CdrDeserialize for {name} {{
+    fn deserialize(deserializer: &mut dds_cdr::CdrDeserializer) -> dds_cdr::CdrResult<Self> {{
+        let val = deserializer.deserialize_u32()?;
+        Self::from_bits(val).ok_or_else(|| dds_cdr::CdrError::InvalidHeader(format!("invalid bitmask: {{val}}")))
+    }}
+}}
+"#
+    )
+}
+
+/// Generates Rust representation for an IDL Const.
+#[must_use]
+pub fn generate_rust_const(const_def: &ConstDef) -> String {
+    let name = &const_def.name;
+    let rust_type = primitive_to_rust(&const_def.const_type);
+    let value = &const_def.value;
+    format!("pub const {name}: {rust_type} = {value};\n")
+}
+
 /// Generates Rust content recursively from `AstNode` trees.
 #[must_use] 
 pub fn generate_rust_node(node: &AstNode) -> String {
@@ -411,6 +453,8 @@ pub fn generate_rust_node(node: &AstNode) -> String {
         AstNode::Struct(s) => generate_rust_struct(s),
         AstNode::Enum(e) => generate_rust_enum(e),
         AstNode::Union(u) => generate_rust_union(u),
+        AstNode::Bitmask(b) => generate_rust_bitmask(b),
+        AstNode::Const(c) => generate_rust_const(c),
         AstNode::Module(m) => {
             let mut inner = String::new();
             for child in &m.nodes {

@@ -11,9 +11,12 @@ dds-cdr = { workspace = true }
 dds-rtps = { workspace = true }
 dds-discovery = { workspace = true }
 dds-xtypes = { workspace = true }
+dds-security = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+bytes = { workspace = true }
+
 
 [lints]
 workspace = true

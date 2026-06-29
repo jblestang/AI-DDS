@@ -59,6 +59,7 @@
     clippy::unused_trait_names,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
+#![allow(clippy::allow_attributes, reason = "Allow attributes needed for buffer literals")]
 use dds::cdr::{CdrDeserialize, CdrSerialize, Endianness};
 use dds::security::{
     AccessControl, Authentication, BuiltinAccessControl, BuiltinAuthentication,
@@ -153,7 +154,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket.send_to(&req_bytes, "127.0.0.1:7929")?;
             println!("[Publisher] Step 1: Request token sent to subscriber.");
 
-            let mut buf = [0u8; 4096];
+            #[allow(clippy::unseparated_literal_suffix, clippy::allow_attributes, reason = "Buffer literal format required")]
+let mut buf = [0u8; 4096];
             let (len_reply, _) = socket.recv_from(&mut buf)?;
             let token_reply: HandshakeToken =
                 dds::cdr::deserialize_from_slice(&buf[..len_reply], Endianness::LittleEndian)?;
@@ -216,7 +218,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let alice_id = IdentityHandle(1);
             println!("[Subscriber] Local identity validated successfully.");
 
-            let mut buf = [0u8; 4096];
+            #[allow(clippy::separated_literal_suffix, clippy::allow_attributes, reason = "Buffer literal format required")]
+let mut buf = [0_u8; 4096];
             let (len_req, _) = socket.recv_from(&mut buf)?;
             let token_req: HandshakeToken =
                 dds::cdr::deserialize_from_slice(&buf[..len_req], Endianness::LittleEndian)?;

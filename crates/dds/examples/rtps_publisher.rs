@@ -92,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reader_id: EntityId::new([1, 0, 0, 4]),
         writer_id: EntityId::new([2, 0, 0, 3]),
         writer_sn: SequenceNumber(1),
+        inline_qos: None,
         serialized_payload: payload.into(),
     };
 
