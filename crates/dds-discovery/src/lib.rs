@@ -113,6 +113,9 @@ pub const PORT_BASE: u16 = 7400;
 /// RTPS Domain ID Gain (DG)
 pub const DOMAIN_ID_GAIN: u16 = 250;
 
+/// Default Multicast IP for SPDP
+pub const DEFAULT_MULTICAST_IP: [u8; 4] = [239, 255, 0, 1];
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Represents a remote `DataWriter` or `DataReader` discovered via SEDP.
@@ -197,7 +200,7 @@ impl DiscoveryManager {
             let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16;
             let dest_locator = destination_locator.unwrap_or_else(|| {
                 dds_types::locator::Locator::udpv4(
-                    std::net::Ipv4Addr::new(239, 255, 0, 1),
+                    std::net::Ipv4Addr::new(DEFAULT_MULTICAST_IP[0], DEFAULT_MULTICAST_IP[1], DEFAULT_MULTICAST_IP[2], DEFAULT_MULTICAST_IP[3]),
                     multicast_port as u32,
                 )
             });
@@ -715,7 +718,7 @@ mod tests {
                 Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), PORT_BASE as u32 + 10),
             ],
             multicast_locators: vec![
-                Locator::udpv4(std::net::Ipv4Addr::new(239, 255, 0, 1), PORT_BASE as u32),
+                Locator::udpv4(std::net::Ipv4Addr::new(DEFAULT_MULTICAST_IP[0], DEFAULT_MULTICAST_IP[1], DEFAULT_MULTICAST_IP[2], DEFAULT_MULTICAST_IP[3]), PORT_BASE as u32),
             ],
             lease_duration: Duration::from_secs(120),
             last_contact: std::time::Instant::now(),

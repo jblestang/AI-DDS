@@ -112,6 +112,15 @@ pub const SPDP_UNICAST_OFFSET: u16 = 10;
 /// Maximum UDP Payload Size
 pub const UDP_MAX_PAYLOAD_SIZE: usize = 65535;
 
+/// Default Multicast IP for SPDP
+pub const DEFAULT_MULTICAST_IP: [u8; 4] = [239, 255, 0, 1];
+
+/// Default Bind IP (All interfaces)
+pub const DEFAULT_BIND_IP: &str = "0.0.0.0";
+
+/// Localhost IP (for loopback networking fallback/tests)
+pub const LOCALHOST_IP: &str = "127.0.0.1";
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TypeSupport — Type-erased serialization bridge
 // ──────────────────────────────────────────────────────────────────────────────
@@ -902,7 +911,7 @@ impl DomainParticipant {
             let mut reassembly_buffers: HashMap<(Guid, SequenceNumber), FragmentBuffer> = HashMap::new();
 
             // Blocking socket for the receive loop
-            let socket = match std::net::UdpSocket::bind(format!("127.0.0.1:{port}")) {
+            let socket = match std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:{port}")) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("[DomainParticipant] recv bind failed on port {port}: {e}");
@@ -914,14 +923,14 @@ impl DomainParticipant {
             let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16 + SPDP_MULTICAST_OFFSET;
             let discovery_clone = discovery.clone();
             std::thread::spawn(move || {
-                let mcast_socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", multicast_port)) {
+                let mcast_socket = match std::net::UdpSocket::bind(format!("{}:{}", DEFAULT_BIND_IP, multicast_port)) {
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("[SPDP Receiver] bind failed on port {}: {}", multicast_port, e);
                         return;
                     }
                 };
-                let multicast_addr = Ipv4Addr::new(239, 255, 0, 1);
+                let multicast_addr = Ipv4Addr::new(DEFAULT_MULTICAST_IP[0], DEFAULT_MULTICAST_IP[1], DEFAULT_MULTICAST_IP[2], DEFAULT_MULTICAST_IP[3]);
                 let _ = mcast_socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED);
                 
                 let mut buf = [0u8; UDP_MAX_PAYLOAD_SIZE];
@@ -1226,7 +1235,7 @@ impl DomainParticipantFactory {
         let mut unicast_port = 0;
         while participant_idx < 100 {
             let port = PORT_BASE + DOMAIN_ID_GAIN * (domain_id as u16) + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * participant_idx;
-            if std::net::UdpSocket::bind(format!("127.0.0.1:{port}")).is_ok() {
+            if std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:{port}")).is_ok() {
                 unicast_port = port;
                 // Add participant index to prefix to keep it unique
                 prefix[8..12].copy_from_slice(&participant_idx.to_be_bytes());
