@@ -138,6 +138,22 @@ pub const FLAG_FINAL: u8 = 0x02;
 /// Submessage flag for Liveliness flag in Heartbeat.
 pub const FLAG_LIVELINESS: u8 = 0x04;
 
+/// Submessage flag indicating invalid time
+pub const FLAG_INVALID_TIME: u8 = 0x02;
+
+/// Fixed length of Data submessage header (octetsToInlineQos)
+pub const DATA_SUBMESSAGE_HEADER_LENGTH: u16 = 20;
+
+/// Fixed length of Heartbeat submessage header
+pub const HEARTBEAT_SUBMESSAGE_HEADER_LENGTH: u16 = 28;
+
+/// Nanoseconds in one second
+pub const NANOS_PER_SEC: u64 = 1_000_000_000;
+
+/// Maximum UDP Payload Size
+pub const UDP_MAX_PAYLOAD_SIZE: usize = 65535;
+
+
 /// Submessage flag for Multicast flag in InfoReply.
 pub const FLAG_MULTICAST: u8 = 0x02;
 
@@ -789,16 +805,16 @@ pub fn serialize_rtps_message(
                     if is_le {
                         buf.put_u16_le(8); // payload length
                         buf.put_u32_le(ts.seconds);
-                        let fraction = (u64::from(ts.nanoseconds) << 32) / 1_000_000_000;
+                        let fraction = (u64::from(ts.nanoseconds) << 32) / NANOS_PER_SEC;
                         buf.put_u32_le(fraction as u32);
                     } else {
                         buf.put_u16(8);
                         buf.put_u32(ts.seconds);
-                        let fraction = (u64::from(ts.nanoseconds) << 32) / 1_000_000_000;
+                        let fraction = (u64::from(ts.nanoseconds) << 32) / NANOS_PER_SEC;
                         buf.put_u32(fraction as u32);
                     }
                 } else {
-                    buf.put_u8(flags | 0x02); // bit 1 is 1 => no timestamp
+                    buf.put_u8(flags | FLAG_INVALID_TIME);
                     if is_le {
                         buf.put_u16_le(0);
                     } else {
@@ -812,7 +828,7 @@ pub fn serialize_rtps_message(
                 let mut qos_buf = BytesMut::new();
                 let mut data_flags = flags;
                 if let Some(ref qos) = data.inline_qos {
-                    data_flags |= 0x02;
+                    data_flags |= FLAG_INLINE_QOS;
                     let cdr_endian = match endian {
                         Endianness::LittleEndian => dds_cdr::Endianness::LittleEndian,
                         Endianness::BigEndian => dds_cdr::Endianness::BigEndian,
@@ -822,19 +838,19 @@ pub fn serialize_rtps_message(
                     qos_buf.put_slice(&serializer.into_bytes());
                 }
                 if !data.serialized_payload.is_empty() {
-                    data_flags |= 0x04;
+                    data_flags |= FLAG_DATA_PAYLOAD;
                 }
 
                 buf.put_u8(data_flags);
 
                 let payload_len = data.serialized_payload.len();
                 let qos_len = qos_buf.len();
-                let submessage_len = 20 + qos_len + payload_len; // 20 bytes data header + qos + payload
+                let submessage_len = DATA_SUBMESSAGE_HEADER_LENGTH as usize + qos_len + payload_len;
 
                 if is_le {
                     buf.put_u16_le(submessage_len as u16);
                     buf.put_u16_le(0); // extraFlags
-                    buf.put_u16_le(20); // octetsToSerializedPayload
+                    buf.put_u16_le(DATA_SUBMESSAGE_HEADER_LENGTH);
                     buf.put_slice(data.reader_id.as_bytes());
                     buf.put_slice(data.writer_id.as_bytes());
                     let (high, low) = data.writer_sn.to_high_low();
@@ -843,7 +859,7 @@ pub fn serialize_rtps_message(
                 } else {
                     buf.put_u16(submessage_len as u16);
                     buf.put_u16(0);
-                    buf.put_u16(20);
+                    buf.put_u16(DATA_SUBMESSAGE_HEADER_LENGTH);
                     buf.put_slice(data.reader_id.as_bytes());
                     buf.put_slice(data.writer_id.as_bytes());
                     let (high, low) = data.writer_sn.to_high_low();
@@ -1400,7 +1416,7 @@ impl UdpTransport {
     ///
     /// Returns Ok(None) if no data is currently available (non-blocking).
     pub fn recv(&self) -> RtpsResult<Option<(Vec<u8>, SocketAddr)>> {
-        let mut buf = [0_u8; 65535];
+        let mut buf = [0_u8; UDP_MAX_PAYLOAD_SIZE];
         match self.socket.recv_from(&mut buf) {
             Ok((len, addr)) => {
                 let bytes = buf[0..len].to_vec();
