@@ -107,6 +107,12 @@ pub const PID_DEFAULT_UNICAST_LOCATOR: u16 = 0x0031;
 /// PID for Default Multicast Locator
 pub const PID_DEFAULT_MULTICAST_LOCATOR: u16 = 0x0048;
 
+/// RTPS Base Port number (PB)
+pub const PORT_BASE: u16 = 7400;
+
+/// RTPS Domain ID Gain (DG)
+pub const DOMAIN_ID_GAIN: u16 = 250;
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Represents a remote `DataWriter` or `DataReader` discovered via SEDP.
@@ -188,11 +194,11 @@ impl DiscoveryManager {
         let local_prefix = self.local_prefix;
         std::thread::spawn(move || {
             // Multicast address: 239.255.0.1
-            let multicast_port = 7400 + 250 * domain_id;
+            let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16;
             let dest_locator = destination_locator.unwrap_or_else(|| {
                 dds_types::locator::Locator::udpv4(
                     std::net::Ipv4Addr::new(239, 255, 0, 1),
-                    multicast_port,
+                    multicast_port as u32,
                 )
             });
             loop {
@@ -706,10 +712,10 @@ mod tests {
         let participant = DiscoveredParticipant {
             guid_prefix: GuidPrefix::new([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
             unicast_locators: vec![
-                Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), 7410),
+                Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), PORT_BASE as u32 + 10),
             ],
             multicast_locators: vec![
-                Locator::udpv4(std::net::Ipv4Addr::new(239, 255, 0, 1), 7400),
+                Locator::udpv4(std::net::Ipv4Addr::new(239, 255, 0, 1), PORT_BASE as u32),
             ],
             lease_duration: Duration::from_secs(120),
             last_contact: std::time::Instant::now(),
@@ -721,9 +727,9 @@ mod tests {
         assert_eq!(decoded.guid_prefix, participant.guid_prefix);
         assert_eq!(decoded.lease_duration, participant.lease_duration);
         assert_eq!(decoded.unicast_locators.len(), 1);
-        assert_eq!(decoded.unicast_locators[0].port, 7410);
+        assert_eq!(decoded.unicast_locators[0].port, PORT_BASE as u32 + 10);
         assert_eq!(decoded.multicast_locators.len(), 1);
-        assert_eq!(decoded.multicast_locators[0].port, 7400);
+        assert_eq!(decoded.multicast_locators[0].port, PORT_BASE as u32);
     }
 
     #[test]
