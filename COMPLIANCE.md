@@ -53,7 +53,7 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 ## 3. Crate: `dds-rtps`
 * **Standard Status**: DDSI-RTPS v2.5 §8
 * **Implementation Level**: Phase 1 Core (Message Parser & State Management structures)
-* **Status**: **COMPLETE (Phase 1)**
+* **Status**: **PARTIAL (~55%)**
 
 ### Mapping Table
 
@@ -73,32 +73,37 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 
 ### Review & Missing Elements
 * **Fixed**: `RtpsEngine` async run loop added to process state transitions asynchronously.
+* **Missing**: Full reader state machines, `NACK_FRAG`/`HEARTBEAT_FRAG`, complete `InfoReply` locator parsing.
 
 ---
 
 ## 4. Crate: `dds-discovery`
 * **Standard Status**: DDSI-RTPS v2.5 §8.5
-* **Implementation Level**: Phase 1 Core (Discovery Manager, SPDP, SEDP matching)
-* **Status**: **COMPLETE (Phase 1)**
+* **Implementation Level**: Phase 1 Core + P0 matchmaking wiring
+* **Status**: **PARTIAL (~50%)**
 
 ### Mapping Table
 
 | Standard Section | Concept | Status | Notes |
 |---|---|---|---|
-| RTPS §8.5.1 | SPDP | `[x]` | Simple Participant Discovery manager |
-| RTPS §8.5.2 | SEDP | `[x]` | Simple Endpoint Discovery mapping and matching |
-| RTPS §8.5.1 | Participant Lease Timeouts | `[x]` | Active checking and clean up of dead participants |
-| RTPS §8.5 | Discovery Transmitters | `[x]` | Support for spawning background announcer threads |
+| RTPS §8.5.1 | SPDP | `[x]` | RTPS-wrapped SPDP announce/receive with real unicast/multicast locators |
+| RTPS §8.5.2 | SEDP | `[x]` | SEDP announce/receive, local endpoint registration, QoS in PL-CDR |
+| RTPS §8.5.1 | Participant Lease Timeouts | `[x]` | `check_lease_timeouts()` scheduled in receiver loop (1s interval) |
+| RTPS §8.5 | Discovery Transmitters | `[x]` | SPDP + SEDP background announcers (1s interval) with immediate first announce |
 
 ### Review & Missing Elements
-* **Fixed**: Added background announcer loop manager and mapping database for endpoint-to-topic lookups.
+* **Fixed**: SPDP announcer now sends RTPS-wrapped messages with participant locators.
+* **Fixed**: SEDP announcer re-announces registered local endpoints.
+* **Fixed**: `EntityKind`-based reader/writer classification in SEDP parsing.
+* **Partial**: Automatic matchmaking wires discovered remote readers to local writers with RxO checks.
+* **Missing**: Builtin DCPS topic publication, TypeLookup on wire, secure discovery, partition in SEDP.
 
 ---
 
 ## 5. Crate: `dds-core`
 * **Standard Status**: OMG DDS DCPS v1.4 §2.2
-* **Implementation Level**: Phase 1 Core (Type-erased entities and QoS compatibility checks)
-* **Status**: **COMPLETE (Phase 1)**
+* **Implementation Level**: Phase 1 Core + P0 discovery integration
+* **Status**: **PARTIAL (~45%)**
 
 ### Mapping Table
 
@@ -111,12 +116,15 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | DCPS §2.2.2.5.1 | `Subscriber` | `[x]` | Coordinates reader registration |
 | DCPS §2.2.2.5.3 | `DataReader` | `[x]` | Fully type-erased via `TypeSupport` downcast deserialization with automatic callback notification |
 | DCPS §2.2.2.1.2 | `Topic` | `[x]` | Pairs logical name with registered type |
-| DCPS §2.2.3 | QoS Compatibility (RxO checks) | `[x]` | Custom RxO validator function for Durability, Reliability, Deadline, Liveliness |
+| DCPS §2.2.3 | QoS Compatibility (RxO checks) | `[x]` | Applied at discovery matchmaking via `check_qos_compatibility()` |
 | DCPS §2.2.2.1.3 | `WaitSet` & `Conditions` | `[x]` | GuardCondition/StatusCondition triggers and WaitSet sleep loops |
-| DCPS §2.2.2.1.4 | `Listener` callbacks | `[x]` | DataReaderListener and DataWriterListener interface callback hooks |
+| DCPS §2.2.2.1.4 | `Listener` callbacks | `[~]` | `on_data_available` and `on_publication_matched` wired; others pending |
 
 ### Review & Missing Elements
-* **Fixed**: Implemented WaitSet, Conditions, and integrated callbacks trigger logic on push_sample.
+* **Fixed**: Topic/GUID-based DATA routing via discovery endpoint lookup (deserialize-guess fallback retained).
+* **Fixed**: Multi-participant same-process port allocation via process-wide participant index.
+* **Fixed**: Multicast SPDP receiver uses `SO_REUSEADDR` for co-hosted participants.
+* **Missing**: `take`/instance lifecycle, durability service, full listener surface, builtin topic readers.
 
 ---
 

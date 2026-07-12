@@ -411,6 +411,7 @@ pub struct Publisher {
     transport: Arc<UdpTransport>,
     /// Central writer registry for matched remote participant lookup.
     writer_registry: Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
+    hooks: Arc<ParticipantHooks>,
     pub security_crypto: Arc<dds_security::BuiltinCryptography>,
     pub local_crypto_handle: dds_security::ParticipantCryptoHandle,
     pub remote_crypto_handles: Arc<Mutex<HashMap<GuidPrefix, dds_security::ParticipantCryptoHandle>>>,
@@ -517,6 +518,7 @@ impl Publisher {
         });
 
         writers.insert(writer_guid, writer.clone());
+        self.hooks.register_writer(&writer);
         Ok(writer)
     }
 
@@ -584,6 +586,7 @@ pub struct Subscriber {
     readers: Mutex<HashMap<Guid, Arc<DataReader>>>,
     /// Shared registry: topic_name -> DataReader, used by receive loop.
     reader_registry: Arc<Mutex<HashMap<String, Arc<DataReader>>>>,
+    hooks: Arc<ParticipantHooks>,
     /// Unicast port this participant's readers listen on.
     unicast_port: u32,
     /// Local GUID prefix for building reader GUIDs.
@@ -659,6 +662,7 @@ impl Subscriber {
             .lock()
             .unwrap()
             .insert(topic.name().to_owned(), reader.clone());
+        self.hooks.register_reader(&reader);
         Ok(reader)
     }
 
@@ -666,6 +670,124 @@ impl Subscriber {
     #[must_use]
     pub const fn unicast_port(&self) -> u32 {
         self.unicast_port
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Participant coordination (discovery matchmaking)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Shared participant state used for discovery registration and matchmaking.
+struct ParticipantHooks {
+    discovery: Arc<Mutex<dds_discovery::DiscoveryManager>>,
+    publishers: Mutex<Vec<Arc<Publisher>>>,
+    domain_id: u32,
+    transport: Arc<UdpTransport>,
+    unicast_port: u32,
+    guid_prefix: GuidPrefix,
+}
+
+impl ParticipantHooks {
+    fn spdp_locators(&self) -> (Vec<Locator>, Vec<Locator>) {
+        let unicast = Locator::udpv4(
+            std::net::Ipv4Addr::LOCALHOST,
+            self.unicast_port,
+        );
+        let multicast = dds_discovery::metatraffic_multicast_locator(self.domain_id);
+        (vec![unicast], vec![multicast])
+    }
+
+    fn register_writer(&self, writer: &DataWriter) {
+        let endpoint = dds_discovery::DiscoveredEndpoint {
+            guid: writer.guid(),
+            topic_name: writer.topic().name().to_owned(),
+            type_name: writer.topic().type_name().to_owned(),
+            qos_writer: Some(writer.qos().clone()),
+            qos_reader: None,
+            type_info: None,
+        };
+        let mut disc = self.discovery.lock().unwrap();
+        disc.register_local_endpoint(endpoint.clone());
+        let _ = disc.announce_endpoint(&self.transport, self.domain_id, &endpoint);
+        drop(disc);
+        self.run_matchmaking();
+    }
+
+    fn register_reader(&self, reader: &DataReader) {
+        let endpoint = dds_discovery::DiscoveredEndpoint {
+            guid: reader.guid(),
+            topic_name: reader.topic().name().to_owned(),
+            type_name: reader.topic().type_name().to_owned(),
+            qos_writer: None,
+            qos_reader: Some(reader.qos().clone()),
+            type_info: None,
+        };
+        let mut disc = self.discovery.lock().unwrap();
+        disc.register_local_endpoint(endpoint.clone());
+        let _ = disc.announce_endpoint(&self.transport, self.domain_id, &endpoint);
+        drop(disc);
+        self.run_matchmaking();
+    }
+
+    fn run_matchmaking(&self) {
+        let disc = self.discovery.lock().unwrap();
+        let publishers = self.publishers.lock().unwrap();
+
+        for (remote_guid, remote_ep) in disc.discovered_endpoints() {
+            if remote_ep.guid.prefix == self.guid_prefix {
+                continue;
+            }
+            let Some(ref remote_reader_qos) = remote_ep.qos_reader else {
+                continue;
+            };
+            let Some(remote_participant) = disc.discovered_participants().get(&remote_ep.guid.prefix)
+            else {
+                continue;
+            };
+            let Some(reader_locator) = remote_participant.unicast_locators.first().copied() else {
+                continue;
+            };
+
+            for publisher in publishers.iter() {
+                let writers = publisher.writers.lock().unwrap();
+                for writer in writers.values() {
+                    if writer.topic().name() != remote_ep.topic_name
+                        || writer.topic().type_name() != remote_ep.type_name
+                        || !check_qos_compatibility(writer.qos(), remote_reader_qos)
+                    {
+                        continue;
+                    }
+                    let mut rtps_writer = writer.rtps_writer.lock().unwrap();
+                    let already_matched = rtps_writer
+                        .reader_proxies
+                        .iter()
+                        .any(|p| p.remote_reader_guid == *remote_guid);
+                    if already_matched {
+                        continue;
+                    }
+                    let proxy = dds_rtps::ReaderProxy {
+                        remote_reader_guid: *remote_guid,
+                        unicast_locator_list: vec![reader_locator],
+                        multicast_locator_list: vec![],
+                        next_unsent_sn: dds_types::guid::SequenceNumber(1),
+                    };
+                    rtps_writer.matched_reader_add(proxy);
+
+                    if let Some(listener) = writer.listener.lock().unwrap().as_ref() {
+                        listener.on_publication_matched(
+                            writer,
+                            dds_types::status::PublicationMatchedStatus {
+                                total_count: 1,
+                                total_count_change: 1,
+                                current_count: 1,
+                                current_count_change: 1,
+                                last_subscription_handle: dds_types::instance::InstanceHandle::NIL,
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -702,6 +824,7 @@ pub struct DomainParticipant {
     pub local_crypto_handle: dds_security::ParticipantCryptoHandle,
     pub remote_crypto_handles: Arc<Mutex<HashMap<GuidPrefix, dds_security::ParticipantCryptoHandle>>>,
     pub discovery: Arc<Mutex<dds_discovery::DiscoveryManager>>,
+    hooks: Arc<ParticipantHooks>,
     is_enabled: std::sync::atomic::AtomicBool,
 }
 
@@ -722,13 +845,39 @@ impl DomainParticipant {
 
         let discovery = Arc::new(Mutex::new(dds_discovery::DiscoveryManager::new(guid_prefix)));
 
+        let hooks = Arc::new(ParticipantHooks {
+            discovery: discovery.clone(),
+            publishers: Mutex::new(Vec::new()),
+            domain_id,
+            transport: transport.clone(),
+            unicast_port,
+            guid_prefix,
+        });
+
         if qos.entity_factory.autoenable_created_entities {
-            let disc = discovery.lock().unwrap();
-            disc.spawn_spdp_announcer(
-                std::time::Duration::from_secs(5),
+            let (unicast_locs, multicast_locs) = hooks.spdp_locators();
+            {
+                let disc = discovery.lock().unwrap();
+                let _ = disc.announce_local_participant(
+                    &transport,
+                    domain_id,
+                    &unicast_locs,
+                    &multicast_locs,
+                );
+                disc.spawn_spdp_announcer(
+                    std::time::Duration::from_secs(1),
+                    transport.clone(),
+                    domain_id,
+                    unicast_locs,
+                    multicast_locs,
+                    None,
+                );
+            }
+            dds_discovery::DiscoveryManager::spawn_sedp_announcer(
+                discovery.clone(),
+                std::time::Duration::from_secs(1),
                 transport.clone(),
                 domain_id,
-                None, // default multicast
             );
         }
 
@@ -750,6 +899,7 @@ impl DomainParticipant {
             local_crypto_handle,
             remote_crypto_handles: Arc::new(Mutex::new(HashMap::new())),
             discovery,
+            hooks,
             is_enabled: std::sync::atomic::AtomicBool::new(qos.entity_factory.autoenable_created_entities),
         }
     }
@@ -772,13 +922,27 @@ impl DomainParticipant {
     pub fn enable(&self) -> DdsResult<()> {
         let was_enabled = self.is_enabled.swap(true, std::sync::atomic::Ordering::SeqCst);
         if !was_enabled {
-            // Spawn SPDP announcer on enable
+            let (unicast_locs, multicast_locs) = self.hooks.spdp_locators();
             let discovery = self.discovery.lock().unwrap();
             discovery.spawn_spdp_announcer(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(1),
                 self.transport.clone(),
                 self.domain_id,
-                None, // default multicast
+                unicast_locs.clone(),
+                multicast_locs,
+                None,
+            );
+            let _ = discovery.announce_local_participant(
+                &self.transport,
+                self.domain_id,
+                &unicast_locs,
+                &[],
+            );
+            dds_discovery::DiscoveryManager::spawn_sedp_announcer(
+                self.discovery.clone(),
+                std::time::Duration::from_secs(1),
+                self.transport.clone(),
+                self.domain_id,
             );
         }
         Ok(())
@@ -795,7 +959,7 @@ impl DomainParticipant {
     }
 
     /// Deletes a Publisher created by this DomainParticipant.
-    pub fn delete_publisher(&self, publisher: &Publisher) -> DdsResult<()> {
+    pub fn delete_publisher(&self, publisher: &Arc<Publisher>) -> DdsResult<()> {
         let writers = publisher.writers.lock().unwrap();
         let mut reg = self.writer_registry.lock().unwrap();
         for (guid, _) in writers.iter() {
@@ -848,22 +1012,25 @@ impl DomainParticipant {
     }
 
     /// Create a Publisher backed by the participant's shared UDP transport.
-    pub fn create_publisher(&self, qos: PublisherQos) -> DdsResult<Publisher> {
+    pub fn create_publisher(&self, qos: PublisherQos) -> DdsResult<Arc<Publisher>> {
         let pub_guid = Guid::new(
             self.guid_prefix,
             EntityId::new([0, 0, 1, EntityKind::BuiltinParticipant as u8]),
         );
-        Ok(Publisher {
+        let publisher = Arc::new(Publisher {
             guid: pub_guid,
             qos,
             writers: Mutex::new(HashMap::new()),
             transport: self.transport.clone(),
             writer_registry: self.writer_registry.clone(),
+            hooks: self.hooks.clone(),
             security_crypto: self.security_crypto.clone(),
             local_crypto_handle: self.local_crypto_handle,
             remote_crypto_handles: self.remote_crypto_handles.clone(),
             is_enabled: std::sync::atomic::AtomicBool::new(self.qos.entity_factory.autoenable_created_entities),
-        })
+        });
+        self.hooks.publishers.lock().unwrap().push(publisher.clone());
+        Ok(publisher)
     }
 
     /// Create a Subscriber. DataReaders created from it are registered in the
@@ -878,10 +1045,16 @@ impl DomainParticipant {
             qos,
             readers: Mutex::new(HashMap::new()),
             reader_registry: self.reader_registry.clone(),
+            hooks: self.hooks.clone(),
             unicast_port: self.unicast_port,
             guid_prefix: self.guid_prefix,
             is_enabled: std::sync::atomic::AtomicBool::new(self.qos.entity_factory.autoenable_created_entities),
         })
+    }
+
+    /// Run discovery matchmaking to wire discovered remote readers to local writers.
+    pub fn run_matchmaking(&self) {
+        self.hooks.run_matchmaking();
     }
 
     #[must_use]
@@ -896,6 +1069,7 @@ impl DomainParticipant {
         let remote_crypto_handles = self.remote_crypto_handles.clone();
         let domain_id = self.domain_id;
         let discovery = self.discovery.clone();
+        let hooks = self.hooks.clone();
         println!("[spawn_receiver_loop] Spawning receiver loop for port {}", port);
         
         struct FragmentBuffer {
@@ -909,6 +1083,7 @@ impl DomainParticipant {
         let (_shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             let mut reassembly_buffers: HashMap<(Guid, SequenceNumber), FragmentBuffer> = HashMap::new();
+            let mut last_lease_check = std::time::Instant::now();
 
             // Blocking socket for the receive loop
             let socket = match std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:{port}")) {
@@ -922,8 +1097,9 @@ impl DomainParticipant {
             // Start an additional thread for the SPDP Multicast Port
             let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16 + SPDP_MULTICAST_OFFSET;
             let discovery_clone = discovery.clone();
+            let hooks_clone = hooks.clone();
             std::thread::spawn(move || {
-                let mcast_socket = match std::net::UdpSocket::bind(format!("{}:{}", DEFAULT_BIND_IP, multicast_port)) {
+                let mcast_socket = match bind_multicast_socket(multicast_port) {
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("[SPDP Receiver] bind failed on port {}: {}", multicast_port, e);
@@ -943,6 +1119,7 @@ impl DomainParticipant {
                                     if d.writer_id == dds_types::guid::EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER {
                                         if let Some(participant) = dds_discovery::parse_spdp_packet(&d.serialized_payload) {
                                             discovery_clone.lock().unwrap().process_spdp_packet(participant);
+                                            hooks_clone.run_matchmaking();
                                         }
                                     }
                                 }
@@ -955,6 +1132,13 @@ impl DomainParticipant {
             let mut buf = vec![0u8; UDP_MAX_PAYLOAD_SIZE];
             loop {
                 if shutdown_rx.try_recv().is_ok() { break; }
+                if last_lease_check.elapsed() >= std::time::Duration::from_secs(1) {
+                    {
+                        let mut disc = discovery.lock().unwrap();
+                        disc.check_lease_timeouts();
+                    }
+                    last_lease_check = std::time::Instant::now();
+                }
                 let (len, from) = match socket.recv_from(&mut buf) {
                     Ok(r) => r,
                     Err(e) => {
@@ -1022,23 +1206,47 @@ impl DomainParticipant {
                         if writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER || writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER {
                             if let Some(endpoint) = dds_discovery::parse_sedp_packet(&final_payload) {
                                 discovery.lock().unwrap().process_sedp_endpoint(endpoint);
+                                hooks.run_matchmaking();
                             }
                             continue;
                         }
 
+                        if dds_discovery::DiscoveryManager::is_builtin_endpoint(&writer_id) {
+                            continue;
+                        }
+
+                        let writer_guid = Guid::new(header.guid_prefix, writer_id);
+                        let topic_name = discovery
+                            .lock()
+                            .unwrap()
+                            .topic_for_endpoint(&writer_guid)
+                            .map(str::to_owned);
+
                         let mut delivered = false;
-                        for (guid, reader) in reg.iter() {
-                            let res = reader.type_support.deserialize(&final_payload);
-                            println!("[spawn_receiver_loop] Trying reader GUID: {:?}, Topic: {}, deserialize result: {:?}", guid, reader.topic().name(), res.is_ok());
-                            if res.is_ok() {
-                                reader.push_sample_sn(
-                                    dds_types::instance::InstanceHandle::NIL,
-                                    final_payload.clone(),
-                                    d.writer_sn,
-                                );
-                                println!("[spawn_receiver_loop] Successfully pushed sample to reader");
-                                delivered = true;
-                                break;
+                        if let Some(topic) = topic_name {
+                            if let Some(reader) = reg.get(&topic) {
+                                if reader.type_support.deserialize(&final_payload).is_ok() {
+                                    reader.push_sample_sn(
+                                        dds_types::instance::InstanceHandle::NIL,
+                                        final_payload.clone(),
+                                        d.writer_sn,
+                                    );
+                                    delivered = true;
+                                }
+                            }
+                        }
+                        if !delivered {
+                            for (_guid, reader) in reg.iter() {
+                                let res = reader.type_support.deserialize(&final_payload);
+                                if res.is_ok() {
+                                    reader.push_sample_sn(
+                                        dds_types::instance::InstanceHandle::NIL,
+                                        final_payload.clone(),
+                                        d.writer_sn,
+                                    );
+                                    delivered = true;
+                                    break;
+                                }
                             }
                         }
                         if !delivered {
@@ -1117,17 +1325,38 @@ impl DomainParticipant {
                                 }
                             }
 
+                            let writer_guid = Guid::new(header.guid_prefix, df.writer_id);
+                            let topic_name = discovery
+                                .lock()
+                                .unwrap()
+                                .topic_for_endpoint(&writer_guid)
+                                .map(str::to_owned);
+
                             let mut delivered = false;
-                            for (_guid, reader) in reg.iter() {
-                                let res = reader.type_support.deserialize(&final_payload);
-                                if res.is_ok() {
-                                    reader.push_sample_sn(
-                                        dds_types::instance::InstanceHandle::NIL,
-                                        final_payload.clone(),
-                                        df.writer_sn,
-                                    );
-                                    delivered = true;
-                                    break;
+                            if let Some(topic) = topic_name {
+                                if let Some(reader) = reg.get(&topic) {
+                                    if reader.type_support.deserialize(&final_payload).is_ok() {
+                                        reader.push_sample_sn(
+                                            dds_types::instance::InstanceHandle::NIL,
+                                            final_payload.clone(),
+                                            df.writer_sn,
+                                        );
+                                        delivered = true;
+                                    }
+                                }
+                            }
+                            if !delivered {
+                                for (_guid, reader) in reg.iter() {
+                                    let res = reader.type_support.deserialize(&final_payload);
+                                    if res.is_ok() {
+                                        reader.push_sample_sn(
+                                            dds_types::instance::InstanceHandle::NIL,
+                                            final_payload.clone(),
+                                            df.writer_sn,
+                                        );
+                                        delivered = true;
+                                        break;
+                                    }
                                 }
                             }
                             if !delivered {
@@ -1211,6 +1440,15 @@ impl DomainParticipant {
 // DomainParticipantFactory (DCPS §2.2.2.2.2)
 // ──────────────────────────────────────────────────────────────────────────────
 
+fn bind_multicast_socket(port: u16) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    let addr = std::net::SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+    socket.bind(&addr.into())?;
+    Ok(socket.into())
+}
+
 /// Factory for creating `DomainParticipants`.
 pub struct DomainParticipantFactory;
 
@@ -1230,14 +1468,19 @@ impl DomainParticipantFactory {
         prefix[0..4].copy_from_slice(&domain_id.to_be_bytes());
         prefix[4..8].copy_from_slice(&std::process::id().to_be_bytes());
 
-        // Probe for an available unicast port
-        let mut participant_idx: u32 = 0;
+        // Probe for an available unicast port using a process-wide participant index.
+        static NEXT_PARTICIPANT_IDX: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(0);
+        let start_idx = NEXT_PARTICIPANT_IDX.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut participant_idx = start_idx;
         let mut unicast_port = 0;
-        while participant_idx < 100 {
-            let port = PORT_BASE + DOMAIN_ID_GAIN * (domain_id as u16) + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * (participant_idx as u16);
+        while participant_idx < start_idx + 100 {
+            let port = PORT_BASE
+                + DOMAIN_ID_GAIN * (domain_id as u16)
+                + SPDP_UNICAST_OFFSET
+                + PARTICIPANT_ID_GAIN * (participant_idx as u16);
             if std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:{port}")).is_ok() {
                 unicast_port = port;
-                // Add participant index to prefix to keep it unique
                 prefix[8..12].copy_from_slice(&participant_idx.to_be_bytes());
                 break;
             }

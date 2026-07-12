@@ -65,12 +65,12 @@
     reason = "DDS Discovery implementation requires standard library conversions, standard returns, and discovery state structures."
 )]
 
-use dds_types::guid::GuidPrefix;
+use dds_types::guid::{EntityId, EntityKind, Guid, GuidPrefix};
 use dds_types::locator::Locator;
 use dds_types::time::Duration;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use dds_types::guid::Guid;
 use dds_types::qos::{DataReaderQos, DataWriterQos};
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -119,8 +119,44 @@ pub const DEFAULT_MULTICAST_IP: [u8; 4] = [239, 255, 0, 1];
 /// Localhost IP (for loopback networking in tests)
 pub const LOCALHOST_IP: &str = "127.0.0.1";
 
-/// Entity kind bit mask used to distinguish readers from writers in SEDP parsing
-pub const ENTITY_KIND_READER_WRITER_BIT: u8 = 0x02;
+/// Returns the standard SPDP/SEDP metatraffic multicast locator for a domain.
+#[must_use]
+pub fn metatraffic_multicast_locator(domain_id: u32) -> Locator {
+    let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16;
+    Locator::udpv4(
+        std::net::Ipv4Addr::new(
+            DEFAULT_MULTICAST_IP[0],
+            DEFAULT_MULTICAST_IP[1],
+            DEFAULT_MULTICAST_IP[2],
+            DEFAULT_MULTICAST_IP[3],
+        ),
+        multicast_port as u32,
+    )
+}
+
+/// Classify an endpoint entity as a DataReader.
+#[must_use]
+pub const fn is_reader_entity(entity_id: &EntityId) -> bool {
+    matches!(
+        entity_id.kind(),
+        EntityKind::ReaderNoKey
+            | EntityKind::ReaderWithKey
+            | EntityKind::BuiltinReaderNoKey
+            | EntityKind::BuiltinReaderWithKey
+    )
+}
+
+/// Classify an endpoint entity as a DataWriter.
+#[must_use]
+pub const fn is_writer_entity(entity_id: &EntityId) -> bool {
+    matches!(
+        entity_id.kind(),
+        EntityKind::WriterNoKey
+            | EntityKind::WriterWithKey
+            | EntityKind::BuiltinWriterNoKey
+            | EntityKind::BuiltinWriterWithKey
+    )
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -151,6 +187,8 @@ pub struct DiscoveryManager {
     local_prefix: GuidPrefix,
     discovered_participants: HashMap<GuidPrefix, DiscoveredParticipant>,
     discovered_endpoints: HashMap<Guid, DiscoveredEndpoint>,
+    /// Locally created endpoints announced via SEDP.
+    local_endpoints: HashMap<Guid, DiscoveredEndpoint>,
     // Mapping built-in or user-defined topics to active endpoints
     builtin_mappings: HashMap<String, Vec<Guid>>,
 }
@@ -162,8 +200,33 @@ impl DiscoveryManager {
             local_prefix,
             discovered_participants: HashMap::new(),
             discovered_endpoints: HashMap::new(),
+            local_endpoints: HashMap::new(),
             builtin_mappings: HashMap::new(),
         }
+    }
+
+    /// Register a local DataWriter or DataReader for SEDP announcement.
+    pub fn register_local_endpoint(&mut self, endpoint: DiscoveredEndpoint) {
+        self.builtin_mappings
+            .entry(endpoint.topic_name.clone())
+            .or_default()
+            .push(endpoint.guid);
+        self.local_endpoints.insert(endpoint.guid, endpoint);
+    }
+
+    /// Return locally registered endpoints.
+    #[must_use]
+    pub const fn local_endpoints(&self) -> &HashMap<Guid, DiscoveredEndpoint> {
+        &self.local_endpoints
+    }
+
+    /// Look up the topic name for a discovered or local endpoint GUID.
+    #[must_use]
+    pub fn topic_for_endpoint(&self, guid: &Guid) -> Option<&str> {
+        self.discovered_endpoints
+            .get(guid)
+            .or_else(|| self.local_endpoints.get(guid))
+            .map(|e| e.topic_name.as_str())
     }
 
     /// Process a newly received SPDP discovery packet.
@@ -177,52 +240,172 @@ impl DiscoveryManager {
 
     /// Process a newly received SEDP endpoint discovery packet.
     pub fn process_sedp_endpoint(&mut self, endpoint: DiscoveredEndpoint) {
-        // Only accept endpoints belonging to known participants or our own
-        if endpoint.guid.prefix == self.local_prefix
-            || self
-                .discovered_participants
-                .contains_key(&endpoint.guid.prefix)
-        {
-            self.discovered_endpoints
-                .insert(endpoint.guid, endpoint.clone());
-            self.builtin_mappings
-                .entry(endpoint.topic_name.clone())
-                .or_default()
-                .push(endpoint.guid);
+        if endpoint.guid.prefix == self.local_prefix {
+            return;
         }
+        self.discovered_endpoints
+            .insert(endpoint.guid, endpoint.clone());
+        self.builtin_mappings
+            .entry(endpoint.topic_name.clone())
+            .or_default()
+            .push(endpoint.guid);
     }
 
-    /// Spawn SPDP announcer background thread
+    /// Announce the local participant via SPDP on metatraffic multicast.
+    pub fn announce_local_participant(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        unicast_locators: &[Locator],
+        multicast_locators: &[Locator],
+    ) -> Result<(), String> {
+        let info = DiscoveredParticipant {
+            guid_prefix: self.local_prefix,
+            unicast_locators: unicast_locators.to_vec(),
+            multicast_locators: multicast_locators.to_vec(),
+            lease_duration: Duration::from_secs(100),
+            last_contact: std::time::Instant::now(),
+        };
+        let payload = spdp_to_plcdr(&info).map_err(|e| format!("{e:?}"))?;
+        let data_sub = dds_rtps::Data {
+            reader_id: EntityId::UNKNOWN,
+            writer_id: EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER,
+            writer_sn: dds_types::guid::SequenceNumber(1),
+            inline_qos: None,
+            serialized_payload: bytes::Bytes::from(payload),
+        };
+        let header = dds_rtps::RtpsHeader::new(self.local_prefix);
+        let msg = dds_rtps::serialize_rtps_message(
+            &header,
+            &[dds_rtps::Submessage::Data(data_sub)],
+            dds_rtps::Endianness::LittleEndian,
+        );
+        transport
+            .send(&msg, &metatraffic_multicast_locator(domain_id))
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Spawn SPDP announcer background thread.
     pub fn spawn_spdp_announcer(
         &self,
         interval: core::time::Duration,
-        transport: std::sync::Arc<dds_rtps::UdpTransport>,
+        transport: Arc<dds_rtps::UdpTransport>,
         domain_id: u32,
-        destination_locator: Option<dds_types::locator::Locator>,
+        unicast_locators: Vec<Locator>,
+        multicast_locators: Vec<Locator>,
+        destination_locator: Option<Locator>,
     ) -> std::thread::JoinHandle<()> {
         let local_prefix = self.local_prefix;
         std::thread::spawn(move || {
-            // Multicast address: 239.255.0.1
-            let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16;
-            let dest_locator = destination_locator.unwrap_or_else(|| {
-                dds_types::locator::Locator::udpv4(
-                    std::net::Ipv4Addr::new(DEFAULT_MULTICAST_IP[0], DEFAULT_MULTICAST_IP[1], DEFAULT_MULTICAST_IP[2], DEFAULT_MULTICAST_IP[3]),
-                    multicast_port as u32,
-                )
-            });
+            let dest_locator =
+                destination_locator.unwrap_or_else(|| metatraffic_multicast_locator(domain_id));
             loop {
                 let info = DiscoveredParticipant {
                     guid_prefix: local_prefix,
-                    unicast_locators: vec![],
-                    multicast_locators: vec![],
+                    unicast_locators: unicast_locators.clone(),
+                    multicast_locators: multicast_locators.clone(),
                     lease_duration: Duration::from_secs(100),
                     last_contact: std::time::Instant::now(),
                 };
-                if let Ok(bytes) = spdp_to_plcdr(&info) {
-                    let _ = transport.send(&bytes, &dest_locator);
+                if let Ok(payload) = spdp_to_plcdr(&info) {
+                    let data_sub = dds_rtps::Data {
+                        reader_id: EntityId::UNKNOWN,
+                        writer_id: EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER,
+                        writer_sn: dds_types::guid::SequenceNumber(1),
+                        inline_qos: None,
+                        serialized_payload: bytes::Bytes::from(payload),
+                    };
+                    let header = dds_rtps::RtpsHeader::new(local_prefix);
+                    let msg = dds_rtps::serialize_rtps_message(
+                        &header,
+                        &[dds_rtps::Submessage::Data(data_sub)],
+                        dds_rtps::Endianness::LittleEndian,
+                    );
+                    let _ = transport.send(&msg, &dest_locator);
                 }
                 std::thread::sleep(interval);
             }
+        })
+    }
+
+    /// Announce a single local endpoint via SEDP on the metatraffic multicast channel.
+    pub fn announce_endpoint(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        endpoint: &DiscoveredEndpoint,
+    ) -> Result<(), String> {
+        use bytes::Bytes;
+        use dds_rtps::{serialize_rtps_message, Data, Endianness, RtpsHeader, Submessage};
+
+        let payload = sedp_to_plcdr(endpoint).map_err(|e| format!("{e:?}"))?;
+        let writer_id = if endpoint.qos_writer.is_some() {
+            EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
+        } else {
+            EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+        };
+        let data_sub = Data {
+            reader_id: EntityId::UNKNOWN,
+            writer_id,
+            writer_sn: dds_types::guid::SequenceNumber(1),
+            inline_qos: None,
+            serialized_payload: Bytes::from(payload),
+        };
+        let header = RtpsHeader::new(self.local_prefix);
+        let msg = serialize_rtps_message(
+            &header,
+            &[Submessage::Data(data_sub)],
+            Endianness::LittleEndian,
+        );
+        let dest = metatraffic_multicast_locator(domain_id);
+        transport
+            .send(&msg, &dest)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Spawn a background thread that periodically re-announces all local endpoints via SEDP.
+    pub fn spawn_sedp_announcer(
+        discovery: Arc<std::sync::Mutex<Self>>,
+        interval: core::time::Duration,
+        transport: Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || loop {
+            let endpoints: Vec<DiscoveredEndpoint> = {
+                let disc = discovery.lock().unwrap();
+                disc.local_endpoints.values().cloned().collect()
+            };
+            let local_prefix = {
+                let disc = discovery.lock().unwrap();
+                disc.local_prefix
+            };
+            for endpoint in &endpoints {
+                let payload = match sedp_to_plcdr(endpoint) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let writer_id = if endpoint.qos_writer.is_some() {
+                    EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
+                } else {
+                    EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+                };
+                let data_sub = dds_rtps::Data {
+                    reader_id: EntityId::UNKNOWN,
+                    writer_id,
+                    writer_sn: dds_types::guid::SequenceNumber(1),
+                    inline_qos: None,
+                    serialized_payload: bytes::Bytes::from(payload),
+                };
+                let header = dds_rtps::RtpsHeader::new(local_prefix);
+                let msg = dds_rtps::serialize_rtps_message(
+                    &header,
+                    &[dds_rtps::Submessage::Data(data_sub)],
+                    dds_rtps::Endianness::LittleEndian,
+                );
+                let dest = metatraffic_multicast_locator(domain_id);
+                let _ = transport.send(&msg, &dest);
+            }
+            std::thread::sleep(interval);
         })
     }
 
@@ -444,6 +627,48 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
         value: guid_bytes,
     });
 
+    if let Some(ref qos) = endpoint.qos_writer {
+        let durability_val = match qos.durability.kind {
+            dds_types::qos::DurabilityKind::Volatile => 0u32,
+            dds_types::qos::DurabilityKind::TransientLocal => 1,
+            dds_types::qos::DurabilityKind::Transient => 2,
+            dds_types::qos::DurabilityKind::Persistent => 3,
+        };
+        plist.parameters.push(Parameter {
+            parameter_id: ParameterId(PID_DURABILITY),
+            value: durability_val.to_le_bytes().to_vec(),
+        });
+        let reliability_val = match qos.reliability.kind {
+            dds_types::qos::ReliabilityKind::BestEffort => 1u32,
+            dds_types::qos::ReliabilityKind::Reliable => 2,
+        };
+        plist.parameters.push(Parameter {
+            parameter_id: ParameterId(PID_RELIABILITY),
+            value: reliability_val.to_le_bytes().to_vec(),
+        });
+    }
+
+    if let Some(ref qos) = endpoint.qos_reader {
+        let durability_val = match qos.durability.kind {
+            dds_types::qos::DurabilityKind::Volatile => 0u32,
+            dds_types::qos::DurabilityKind::TransientLocal => 1,
+            dds_types::qos::DurabilityKind::Transient => 2,
+            dds_types::qos::DurabilityKind::Persistent => 3,
+        };
+        plist.parameters.push(Parameter {
+            parameter_id: ParameterId(PID_DURABILITY),
+            value: durability_val.to_le_bytes().to_vec(),
+        });
+        let reliability_val = match qos.reliability.kind {
+            dds_types::qos::ReliabilityKind::BestEffort => 1u32,
+            dds_types::qos::ReliabilityKind::Reliable => 2,
+        };
+        plist.parameters.push(Parameter {
+            parameter_id: ParameterId(PID_RELIABILITY),
+            value: reliability_val.to_le_bytes().to_vec(),
+        });
+    }
+
     serialize_to_bytes(&plist, Endianness::LittleEndian).map(|b| b.to_vec())
 }
 
@@ -475,13 +700,11 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                         dds_types::guid::EntityId::new(entity_bytes),
                     );
                     
-                    if guid.entity_id.0[3] & ENTITY_KIND_READER_WRITER_BIT != 0 {
-                        // Reader
+                    if is_reader_entity(&guid.entity_id) {
                         let mut qr = dds_types::qos::DataReaderQos::default();
                         qr.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
                         qos_reader = Some(qr);
-                    } else {
-                        // Writer
+                    } else if is_writer_entity(&guid.entity_id) {
                         let mut qw = dds_types::qos::DataWriterQos::default();
                         qw.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
                         qos_writer = Some(qw);
@@ -565,7 +788,19 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn test_discovery_manager() {
+    fn test_entity_kind_classification() {
+        use dds_types::guid::{EntityId, EntityKind};
+
+        let reader = EntityId::new([0, 0, 1, EntityKind::ReaderWithKey as u8]);
+        let writer = EntityId::new([0, 0, 1, EntityKind::WriterWithKey as u8]);
+        assert!(is_reader_entity(&reader));
+        assert!(!is_writer_entity(&reader));
+        assert!(is_writer_entity(&writer));
+        assert!(!is_reader_entity(&writer));
+    }
+
+    #[test]
+    fn test_local_endpoint_registration() {
         let local_prefix = GuidPrefix::new([1; 12]);
         let mut manager = DiscoveryManager::new(local_prefix);
 
@@ -700,6 +935,8 @@ mod tests {
             std::time::Duration::from_millis(10),
             transport,
             domain_id,
+            vec![dest_locator],
+            vec![],
             Some(dest_locator),
         );
 
@@ -708,9 +945,15 @@ mod tests {
         let mut buf = [0u8; 1024];
         let mut received = false;
         if let Ok((len, _)) = receiver.recv_from(&mut buf) {
-            if let Some(parsed) = parse_spdp_packet(&buf[..len]) {
-                assert_eq!(parsed.guid_prefix, local_prefix);
-                received = true;
+            if let Ok((_header, submessages)) = dds_rtps::parse_rtps_message(&buf[..len]) {
+                for sub in submessages {
+                    if let dds_rtps::Submessage::Data(d) = sub {
+                        if let Some(parsed) = parse_spdp_packet(&d.serialized_payload) {
+                            assert_eq!(parsed.guid_prefix, local_prefix);
+                            received = true;
+                        }
+                    }
+                }
             }
         }
         assert!(received, "Should have received SPDP announcement over UDP");
