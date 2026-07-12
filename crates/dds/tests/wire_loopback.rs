@@ -95,7 +95,7 @@ fn test_wire_loopback() {
     // 6. Match writer and reader manually to skip discovery for loopback test
     let reader_port = subscriber.unicast_port();
     let reader_locator = dds::types::locator::Locator::udpv4(
-        std::net::Ipv4Addr::new(127, 0, 0, 1),
+        std::net::Ipv4Addr::LOCALHOST,
         reader_port,
     );
     let reader_guid = reader.guid();
@@ -167,7 +167,7 @@ fn test_wire_loopback_fragmentation() {
     // 6. Match writer and reader manually
     let reader_port = subscriber.unicast_port();
     let reader_locator = dds::types::locator::Locator::udpv4(
-        std::net::Ipv4Addr::new(127, 0, 0, 1),
+        std::net::Ipv4Addr::LOCALHOST,
         reader_port,
     );
     let reader_guid = reader.guid();

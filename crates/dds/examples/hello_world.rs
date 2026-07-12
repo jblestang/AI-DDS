@@ -58,7 +58,7 @@
     clippy::unseparated_literal_suffix,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
-use dds::core::{DomainParticipantFactory, TypeSupport};
+use dds::core::{DomainParticipantFactory, TypeSupport, LOCALHOST_IP};
 use dds::types::qos::{
     DataReaderQos, DataWriterQos, DomainParticipantQos, PublisherQos, SubscriberQos, TopicQos,
 };
@@ -67,6 +67,11 @@ use std::any::Any;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::Duration;
+
+const SUBSCRIBER_PORT: u16 = 7925;
+const RECV_TIMEOUT_SECS: u64 = 30;
+const RECV_BUFFER_SIZE: usize = 1024;
+const SAMPLE_ID: u32 = 42;
 
 // Define a structured HelloWorld payload
 struct HelloWorld {
@@ -131,7 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[Publisher] Created Participant, Topic, Publisher, and DataWriter.");
 
             let sample = HelloWorld {
-                id: 42,
+                id: SAMPLE_ID,
                 msg: "Hello from Antigravity DDS!".to_string(),
             };
             writer.write(&sample)?;
@@ -139,9 +144,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Serialize payload and send it over UDP to Subscriber process.
             let serialized = ts.serialize(&sample)?;
-            let socket = UdpSocket::bind("127.0.0.1:0")?;
-            socket.send_to(&serialized, "127.0.0.1:7925")?;
-            println!("[Publisher] Sent serialized sample via UDP to port 7925.");
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:0"))?;
+            socket.send_to(&serialized, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+            println!("[Publisher] Sent serialized sample via UDP to port {SUBSCRIBER_PORT}.");
             println!("==============================================================");
         }
         Some("sub") => {
@@ -160,11 +165,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[Subscriber] Created Participant, Topic, Subscriber, and DataReader.");
 
             // Bind to receive packet from Publisher process.
-            let socket = UdpSocket::bind("127.0.0.1:7925")?;
-            socket.set_read_timeout(Some(Duration::from_secs(30)))?;
-            println!("[Subscriber] Listening on UDP port 7925...");
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+            socket.set_read_timeout(Some(Duration::from_secs(RECV_TIMEOUT_SECS)))?;
+            println!("[Subscriber] Listening on UDP port {SUBSCRIBER_PORT}...");
 
-            let mut buf = [0_u8; 1024];
+            let mut buf = [0_u8; RECV_BUFFER_SIZE];
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Subscriber] Received sample packet over UDP (len = {}).", len);
 
@@ -176,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "[Subscriber] Successfully received & decoded sample! id={}, msg='{}'",
                     received.id, received.msg
                 );
-                assert_eq!(received.id, 42);
+                assert_eq!(received.id, SAMPLE_ID);
                 assert_eq!(received.msg, "Hello from Antigravity DDS!");
             } else {
                 panic!("Received sample is not a HelloWorld struct!");
@@ -216,7 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 6. Write a sample
             let sample = HelloWorld {
-                id: 42,
+                id: SAMPLE_ID,
                 msg: "Hello from Antigravity DDS!".to_string(),
             };
             writer.write(&sample)?;
@@ -233,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "Successfully received sample! id={}, msg='{}'",
                     received.id, received.msg
                 );
-                assert_eq!(received.id, 42);
+                assert_eq!(received.id, SAMPLE_ID);
                 assert_eq!(received.msg, "Hello from Antigravity DDS!");
             } else {
                 panic!("Received sample is not a HelloWorld struct!");

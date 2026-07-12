@@ -60,7 +60,7 @@
     clippy::missing_asserts_for_indexing,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
-use dds::core::{DomainParticipantFactory, TypeSupport};
+use dds::core::{DomainParticipantFactory, TypeSupport, LOCALHOST_IP};
 use dds::types::qos::{
     DataReaderQos, DataWriterQos, DomainParticipantQos, History, HistoryKind, PublisherQos,
     SubscriberQos, TopicQos,
@@ -70,6 +70,11 @@ use std::any::Any;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::Duration;
+
+const SUBSCRIBER_PORT: u16 = 7927;
+const RECV_TIMEOUT_SECS: u64 = 30;
+const RECV_BUFFER_SIZE: usize = 1024;
+const SAMPLE_COUNT: u32 = 4;
 
 // 1/3 Comment-to-code ratio.
 // Define a sample message type representing history data.
@@ -140,9 +145,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let publisher = participant.create_publisher(PublisherQos::default())?;
             let writer = publisher.create_datawriter(&topic, writer_qos, ts.clone())?;
 
-            let socket = UdpSocket::bind("127.0.0.1:0")?;
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:0"))?;
 
-            for i in 1..=4 {
+            for i in 1..=SAMPLE_COUNT {
                 let sample = HistorySample {
                     seq: i,
                     payload: format!("Sample data {i}"),
@@ -151,9 +156,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("[Writer] Dispatched sample sequence: {}", i);
 
                 let serialized = ts.serialize(&sample)?;
-                socket.send_to(&serialized, "127.0.0.1:7927")?;
+                socket.send_to(&serialized, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
             }
-            println!("[Writer] Sent 4 serialized samples via UDP to port 7927.");
+            println!("[Writer] Sent {SAMPLE_COUNT} serialized samples via UDP to port {SUBSCRIBER_PORT}.");
             println!("==============================================================");
         }
         Some("sub") => {
@@ -178,16 +183,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;
             let reader = subscriber.create_datareader(&topic, reader_qos, ts)?;
 
-            let socket = UdpSocket::bind("127.0.0.1:7927")?;
-            socket.set_read_timeout(Some(Duration::from_secs(30)))?;
-            println!("[Reader] Listening on UDP port 7927...");
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+            socket.set_read_timeout(Some(Duration::from_secs(RECV_TIMEOUT_SECS)))?;
+            println!("[Reader] Listening on UDP port {SUBSCRIBER_PORT}...");
 
-            let mut buf = [0u8; 1024];
-            for _ in 1..=4 {
+            let mut buf = [0u8; RECV_BUFFER_SIZE];
+            for _ in 1..=SAMPLE_COUNT {
                 let (len, _) = socket.recv_from(&mut buf)?;
                 reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec());
             }
-            println!("[Reader] Received 4 sample packets over UDP.");
+            println!("[Reader] Received {SAMPLE_COUNT} sample packets over UDP.");
 
             println!("\n[Reader] Reading received historical samples:");
             let mut count = 0;
@@ -198,7 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             println!("[Reader] Total read: {} samples.", count);
-            assert_eq!(count, 4);
+            assert_eq!(count, SAMPLE_COUNT as usize);
             println!("==============================================================");
         }
         None => {
@@ -241,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let reader = subscriber.create_datareader(&topic, reader_qos, ts.clone())?;
 
             // 5. Write multiple samples to populate history cache.
-            for i in 1..=4 {
+            for i in 1..=SAMPLE_COUNT {
                 let sample = HistorySample {
                     seq: i,
                     payload: format!("Sample data {i}"),
@@ -264,7 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             println!("[Reader] Total read: {} samples.", count);
-            assert_eq!(count, 4);
+            assert_eq!(count, SAMPLE_COUNT as usize);
 
             println!("==============================================================");
             println!("History QoS demonstration completed successfully.");

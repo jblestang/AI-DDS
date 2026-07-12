@@ -63,6 +63,7 @@
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
 
+use dds::core::LOCALHOST_IP;
 use dds::cdr::{CdrSerialize, Endianness};
 use dds::security::{
     Authentication as _, BuiltinAuthentication, BuiltinCryptography, Cryptography as _,
@@ -71,6 +72,13 @@ use dds::security::{
 use dds::types::qos::DomainParticipantQos;
 use std::net::UdpSocket;
 use std::time::Duration;
+
+const PUBLISHER_PORT: u16 = 7910;
+const SUBSCRIBER_PORT: u16 = 7911;
+const RECV_TIMEOUT_SECS: u64 = 30;
+const HANDSHAKE_DELAY_MS: u64 = 500;
+const RECV_BUFFER_SIZE: usize = 4096;
+const SAMPLE_ID: u32 = 42;
 
 // 1/3 Comment-to-code ratio.
 // Define a sample message to publish securely.
@@ -113,9 +121,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==============================================================");
 
     // 1. Bind local UDP socket for communication.
-    let socket = UdpSocket::bind("127.0.0.1:7910")?;
-    socket.set_read_timeout(Some(Duration::from_secs(30)))?;
-    println!("[Publisher] Ephemeral socket bound to 127.0.0.1:7910");
+    let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:{PUBLISHER_PORT}"))?;
+    socket.set_read_timeout(Some(Duration::from_secs(RECV_TIMEOUT_SECS)))?;
+    println!("[Publisher] Ephemeral socket bound to {LOCALHOST_IP}:{PUBLISHER_PORT}");
 
     // 2. Initialize security plugins.
     let auth = BuiltinAuthentication::new();
@@ -128,7 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[Publisher] Local identity validated successfully.");
 
     // Delay slightly to ensure the subscriber is bound and listening on port 7911.
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(HANDSHAKE_DELAY_MS));
 
     // 4. STEP 1: Generate Handshake Request.
     let (mut handshake_alice, token_req) = auth.begin_handshake_request(&alice_id, &bob_id)?;
@@ -136,11 +144,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Serialize and send the request token to the Subscriber.
     let req_bytes = dds::cdr::serialize_to_bytes(&token_req, Endianness::LittleEndian)?;
-    socket.send_to(&req_bytes, "127.0.0.1:7911")?;
-    println!("[Publisher] Step 1: Request token sent to subscriber (127.0.0.1:7911).");
+    socket.send_to(&req_bytes, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+    println!("[Publisher] Step 1: Request token sent to subscriber ({LOCALHOST_IP}:{SUBSCRIBER_PORT}).");
 
     // 5. STEP 2: Receive Handshake Reply.
-    let mut buf = [0_u8; 4096];
+    let mut buf = [0_u8; RECV_BUFFER_SIZE];
     let (len, _) = socket.recv_from(&mut buf)?;
     let token_reply: HandshakeToken =
         dds::cdr::deserialize_from_slice(&buf[..len], Endianness::LittleEndian)?;
@@ -154,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Send the final handshake token to the Subscriber.
     let final_bytes = dds::cdr::serialize_to_bytes(&token_final, Endianness::LittleEndian)?;
-    socket.send_to(&final_bytes, "127.0.0.1:7911")?;
+    socket.send_to(&final_bytes, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
     println!("[Publisher] Step 3: Final token sent to subscriber.");
 
     // 7. Derive shared secret and register crypto participants.
@@ -170,7 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 8. Prepare and encrypt payload.
     let message = SecureMessage {
-        id: 42,
+        id: SAMPLE_ID,
         content: "Top Secret: Multi-process secure DDS payload".to_string(),
     };
     println!("\n[Publisher] Original Payload: {:?}", message);
@@ -189,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         footer,
     };
     let packet_bytes = dds::cdr::serialize_to_bytes(&packet, Endianness::LittleEndian)?;
-    socket.send_to(&packet_bytes, "127.0.0.1:7911")?;
+    socket.send_to(&packet_bytes, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
     println!("[Publisher] Encrypted SecurePacket sent to subscriber.");
 
     println!("==============================================================");

@@ -54,9 +54,13 @@
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
 
+use dds::core::LOCALHOST_IP;
 use dds::rtps::{serialize_rtps_message, Data, Endianness, RtpsHeader, Submessage, UdpTransport};
 use dds::types::guid::{EntityId, GuidPrefix, SequenceNumber};
 use dds::types::locator::Locator;
+
+const SUBSCRIBER_PORT: u16 = 7905;
+const SAMPLE_ID: u32 = 101;
 
 struct HelloWorld {
     id: u32,
@@ -70,11 +74,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = UdpTransport::bind(0)?;
 
     // Define receiver locator (matching the subscriber port)
-    let dest = Locator::udpv4(std::net::Ipv4Addr::LOCALHOST, 7905);
+    let dest = Locator::udpv4(std::net::Ipv4Addr::LOCALHOST, u32::from(SUBSCRIBER_PORT));
 
     // Prepare message payload
     let hw = HelloWorld {
-        id: 101,
+        id: SAMPLE_ID,
         msg: "Antigravity RTPS packet!".to_string(),
     };
 
@@ -101,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Serialize RTPS message
     let bytes = serialize_rtps_message(&header, &submessages, Endianness::LittleEndian);
 
-    println!("Sending RTPS message to 127.0.0.1:7905...");
+    println!("Sending RTPS message to {LOCALHOST_IP}:{SUBSCRIBER_PORT}...");
     transport.send(&bytes, &dest)?;
     println!("Successfully sent RTPS message!");
 

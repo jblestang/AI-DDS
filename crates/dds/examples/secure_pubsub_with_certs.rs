@@ -60,6 +60,7 @@
 )]
 #![allow(clippy::allow_attributes, reason = "Allow attributes needed for buffer literals")]
 
+use dds::core::LOCALHOST_IP;
 use dds::cdr::{CdrDeserialize, CdrSerialize, Endianness};
 use dds::security::{
     AccessControl, Authentication, BuiltinAccessControl, BuiltinAuthentication, BuiltinCryptography,
@@ -68,6 +69,13 @@ use dds::security::{
 use dds::types::qos::DomainParticipantQos;
 use std::net::UdpSocket;
 use std::time::Duration;
+
+const PUBLISHER_PORT: u16 = 7928;
+const SUBSCRIBER_PORT: u16 = 7929;
+const RECV_TIMEOUT_SECS: u64 = 30;
+const HANDSHAKE_DELAY_MS: u64 = 500;
+const RECV_BUFFER_SIZE: usize = 4096;
+const SAMPLE_ID: u32 = 777;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SecureMessage {
@@ -137,8 +145,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match mode {
         Some("pub") => {
             println!("=== DDS SECURITY PUBLISHER (certificates) ===");
-            let socket = UdpSocket::bind("127.0.0.1:7928")?;
-            socket.set_read_timeout(Some(Duration::from_secs(30)))?;
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:{PUBLISHER_PORT}"))?;
+            socket.set_read_timeout(Some(Duration::from_secs(RECV_TIMEOUT_SECS)))?;
             let auth = BuiltinAuthentication::new();
             let crypto = BuiltinCryptography::new();
             let mut qos = DomainParticipantQos::default();
@@ -147,13 +155,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             qos.property.value.push(("dds.sec.auth.private_key".to_owned(), format!("data:,{}", alice_key)));
             let (alice_id, _) = auth.validate_local_identity(0, &qos)?;
             let bob_id = IdentityHandle(2);
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(Duration::from_millis(HANDSHAKE_DELAY_MS));
             let (mut handshake_alice, token_req) = auth.begin_handshake_request(&alice_id, &bob_id)?;
             let req_bytes = dds::cdr::serialize_to_bytes(&token_req, Endianness::LittleEndian)?;
-            socket.send_to(&req_bytes, "127.0.0.1:7929")?;
+            socket.send_to(&req_bytes, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
 
             #[allow(clippy::unseparated_literal_suffix, clippy::allow_attributes, reason = "Buffer literal format required")]
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; RECV_BUFFER_SIZE];
             let (len_reply, _) = socket.recv_from(&mut buf)?;
             let token_reply: HandshakeToken =
                 dds::cdr::deserialize_from_slice(&buf[..len_reply], Endianness::LittleEndian)?;
@@ -161,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .process_handshake(&mut handshake_alice, token_reply)?
                 .ok_or("Expected final handshake token")?;
             let final_bytes = dds::cdr::serialize_to_bytes(&token_final, Endianness::LittleEndian)?;
-            socket.send_to(&final_bytes, "127.0.0.1:7929")?;
+            socket.send_to(&final_bytes, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
 
             let secret = auth.get_shared_secret(&handshake_alice)?;
             let local_handle = crypto.register_local_participant(&alice_id)?;
@@ -171,19 +179,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &secret,
             )?;
 
-            let message = SecureMessage { id: 777, content: "Top Secret: Disk cert demo".to_string() };
+            let message = SecureMessage { id: SAMPLE_ID, content: "Top Secret: Disk cert demo".to_string() };
             let payload = dds::cdr::serialize_to_bytes(&message, Endianness::LittleEndian)?;
             let (ciphertext, header, footer) =
                 crypto.encrypt_payload(&payload, &local_handle, &remote_handle)?;
             let packet = SecurePacket { header, ciphertext, footer };
             let packet_bytes = dds::cdr::serialize_to_bytes(&packet, Endianness::LittleEndian)?;
-            socket.send_to(&packet_bytes, "127.0.0.1:7929")?;
+            socket.send_to(&packet_bytes, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
             println!("=== Publisher finished ===");
         }
         Some("sub") => {
             println!("=== DDS SECURITY SUBSCRIBER (certificates) ===");
-            let socket = UdpSocket::bind("127.0.0.1:7929")?;
-            socket.set_read_timeout(Some(Duration::from_secs(30)))?;
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+            socket.set_read_timeout(Some(Duration::from_secs(RECV_TIMEOUT_SECS)))?;
             let auth = BuiltinAuthentication::new();
             let crypto = BuiltinCryptography::new();
             let mut qos = DomainParticipantQos::default();
@@ -194,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let alice_id = IdentityHandle(1);
 
             #[allow(clippy::separated_literal_suffix, clippy::allow_attributes, reason = "Buffer literal format required")]
-            let mut buf = [0_u8; 4096];
+            let mut buf = [0_u8; RECV_BUFFER_SIZE];
             let (len_req, _) = socket.recv_from(&mut buf)?;
             let token_req: HandshakeToken =
                 dds::cdr::deserialize_from_slice(&buf[..len_req], Endianness::LittleEndian)?;
@@ -203,7 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .process_handshake(&mut handshake_bob, token_req)?
                 .ok_or("Expected handshake reply token")?;
             let reply_bytes = dds::cdr::serialize_to_bytes(&token_reply, Endianness::LittleEndian)?;
-            socket.send_to(&reply_bytes, "127.0.0.1:7928")?;
+            socket.send_to(&reply_bytes, format!("{LOCALHOST_IP}:{PUBLISHER_PORT}"))?;
             let (len_final, _) = socket.recv_from(&mut buf)?;
             let token_final: HandshakeToken =
                 dds::cdr::deserialize_from_slice(&buf[..len_final], Endianness::LittleEndian)?;

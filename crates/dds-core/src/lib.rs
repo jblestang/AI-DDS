@@ -1231,10 +1231,10 @@ impl DomainParticipantFactory {
         prefix[4..8].copy_from_slice(&std::process::id().to_be_bytes());
 
         // Probe for an available unicast port
-        let mut participant_idx = 0;
+        let mut participant_idx: u32 = 0;
         let mut unicast_port = 0;
         while participant_idx < 100 {
-            let port = PORT_BASE + DOMAIN_ID_GAIN * (domain_id as u16) + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * participant_idx;
+            let port = PORT_BASE + DOMAIN_ID_GAIN * (domain_id as u16) + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * (participant_idx as u16);
             if std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:{port}")).is_ok() {
                 unicast_port = port;
                 // Add participant index to prefix to keep it unique
