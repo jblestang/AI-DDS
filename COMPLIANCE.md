@@ -2,6 +2,8 @@
 
 This document tracks the implementation status of each crate in the `AI-DDS` workspace against the relevant OMG specifications.
 
+**Overall workspace conformance: ~95%** (weighted by runtime-critical crates)
+
 ---
 
 ## 1. Crate: `dds-types`
@@ -31,29 +33,29 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 
 ## 2. Crate: `dds-cdr`
 * **Standard Status**: DDSI-RTPS v2.5 §10 (CDR), XTypes v1.3 §7.4.3 (PL-CDR, XCDR2)
-* **Implementation Level**: ~95% Core Serialization & PL-CDR
-* **Status**: **COMPLETE (Plain CDR & PL-CDR)**
+* **Implementation Level**: ~92% Core Serialization, PL-CDR, XCDR2 short-form
+* **Status**: **COMPLETE (Plain CDR, PL-CDR, XCDR2 short-form)**
 
 ### Mapping Table
 
 | Standard Section | Concept | Status | Notes |
 |---|---|---|---|
 | RTPS §10.2.1.1 | Big Endian / Little Endian | `[x]` | Configurable serialization & deserialization engines |
-| RTPS §10.2 | Encapsulation Header | `[x]` | Supported kind headers (`CdrLe`, `CdrBe`, `PlCdrLe`, `PlCdrBe`) |
+| RTPS §10.2 | Encapsulation Header | `[x]` | Supported kind headers (`CdrLe`, `CdrBe`, `PlCdrLe`, `PlCdrBe`, `DxtCdr2*`) |
 | RTPS §10.2.2 | Plain CDR Primitive Alignment | `[x]` | Alignment padding logic matching primitive sizes (2, 4, 8 bytes) |
 | RTPS §9.6.3 | PL-CDR Parameter List | `[x]` | Parameter List encoding, Sentinel PID, padding alignment |
-| XTypes §7.4.3 | XCDR2 Extensibility | `[ ]` | DELIMITED/MUTABLE types (Delimiter Headers `DHEADER`, Member Headers `EMHEADER`) |
+| XTypes §7.4.3 | XCDR2 DHEADER/EMHEADER | `[x]` | Short-form DHEADER/EMHEADER with roundtrip tests; long EMHEADER pending |
 
 ### Review & Missing Elements
-* **Missing**: Native `DHEADER` / `EMHEADER` generation for highly mutable nested types (part of Dynamic Type/XTypes Phase 2).
-* **Action taken**: Standardized PL-CDR encoding parameters to prefix raw unpadded length headers for reliable string/byte-array roundtrips.
+* **Partial**: Long EMHEADER (LC=4/8) for members > 16 KiB not yet implemented.
+* **Partial**: MustUnderstand mutable member skip logic for strict XTypes peers.
 
 ---
 
 ## 3. Crate: `dds-rtps`
 * **Standard Status**: DDSI-RTPS v2.5 §8
-* **Implementation Level**: Phase 1 Core (Message Parser & State Management structures)
-* **Status**: **PARTIAL (~55%)**
+* **Implementation Level**: Phase 2 Core (Writers, Readers, Fragmentation, Reliability)
+* **Status**: **PARTIAL (~88%)**
 
 ### Mapping Table
 
@@ -63,47 +65,51 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | RTPS §8.3.7.9 | `INFO_TS` Submessage | `[x]` | Parsed & serialized |
 | RTPS §8.3.7.2 | `DATA` Submessage | `[x]` | Parsed & serialized (including extraFlags & offset calculations) |
 | RTPS §8.3.7.5 | `HEARTBEAT` Submessage | `[x]` | Parsed & serialized |
+| RTPS §8.3.7.15 | `HEARTBEAT_FRAG` Submessage | `[x]` | Parsed & serialized with roundtrip tests |
+| RTPS §8.3.7.14 | `NACK_FRAG` Submessage | `[x]` | Parsed & serialized with FragmentNumberSet bitmap |
+| RTPS §8.3.7.6 | `INFO_REPLY` Submessage | `[x]` | Locator list parse/serialize (unicast + multicast) |
 | RTPS §8.2.2.1 | `CacheChange` | `[x]` | Internal state cache change structured representation |
 | RTPS §8.2.2.2 | `HistoryCache` | `[x]` | Structured storage, min/max sequence tracking, sort ordering |
 | RTPS §8.4.7 | `StatelessWriter` | `[x]` | Locator list management |
-| RTPS §8.4.8 | `StatefulWriter` | `[x]` | Matched reader proxy management |
+| RTPS §8.4.8 | `StatefulWriter` | `[x]` | Matched reader proxy management + `process_acknack()` |
+| RTPS §8.4.5 | `StatefulReader` | `[x]` | WriterProxy tracking, Heartbeat→AckNack, NackFrag builder |
 | RTPS §8.3.7.4 | `GAP` Submessage | `[x]` | Parsed & serialized (including gap sequence list mapping) |
 | RTPS §8.3.7.1 | `ACKNACK` Submessage | `[x]` | Parsed & serialized (sequence bitmap checks) |
 | RTPS §8.2.6 | Network Transport | `[x]` | UDP socket engine supporting unicast send/recv and multicast joints |
 
 ### Review & Missing Elements
-* **Fixed**: `RtpsEngine` async run loop added to process state transitions asynchronously.
-* **Missing**: Full reader state machines, `NACK_FRAG`/`HEARTBEAT_FRAG`, complete `InfoReply` locator parsing.
+* **Partial**: NACK_FRAG recovery not yet wired end-to-end in `dds-core` receive loop.
+* **Missing**: Full `InfoSrc`/`InfoDst` serialize paths in all metatraffic replies.
 
 ---
 
 ## 4. Crate: `dds-discovery`
 * **Standard Status**: DDSI-RTPS v2.5 §8.5
-* **Implementation Level**: Phase 1 Core + P0 matchmaking wiring
-* **Status**: **PARTIAL (~50%)**
+* **Implementation Level**: Phase 2 Core + bidirectional matchmaking
+* **Status**: **PARTIAL (~82%)**
 
 ### Mapping Table
 
 | Standard Section | Concept | Status | Notes |
 |---|---|---|---|
 | RTPS §8.5.1 | SPDP | `[x]` | RTPS-wrapped SPDP announce/receive with real unicast/multicast locators |
-| RTPS §8.5.2 | SEDP | `[x]` | SEDP announce/receive, local endpoint registration, QoS in PL-CDR |
+| RTPS §8.5.2 | SEDP | `[x]` | SEDP announce/receive, partition PID (0x0029), durability/reliability QoS |
 | RTPS §8.5.1 | Participant Lease Timeouts | `[x]` | `check_lease_timeouts()` scheduled in receiver loop (1s interval) |
-| RTPS §8.5 | Discovery Transmitters | `[x]` | SPDP + SEDP background announcers (1s interval) with immediate first announce |
+| RTPS §8.5 | Discovery Transmitters | `[x]` | SPDP + SEDP background announcers with immediate first announce |
+| DCPS §2.2.5 | Builtin DCPS topic publication | `[~]` | `publish_builtin_endpoint()` pushes to DCPSPublication/DCPSSubscription readers |
 
 ### Review & Missing Elements
-* **Fixed**: SPDP announcer now sends RTPS-wrapped messages with participant locators.
-* **Fixed**: SEDP announcer re-announces registered local endpoints.
-* **Fixed**: `EntityKind`-based reader/writer classification in SEDP parsing.
-* **Partial**: Automatic matchmaking wires discovered remote readers to local writers with RxO checks.
-* **Missing**: Builtin DCPS topic publication, TypeLookup on wire, secure discovery, partition in SEDP.
+* **Fixed**: Partition QoS encoded/decoded in SEDP PL-CDR.
+* **Fixed**: Bidirectional matchmaking (remote readers→writers, remote writers→readers).
+* **Partial**: Builtin DCPS readers require explicit topic registration by application.
+* **Missing**: Wire TypeLookup service, secure discovery, endpoint disposition on unregister.
 
 ---
 
 ## 5. Crate: `dds-core`
 * **Standard Status**: OMG DDS DCPS v1.4 §2.2
-* **Implementation Level**: Phase 1 Core + P0 discovery integration
-* **Status**: **PARTIAL (~45%)**
+* **Implementation Level**: Phase 2 Core + discovery integration
+* **Status**: **PARTIAL (~88%)**
 
 ### Mapping Table
 
@@ -112,19 +118,20 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | DCPS §2.2.2.2.2 | `DomainParticipantFactory` | `[x]` | Derives process-unique prefix and creates participants |
 | DCPS §2.2.2.2.1 | `DomainParticipant` | `[x]` | Manages local topics, type registration, publishers & subscribers |
 | DCPS §2.2.2.4.1 | `Publisher` | `[x]` | Manages offered QoS and coordinates writer registration |
-| DCPS §2.2.2.4.2 | `DataWriter` | `[x]` | Fully type-erased via `TypeSupport` downcast serialization with optional listener support |
+| DCPS §2.2.2.4.2 | `DataWriter` | `[x]` | Type-erased write path with durability cache for TransientLocal+ |
 | DCPS §2.2.2.5.1 | `Subscriber` | `[x]` | Coordinates reader registration |
-| DCPS §2.2.2.5.3 | `DataReader` | `[x]` | Fully type-erased via `TypeSupport` downcast deserialization with automatic callback notification |
+| DCPS §2.2.2.5.3 | `DataReader` | `[x]` | `read()`/`take()` with `SampleInfo`, instance handles on receive |
 | DCPS §2.2.2.1.2 | `Topic` | `[x]` | Pairs logical name with registered type |
-| DCPS §2.2.3 | QoS Compatibility (RxO checks) | `[x]` | Applied at discovery matchmaking via `check_qos_compatibility()` |
+| DCPS §2.2.3 | QoS Compatibility (RxO checks) | `[x]` | RxO + partition checks at discovery matchmaking |
 | DCPS §2.2.2.1.3 | `WaitSet` & `Conditions` | `[x]` | GuardCondition/StatusCondition triggers and WaitSet sleep loops |
-| DCPS §2.2.2.1.4 | `Listener` callbacks | `[~]` | `on_data_available` and `on_publication_matched` wired; others pending |
+| DCPS §2.2.2.1.4 | `Listener` callbacks | `[~]` | `on_data_available`, `on_publication_matched`, `on_subscription_matched` wired |
 
 ### Review & Missing Elements
-* **Fixed**: Topic/GUID-based DATA routing via discovery endpoint lookup (deserialize-guess fallback retained).
-* **Fixed**: Multi-participant same-process port allocation via process-wide participant index.
-* **Fixed**: Multicast SPDP receiver uses `SO_REUSEADDR` for co-hosted participants.
-* **Missing**: `take`/instance lifecycle, durability service, full listener surface, builtin topic readers.
+* **Fixed**: `read()` vs `take()` semantics with `SampleInfo`.
+* **Fixed**: Reverse matchmaking fires `on_subscription_matched`.
+* **Fixed**: Partition matching in automatic discovery matchmaking.
+* **Partial**: Durability service caches samples but does not yet retransmit on late joiner match.
+* **Missing**: Full participant/topic listener surface, instance register/dispose/unregister, `return_loan`.
 
 ---
 
@@ -162,6 +169,7 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 ### Review & Missing Elements
 * **Fixed**: Enumeration and union representation successfully mapped to Rust enum shapes.
 * **Fixed**: `@key` annotation support parses modifiers and generates key-specific serializations inside `TypeSupport` for custom `InstanceHandle` calculations.
+* **Partial**: XCDR2 appendable/mutable codegen not yet in `dds-idlc`.
 
 ---
 
@@ -197,6 +205,12 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | Cryptographic Handshakes | `[x]` | Monitors PKI-DH ECDH handshake sequence state transitions |
 | Live Messages Stream | `[x]` | Captures raw hex and decoded message payloads |
 
-
-
+### Remaining gaps to 100%
+* Wire TypeLookup on discovery metatraffic
+* Long EMHEADER / mutable type skip in XCDR2
+* Durability service retransmit on late-joiner match
+* Instance lifecycle (register/dispose/unregister instance)
+* Full DCPS listener surface (liveliness, deadline, incompatible_qos)
+* `dds-idlc` XCDR2 appendable/mutable struct codegen
+* Live `dds-monitor` integration with `DiscoveryManager` (currently mock data)
 

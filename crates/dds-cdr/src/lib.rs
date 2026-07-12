@@ -1250,4 +1250,27 @@ mod tests {
             handle
         );
     }
+
+    #[test]
+    fn test_xcdr2_dheader_emheader_roundtrip() {
+        let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        let dheader_offset = ser.write_dheader_placeholder();
+        ser.serialize_emheader(1, 4);
+        ser.serialize_u32(42);
+        ser.serialize_emheader(2, 6);
+        ser.serialize_str("hi");
+        ser.patch_dheader(dheader_offset);
+        let bytes = ser.into_bytes();
+
+        let mut de = CdrDeserializer::new(&bytes, Endianness::LittleEndian);
+        let dlen = de.deserialize_dheader().unwrap();
+        assert!(dlen > 0);
+        let (id1, len1) = de.deserialize_emheader().unwrap();
+        assert_eq!(id1, 1);
+        assert_eq!(len1, 4);
+        assert_eq!(de.deserialize_u32().unwrap(), 42);
+        let (id2, _len2) = de.deserialize_emheader().unwrap();
+        assert_eq!(id2, 2);
+        assert_eq!(de.deserialize_str().unwrap(), "hi");
+    }
 }

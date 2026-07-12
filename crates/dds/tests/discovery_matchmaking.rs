@@ -127,6 +127,7 @@ fn test_discovery_driven_matchmaking() {
             type_name: "DiscoveryMessage".to_string(),
             qos_writer: None,
             qos_reader: Some(DataReaderQos::default()),
+            partition: vec![],
             type_info: None,
         });
     }
@@ -207,6 +208,7 @@ fn test_incompatible_qos_blocks_matchmaking() {
             type_name: "DiscoveryMessage".to_string(),
             qos_writer: None,
             qos_reader: Some(reader.qos().clone()),
+            partition: vec![],
             type_info: None,
         });
     }

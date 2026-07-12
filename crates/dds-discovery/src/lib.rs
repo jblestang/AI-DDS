@@ -92,6 +92,9 @@ pub const PID_DURABILITY: u16 = 0x001D;
 /// PID for History QoS
 pub const PID_HISTORY: u16 = 0x0040;
 
+/// PID for Partition QoS
+pub const PID_PARTITION: u16 = 0x0029;
+
 /// PID for Participant GUID
 pub const PID_PARTICIPANT_GUID: u16 = 0x0050;
 
@@ -168,6 +171,8 @@ pub struct DiscoveredEndpoint {
     pub type_name: String,
     pub qos_writer: Option<DataWriterQos>,
     pub qos_reader: Option<DataReaderQos>,
+    /// Partition names from SEDP (publisher/subscriber level).
+    pub partition: Vec<String>,
     pub type_info: Option<dds_xtypes::TypeInformation>,
 }
 
@@ -669,6 +674,23 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
         });
     }
 
+    if !endpoint.partition.is_empty() {
+        let mut partition_bytes = Vec::new();
+        for name in &endpoint.partition {
+            let mut name_bytes = name.as_bytes().to_vec();
+            name_bytes.push(0);
+            while name_bytes.len() % 4 != 0 {
+                name_bytes.push(0);
+            }
+            partition_bytes.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+            partition_bytes.extend_from_slice(&name_bytes);
+        }
+        plist.parameters.push(Parameter {
+            parameter_id: ParameterId(PID_PARTITION),
+            value: partition_bytes,
+        });
+    }
+
     serialize_to_bytes(&plist, Endianness::LittleEndian).map(|b| b.to_vec())
 }
 
@@ -686,6 +708,7 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
     
     let mut qos_writer = None;
     let mut qos_reader = None;
+    let mut partition = Vec::new();
 
     for param in &plist.parameters {
         match param.parameter_id.0 {
@@ -759,6 +782,25 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                     if let Some(ref mut qr) = qos_reader { qr.history.kind = kind; }
                 }
             }
+            PID_PARTITION => {
+                let mut offset = 0;
+                while offset + 4 <= param.value.len() {
+                    let len = u32::from_le_bytes([
+                        param.value[offset],
+                        param.value[offset + 1],
+                        param.value[offset + 2],
+                        param.value[offset + 3],
+                    ]) as usize;
+                    offset += 4;
+                    if offset + len > param.value.len() {
+                        break;
+                    }
+                    if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value[offset..offset + len]) {
+                        partition.push(s.to_string_lossy().into_owned());
+                    }
+                    offset += len;
+                }
+            }
             _ => {}
         }
     }
@@ -773,6 +815,7 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
         type_name,
         qos_writer,
         qos_reader,
+        partition,
         type_info: None,
     })
 }
@@ -840,6 +883,7 @@ mod tests {
             type_name: "TestType".into(),
             qos_writer: None,
             qos_reader: None,
+            partition: vec![],
             type_info: None,
         };
         manager.process_sedp_endpoint(endpoint.clone());
@@ -911,6 +955,7 @@ mod tests {
             type_name: "Geometry::Point".into(),
             qos_writer: None,
             qos_reader: None,
+            partition: vec![],
             type_info: None,
         };
         manager.process_sedp_endpoint(endpoint);
@@ -1019,6 +1064,7 @@ mod tests {
             type_name: "Geometry::Point".into(),
             qos_writer: None,
             qos_reader: None,
+            partition: vec![],
             type_info: Some(type_info),
         };
         manager.process_sedp_endpoint(endpoint);
@@ -1030,5 +1076,25 @@ mod tests {
         // Perform TypeLookup
         let lookup_res = manager.lookup_type_object(&endpoint_guid, &db).unwrap();
         assert_eq!(lookup_res, r_obj);
+    }
+
+    #[test]
+    fn test_sedp_partition_roundtrip() {
+        let guid = Guid::new(GuidPrefix::new([3; 12]), EntityId::new([0, 0, 1, 4]));
+        let mut qos_writer = DataWriterQos::default();
+        qos_writer.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
+        let endpoint = DiscoveredEndpoint {
+            guid,
+            topic_name: "PartitionTopic".into(),
+            type_name: "MyType".into(),
+            qos_writer: Some(qos_writer),
+            qos_reader: None,
+            partition: vec!["lab".to_string(), "test".to_string()],
+            type_info: None,
+        };
+        let bytes = sedp_to_plcdr(&endpoint).unwrap();
+        let parsed = parse_sedp_packet(&bytes).unwrap();
+        assert_eq!(parsed.partition, endpoint.partition);
+        assert_eq!(parsed.topic_name, "PartitionTopic");
     }
 }
