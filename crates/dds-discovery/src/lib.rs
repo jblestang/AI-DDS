@@ -116,6 +116,12 @@ pub const DOMAIN_ID_GAIN: u16 = 250;
 /// Default Multicast IP for SPDP
 pub const DEFAULT_MULTICAST_IP: [u8; 4] = [239, 255, 0, 1];
 
+/// Localhost IP (for loopback networking in tests)
+pub const LOCALHOST_IP: &str = "127.0.0.1";
+
+/// Entity kind bit mask used to distinguish readers from writers in SEDP parsing
+pub const ENTITY_KIND_READER_WRITER_BIT: u8 = 0x02;
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Represents a remote `DataWriter` or `DataReader` discovered via SEDP.
@@ -469,7 +475,7 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                         dds_types::guid::EntityId::new(entity_bytes),
                     );
                     
-                    if guid.entity_id.0[3] & 0x02 != 0 {
+                    if guid.entity_id.0[3] & ENTITY_KIND_READER_WRITER_BIT != 0 {
                         // Reader
                         let mut qr = dds_types::qos::DataReaderQos::default();
                         qr.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
@@ -681,12 +687,12 @@ mod tests {
         let transport = Arc::new(dds_rtps::UdpTransport::bind(0).unwrap());
         let domain_id = 12;
 
-        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let receiver = std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:0")).unwrap();
         let receiver_port = receiver.local_addr().unwrap().port();
         receiver.set_nonblocking(true).unwrap();
 
         let dest_locator = dds_types::locator::Locator::udpv4(
-            std::net::Ipv4Addr::new(127, 0, 0, 1),
+            std::net::Ipv4Addr::LOCALHOST,
             u32::from(receiver_port),
         );
 

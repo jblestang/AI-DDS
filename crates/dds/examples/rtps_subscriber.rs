@@ -59,11 +59,14 @@
 use dds::rtps::{parse_rtps_message, Submessage, UdpTransport};
 use std::time::Duration;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting RTPS Subscriber binary listening on port 7905...");
+const SUBSCRIBER_PORT: u16 = 7905;
+const POLL_INTERVAL_MS: u64 = 50;
 
-    // Bind transport to port 7905
-    let transport = UdpTransport::bind(7905)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Starting RTPS Subscriber binary listening on port {SUBSCRIBER_PORT}...");
+
+    // Bind transport to subscriber port
+    let transport = UdpTransport::bind(SUBSCRIBER_PORT)?;
 
     println!("Polling for incoming RTPS packets...");
     loop {
@@ -105,6 +108,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
     }
 }

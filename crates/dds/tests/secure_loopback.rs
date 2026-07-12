@@ -141,7 +141,7 @@ fn test_secure_wire_loopback() {
     // 9. Match Alice and Bob manually
     let reader_port = subscriber.unicast_port();
     let reader_locator = dds::types::locator::Locator::udpv4(
-        std::net::Ipv4Addr::new(127, 0, 0, 1),
+        std::net::Ipv4Addr::LOCALHOST,
         reader_port,
     );
     let reader_guid = reader.guid();

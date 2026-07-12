@@ -60,7 +60,7 @@
     clippy::missing_asserts_for_indexing,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
-use dds::core::{DomainParticipantFactory, TypeSupport};
+use dds::core::{DomainParticipantFactory, TypeSupport, LOCALHOST_IP};
 use dds::types::qos::{
     DataReaderQos, DataWriterQos, DomainParticipantQos, PublisherQos, Reliability, ReliabilityKind,
     SubscriberQos, TopicQos,
@@ -71,6 +71,11 @@ use std::any::Any;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
+
+const SUBSCRIBER_PORT: u16 = 7926;
+const RECV_TIMEOUT_SECS: u64 = 30;
+const RECV_BUFFER_SIZE: usize = 1024;
+const SAMPLE_ID: u32 = 101;
 
 // 1/3 Comment-to-code ratio.
 // Define a sample message type representing high-reliability telemetry.
@@ -147,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let writer = publisher.create_datawriter(&topic, writer_qos, ts.clone())?;
 
             let sample = ReliableTelemetry {
-                id: 101,
+                id: SAMPLE_ID,
                 value: 98.6,
             };
             writer.write(&sample)?;
@@ -155,9 +160,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Send serialized sample via UDP to subscriber.
             let serialized = ts.serialize(&sample)?;
-            let socket = UdpSocket::bind("127.0.0.1:0")?;
-            socket.send_to(&serialized, "127.0.0.1:7926")?;
-            println!("[Writer] Sent serialized sample via UDP to port 7926.");
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:0"))?;
+            socket.send_to(&serialized, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+            println!("[Writer] Sent serialized sample via UDP to port {SUBSCRIBER_PORT}.");
             println!("==============================================================");
         }
         Some("sub") => {
@@ -184,11 +189,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let reader = subscriber.create_datareader(&topic, reader_qos, ts)?;
 
             // Bind UDP to receive package.
-            let socket = UdpSocket::bind("127.0.0.1:7926")?;
-            socket.set_read_timeout(Some(StdDuration::from_secs(30)))?;
-            println!("[Reader] Listening on UDP port 7926...");
+            let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+            socket.set_read_timeout(Some(StdDuration::from_secs(RECV_TIMEOUT_SECS)))?;
+            println!("[Reader] Listening on UDP port {SUBSCRIBER_PORT}...");
 
-            let mut buf = [0u8; 1024];
+            let mut buf = [0u8; RECV_BUFFER_SIZE];
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Reader] Received sample packet over UDP (len = {}).", len);
 
@@ -199,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("[Reader] Received sample successfully!");
                 println!("  -> ID: {}", received.id);
                 println!("  -> Value: {}", received.value);
-                assert_eq!(received.id, 101);
+                assert_eq!(received.id, SAMPLE_ID);
             } else {
                 panic!("Failed to downcast received sample!");
             }
@@ -247,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 5. Write and transmit sample.
             let sample = ReliableTelemetry {
-                id: 101,
+                id: SAMPLE_ID,
                 value: 98.6,
             };
             writer.write(&sample)?;
@@ -263,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("[Reader] Received sample successfully!");
                 println!("  -> ID: {}", received.id);
                 println!("  -> Value: {}", received.value);
-                assert_eq!(received.id, 101);
+                assert_eq!(received.id, SAMPLE_ID);
             } else {
                 panic!("Failed to downcast received sample!");
             }

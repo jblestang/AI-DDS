@@ -486,7 +486,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             BigEndian::read_u32(&sub_payload[4..8])
                         };
                         // Convert fraction to nanoseconds
-                        let nano = ((u64::from(fraction) * 1_000_000_000) >> 32) as u32;
+                        let nano = ((u64::from(fraction) * NANOS_PER_SEC) >> 32) as u32;
                         submessages.push(Submessage::InfoTs(InfoTs {
                             timestamp: Some(Timestamp::new(sec, nano)),
                         }));

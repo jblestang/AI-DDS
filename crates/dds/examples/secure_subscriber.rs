@@ -63,6 +63,7 @@
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
 
+use dds::core::LOCALHOST_IP;
 use dds::cdr::{CdrDeserialize, Endianness};
 use dds::security::{
     Authentication as _, BuiltinAuthentication, BuiltinCryptography, Cryptography as _,
@@ -71,6 +72,12 @@ use dds::security::{
 use dds::types::qos::DomainParticipantQos;
 use std::net::UdpSocket;
 use std::time::Duration;
+
+const PUBLISHER_PORT: u16 = 7910;
+const SUBSCRIBER_PORT: u16 = 7911;
+const RECV_TIMEOUT_SECS: u64 = 30;
+const RECV_BUFFER_SIZE: usize = 4096;
+const SAMPLE_ID: u32 = 42;
 
 // 1/3 Comment-to-code ratio.
 // Define a sample message to publish securely.
@@ -114,9 +121,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("==============================================================");
 
     // 1. Bind local UDP socket for communication.
-    let socket = UdpSocket::bind("127.0.0.1:7911")?;
-    socket.set_read_timeout(Some(Duration::from_secs(30)))?;
-    println!("[Subscriber] Socket bound and listening on 127.0.0.1:7911");
+    let socket = UdpSocket::bind(format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
+    socket.set_read_timeout(Some(Duration::from_secs(RECV_TIMEOUT_SECS)))?;
+    println!("[Subscriber] Socket bound and listening on {LOCALHOST_IP}:{SUBSCRIBER_PORT}");
 
     // 2. Initialize security plugins.
     let auth = BuiltinAuthentication::new();
@@ -129,7 +136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[Subscriber] Local identity validated successfully.");
 
     // 4. STEP 1 & 2: Receive Handshake Request & Respond with Handshake Reply.
-    let mut buf = [0_u8; 4096];
+    let mut buf = [0_u8; RECV_BUFFER_SIZE];
     let (len_req, _) = socket.recv_from(&mut buf)?;
     let token_req: HandshakeToken =
         dds::cdr::deserialize_from_slice(&buf[..len_req], Endianness::LittleEndian)?;
@@ -143,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Serialize and send the reply token to the Publisher.
     let reply_bytes = dds::cdr::serialize_to_bytes(&token_reply, Endianness::LittleEndian)?;
-    socket.send_to(&reply_bytes, "127.0.0.1:7910")?;
+    socket.send_to(&reply_bytes, format!("{LOCALHOST_IP}:{PUBLISHER_PORT}"))?;
     println!("[Subscriber] Step 2: Reply token sent to publisher.");
 
     // 5. STEP 3: Receive Handshake Final & Complete Handshake.
@@ -188,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dds::cdr::deserialize_from_slice(&decrypted_payload, Endianness::LittleEndian)?;
     println!("[Subscriber] Decoded Payload: {:?}", decoded);
 
-    assert_eq!(decoded.id, 42);
+    assert_eq!(decoded.id, SAMPLE_ID);
     assert_eq!(decoded.content, "Top Secret: Multi-process secure DDS payload");
 
     println!("==============================================================");
