@@ -92,6 +92,9 @@ pub const PID_DURABILITY: u16 = 0x001D;
 /// PID for History QoS
 pub const PID_HISTORY: u16 = 0x0040;
 
+/// PID for Liveliness QoS
+pub const PID_LIVELINESS: u16 = 0x001B;
+
 /// PID for Partition QoS
 pub const PID_PARTITION: u16 = 0x0029;
 
@@ -631,14 +634,26 @@ impl DiscoveryManager {
     }
 
     /// Remove a participant and all its associated endpoints.
-    pub fn remove_participant(&mut self, prefix: &GuidPrefix) {
+    pub fn remove_participant(&mut self, prefix: &GuidPrefix) -> Vec<(Guid, DiscoveredEndpoint)> {
+        let removed_endpoints: Vec<(Guid, DiscoveredEndpoint)> = self
+            .discovered_endpoints
+            .iter()
+            .filter(|(guid, _)| &guid.prefix == prefix)
+            .map(|(guid, ep)| (*guid, ep.clone()))
+            .collect();
         self.discovered_participants.remove(prefix);
         self.discovered_endpoints
             .retain(|guid, _| &guid.prefix != prefix);
+        for guids in self.builtin_mappings.values_mut() {
+            guids.retain(|guid| &guid.prefix != prefix);
+        }
+        removed_endpoints
     }
 
     /// Clean up expired participants based on lease duration.
-    pub fn check_lease_timeouts(&mut self) {
+    ///
+    /// Returns removed participant prefixes and their endpoints for unmatch handling.
+    pub fn check_lease_timeouts(&mut self) -> Vec<(GuidPrefix, Vec<(Guid, DiscoveredEndpoint)>)> {
         let now = std::time::Instant::now();
         let mut expired = Vec::new();
 
@@ -650,9 +665,12 @@ impl DiscoveryManager {
             }
         }
 
+        let mut removed = Vec::new();
         for prefix in expired {
-            self.remove_participant(&prefix);
+            let endpoints = self.remove_participant(&prefix);
+            removed.push((prefix, endpoints));
         }
+        removed
     }
 
     /// Check if a discovered endpoint is a built-in discovery endpoint.
@@ -678,8 +696,8 @@ impl DiscoveryManager {
 /// Serialize parameters using standard DDSI-RTPS §9.4.2 PL-CDR (CycloneDDS-compatible).
 fn serialize_rtps_plcdr(parameters: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
-    // PlCdrLe encapsulation header
-    out.extend_from_slice(&[0x00, 0x03, 0x00, 0x00]);
+    // PlCdrLe encapsulation header (0x0003 little-endian)
+    out.extend_from_slice(&[0x03, 0x00, 0x00, 0x00]);
     for (pid, value) in parameters {
         let padded = (value.len() + 3) & !3;
         out.extend_from_slice(&pid.to_le_bytes());
@@ -780,13 +798,6 @@ fn parse_rtps_parameter_list(bytes: &[u8]) -> Option<dds_cdr::ParameterList> {
 }
 
 fn decode_discovery_plcdr(bytes: &[u8]) -> Option<dds_cdr::ParameterList> {
-    use dds_cdr::{deserialize_from_slice, Endianness, ParameterList};
-
-    if let Ok(plist) = deserialize_from_slice::<ParameterList>(bytes, Endianness::LittleEndian) {
-        if !plist.parameters.is_empty() {
-            return Some(plist);
-        }
-    }
     parse_rtps_parameter_list(bytes)
 }
 
@@ -860,6 +871,139 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
     })
 }
 
+fn append_reliability_qos(parameters: &mut Vec<(u16, Vec<u8>)>, qos: &dds_types::qos::Reliability) {
+    let reliability_val = match qos.kind {
+        dds_types::qos::ReliabilityKind::BestEffort => 1u32,
+        dds_types::qos::ReliabilityKind::Reliable => 2,
+    };
+    let mut rel_bytes = Vec::new();
+    rel_bytes.extend_from_slice(&reliability_val.to_le_bytes());
+    rel_bytes.extend_from_slice(&qos.max_blocking_time.seconds.to_le_bytes());
+    rel_bytes.extend_from_slice(&qos.max_blocking_time.nanoseconds.to_le_bytes());
+    parameters.push((PID_RELIABILITY, rel_bytes));
+}
+
+fn append_durability_qos(parameters: &mut Vec<(u16, Vec<u8>)>, kind: dds_types::qos::DurabilityKind) {
+    let durability_val = match kind {
+        dds_types::qos::DurabilityKind::Volatile => 0u32,
+        dds_types::qos::DurabilityKind::TransientLocal => 1,
+        dds_types::qos::DurabilityKind::Transient => 2,
+        dds_types::qos::DurabilityKind::Persistent => 3,
+    };
+    parameters.push((PID_DURABILITY, durability_val.to_le_bytes().to_vec()));
+}
+
+fn append_history_qos(parameters: &mut Vec<(u16, Vec<u8>)>, history: &dds_types::qos::History) {
+    let kind_val = match history.kind {
+        dds_types::qos::HistoryKind::KeepLast => 0u32,
+        dds_types::qos::HistoryKind::KeepAll => 1,
+    };
+    let mut hist_bytes = Vec::new();
+    hist_bytes.extend_from_slice(&kind_val.to_le_bytes());
+    hist_bytes.extend_from_slice(&history.depth.to_le_bytes());
+    parameters.push((PID_HISTORY, hist_bytes));
+}
+
+fn append_liveliness_qos(parameters: &mut Vec<(u16, Vec<u8>)>, liveliness: &dds_types::qos::Liveliness) {
+    let kind_val = match liveliness.kind {
+        dds_types::qos::LivelinessKind::Automatic => 0u32,
+        dds_types::qos::LivelinessKind::ManualByParticipant => 1,
+        dds_types::qos::LivelinessKind::ManualByTopic => 2,
+    };
+    let mut live_bytes = Vec::new();
+    live_bytes.extend_from_slice(&kind_val.to_le_bytes());
+    live_bytes.extend_from_slice(&liveliness.lease_duration.seconds.to_le_bytes());
+    live_bytes.extend_from_slice(&liveliness.lease_duration.nanoseconds.to_le_bytes());
+    parameters.push((PID_LIVELINESS, live_bytes));
+}
+
+fn apply_durability_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    kind_val: u32,
+) {
+    let kind = match kind_val {
+        0 => dds_types::qos::DurabilityKind::Volatile,
+        1 => dds_types::qos::DurabilityKind::TransientLocal,
+        2 => dds_types::qos::DurabilityKind::Transient,
+        3 => dds_types::qos::DurabilityKind::Persistent,
+        _ => dds_types::qos::DurabilityKind::Volatile,
+    };
+    writer_qos.durability.kind = kind;
+    reader_qos.durability.kind = kind;
+}
+
+fn apply_reliability_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    value: &[u8],
+) {
+    if value.len() >= 4 {
+        let kind_val = u32::from_le_bytes(value[0..4].try_into().unwrap_or([0; 4]));
+        let kind = match kind_val {
+            1 => dds_types::qos::ReliabilityKind::BestEffort,
+            2 => dds_types::qos::ReliabilityKind::Reliable,
+            _ => dds_types::qos::ReliabilityKind::BestEffort,
+        };
+        writer_qos.reliability.kind = kind;
+        reader_qos.reliability.kind = kind;
+    }
+    if value.len() >= 12 {
+        let seconds = i32::from_le_bytes(value[4..8].try_into().unwrap_or([0; 4]));
+        let nanoseconds = u32::from_le_bytes(value[8..12].try_into().unwrap_or([0; 4]));
+        let duration = Duration::new(seconds, nanoseconds);
+        writer_qos.reliability.max_blocking_time = duration;
+        reader_qos.reliability.max_blocking_time = duration;
+    }
+}
+
+fn apply_history_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    value: &[u8],
+) {
+    if value.len() >= 4 {
+        let kind_val = u32::from_le_bytes(value[0..4].try_into().unwrap_or([0; 4]));
+        let kind = match kind_val {
+            0 => dds_types::qos::HistoryKind::KeepLast,
+            1 => dds_types::qos::HistoryKind::KeepAll,
+            _ => dds_types::qos::HistoryKind::KeepLast,
+        };
+        writer_qos.history.kind = kind;
+        reader_qos.history.kind = kind;
+    }
+    if value.len() >= 8 {
+        let depth = i32::from_le_bytes(value[4..8].try_into().unwrap_or([0; 4]));
+        writer_qos.history.depth = depth;
+        reader_qos.history.depth = depth;
+    }
+}
+
+fn apply_liveliness_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    value: &[u8],
+) {
+    if value.len() >= 4 {
+        let kind_val = u32::from_le_bytes(value[0..4].try_into().unwrap_or([0; 4]));
+        let kind = match kind_val {
+            0 => dds_types::qos::LivelinessKind::Automatic,
+            1 => dds_types::qos::LivelinessKind::ManualByParticipant,
+            2 => dds_types::qos::LivelinessKind::ManualByTopic,
+            _ => dds_types::qos::LivelinessKind::Automatic,
+        };
+        writer_qos.liveliness.kind = kind;
+        reader_qos.liveliness.kind = kind;
+    }
+    if value.len() >= 12 {
+        let seconds = i32::from_le_bytes(value[4..8].try_into().unwrap_or([0; 4]));
+        let nanoseconds = u32::from_le_bytes(value[8..12].try_into().unwrap_or([0; 4]));
+        let duration = Duration::new(seconds, nanoseconds);
+        writer_qos.liveliness.lease_duration = duration;
+        reader_qos.liveliness.lease_duration = duration;
+    }
+}
+
 /// Serializes a `DiscoveredEndpoint` to a PL-CDR parameter list.
 pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8>> {
     let mut parameters = Vec::new();
@@ -878,33 +1022,17 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
     parameters.push((PID_ENDPOINT_GUID, guid_bytes));
 
     if let Some(ref qos) = endpoint.qos_writer {
-        let durability_val = match qos.durability.kind {
-            dds_types::qos::DurabilityKind::Volatile => 0u32,
-            dds_types::qos::DurabilityKind::TransientLocal => 1,
-            dds_types::qos::DurabilityKind::Transient => 2,
-            dds_types::qos::DurabilityKind::Persistent => 3,
-        };
-        parameters.push((PID_DURABILITY, durability_val.to_le_bytes().to_vec()));
-        let reliability_val = match qos.reliability.kind {
-            dds_types::qos::ReliabilityKind::BestEffort => 1u32,
-            dds_types::qos::ReliabilityKind::Reliable => 2,
-        };
-        parameters.push((PID_RELIABILITY, reliability_val.to_le_bytes().to_vec()));
+        append_durability_qos(&mut parameters, qos.durability.kind);
+        append_reliability_qos(&mut parameters, &qos.reliability);
+        append_history_qos(&mut parameters, &qos.history);
+        append_liveliness_qos(&mut parameters, &qos.liveliness);
     }
 
     if let Some(ref qos) = endpoint.qos_reader {
-        let durability_val = match qos.durability.kind {
-            dds_types::qos::DurabilityKind::Volatile => 0u32,
-            dds_types::qos::DurabilityKind::TransientLocal => 1,
-            dds_types::qos::DurabilityKind::Transient => 2,
-            dds_types::qos::DurabilityKind::Persistent => 3,
-        };
-        parameters.push((PID_DURABILITY, durability_val.to_le_bytes().to_vec()));
-        let reliability_val = match qos.reliability.kind {
-            dds_types::qos::ReliabilityKind::BestEffort => 1u32,
-            dds_types::qos::ReliabilityKind::Reliable => 2,
-        };
-        parameters.push((PID_RELIABILITY, reliability_val.to_le_bytes().to_vec()));
+        append_durability_qos(&mut parameters, qos.durability.kind);
+        append_reliability_qos(&mut parameters, &qos.reliability);
+        append_history_qos(&mut parameters, &qos.history);
+        append_liveliness_qos(&mut parameters, &qos.liveliness);
     }
 
     if !endpoint.partition.is_empty() {
@@ -935,14 +1063,13 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
     );
     let mut topic_name = String::new();
     let mut type_name = String::new();
-    
-    let mut qos_writer = None;
-    let mut qos_reader = None;
+    let mut writer_qos = dds_types::qos::DataWriterQos::default();
+    let mut reader_qos = dds_types::qos::DataReaderQos::default();
     let mut partition = Vec::new();
 
     for param in &plist.parameters {
         match param.parameter_id.0 {
-            PID_ENDPOINT_GUID => { // PID_ENDPOINT_GUID
+            PID_ENDPOINT_GUID => {
                 if param.value.len() >= 16 {
                     let mut prefix_bytes = [0u8; 12];
                     prefix_bytes.copy_from_slice(&param.value[0..12]);
@@ -952,65 +1079,37 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                         GuidPrefix::new(prefix_bytes),
                         dds_types::guid::EntityId::new(entity_bytes),
                     );
-                    
-                    if is_reader_entity(&guid.entity_id) {
-                        let mut qr = dds_types::qos::DataReaderQos::default();
-                        qr.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
-                        qos_reader = Some(qr);
-                    } else if is_writer_entity(&guid.entity_id) {
-                        let mut qw = dds_types::qos::DataWriterQos::default();
-                        qw.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
-                        qos_writer = Some(qw);
-                    }
                 }
             }
-            PID_TOPIC_NAME => { // PID_TOPIC_NAME
+            PID_TOPIC_NAME => {
                 if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value) {
                     topic_name = s.to_string_lossy().into_owned();
                 }
             }
-            PID_TYPE_NAME => { // PID_TYPE_NAME
+            PID_TYPE_NAME => {
                 if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value) {
                     type_name = s.to_string_lossy().into_owned();
                 }
             }
-            PID_DURABILITY => { // PID_DURABILITY
+            PID_DURABILITY => {
                 if param.value.len() >= 4 {
-                    let kind_val = u32::from_le_bytes([param.value[0], param.value[1], param.value[2], param.value[3]]);
-                    let kind = match kind_val {
-                        0 => dds_types::qos::DurabilityKind::Volatile,
-                        1 => dds_types::qos::DurabilityKind::TransientLocal,
-                        2 => dds_types::qos::DurabilityKind::Transient,
-                        3 => dds_types::qos::DurabilityKind::Persistent,
-                        _ => dds_types::qos::DurabilityKind::Volatile,
-                    };
-                    if let Some(ref mut qw) = qos_writer { qw.durability.kind = kind; }
-                    if let Some(ref mut qr) = qos_reader { qr.durability.kind = kind; }
+                    let kind_val = u32::from_le_bytes([
+                        param.value[0],
+                        param.value[1],
+                        param.value[2],
+                        param.value[3],
+                    ]);
+                    apply_durability_param(&mut writer_qos, &mut reader_qos, kind_val);
                 }
             }
-            PID_RELIABILITY => { // PID_RELIABILITY
-                if param.value.len() >= 4 {
-                    let kind_val = u32::from_le_bytes([param.value[0], param.value[1], param.value[2], param.value[3]]);
-                    let kind = match kind_val {
-                        1 => dds_types::qos::ReliabilityKind::BestEffort,
-                        2 => dds_types::qos::ReliabilityKind::Reliable,
-                        _ => dds_types::qos::ReliabilityKind::BestEffort,
-                    };
-                    if let Some(ref mut qw) = qos_writer { qw.reliability.kind = kind; }
-                    if let Some(ref mut qr) = qos_reader { qr.reliability.kind = kind; }
-                }
+            PID_RELIABILITY => {
+                apply_reliability_param(&mut writer_qos, &mut reader_qos, &param.value);
             }
-            PID_HISTORY => { // PID_HISTORY
-                if param.value.len() >= 4 {
-                    let kind_val = u32::from_le_bytes([param.value[0], param.value[1], param.value[2], param.value[3]]);
-                    let kind = match kind_val {
-                        0 => dds_types::qos::HistoryKind::KeepLast,
-                        1 => dds_types::qos::HistoryKind::KeepAll,
-                        _ => dds_types::qos::HistoryKind::KeepLast,
-                    };
-                    if let Some(ref mut qw) = qos_writer { qw.history.kind = kind; }
-                    if let Some(ref mut qr) = qos_reader { qr.history.kind = kind; }
-                }
+            PID_HISTORY => {
+                apply_history_param(&mut writer_qos, &mut reader_qos, &param.value);
+            }
+            PID_LIVELINESS => {
+                apply_liveliness_param(&mut writer_qos, &mut reader_qos, &param.value);
             }
             PID_PARTITION => {
                 let mut offset = 0;
@@ -1038,6 +1137,14 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
     if topic_name.is_empty() || type_name.is_empty() {
         return None;
     }
+
+    let (qos_writer, qos_reader) = if is_reader_entity(&guid.entity_id) {
+        (None, Some(reader_qos))
+    } else if is_writer_entity(&guid.entity_id) {
+        (Some(writer_qos), None)
+    } else {
+        (None, None)
+    };
 
     Some(DiscoveredEndpoint {
         guid,
@@ -1257,6 +1364,87 @@ mod tests {
         assert_eq!(decoded.unicast_locators[0].port, PORT_BASE as u32 + 10);
         assert_eq!(decoded.multicast_locators.len(), 1);
         assert_eq!(decoded.multicast_locators[0].port, PORT_BASE as u32);
+    }
+
+    #[test]
+    fn test_plcdr_encapsulation_header_is_little_endian() {
+        let participant = DiscoveredParticipant {
+            guid_prefix: GuidPrefix::new([9; 12]),
+            unicast_locators: vec![],
+            multicast_locators: vec![],
+            lease_duration: Duration::from_secs(30),
+            last_contact: std::time::Instant::now(),
+        };
+        let bytes = spdp_to_plcdr(&participant).unwrap();
+        assert_eq!(bytes[0..4], [0x03, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_sedp_roundtrip_history_and_liveliness() {
+        let mut writer_qos = dds_types::qos::DataWriterQos::default();
+        writer_qos.history = dds_types::qos::History {
+            kind: dds_types::qos::HistoryKind::KeepAll,
+            depth: 7,
+        };
+        writer_qos.liveliness = dds_types::qos::Liveliness {
+            kind: dds_types::qos::LivelinessKind::ManualByTopic,
+            lease_duration: Duration::from_secs(5),
+        };
+        let endpoint = DiscoveredEndpoint {
+            guid: Guid::new(
+                GuidPrefix::new([3; 12]),
+                dds_types::guid::EntityId::new([0, 0, 1, 0x02]),
+            ),
+            topic_name: "HistTopic".into(),
+            type_name: "HistType".into(),
+            qos_writer: Some(writer_qos.clone()),
+            qos_reader: None,
+            partition: vec![],
+            type_info: None,
+        };
+        let bytes = sedp_to_plcdr(&endpoint).unwrap();
+        let decoded = parse_sedp_packet(&bytes).unwrap();
+        let decoded_qos = decoded.qos_writer.expect("writer qos");
+        assert_eq!(decoded_qos.history.kind, dds_types::qos::HistoryKind::KeepAll);
+        assert_eq!(decoded_qos.history.depth, 7);
+        assert_eq!(
+            decoded_qos.liveliness.kind,
+            dds_types::qos::LivelinessKind::ManualByTopic
+        );
+        assert_eq!(decoded_qos.liveliness.lease_duration.seconds, 5);
+    }
+
+    #[test]
+    fn test_sedp_qos_before_guid_still_applied() {
+        let mut bytes = vec![0x03, 0x00, 0x00, 0x00]; // PlCdrLe
+        // PID_HISTORY KeepAll depth 3
+        bytes.extend_from_slice(&PID_HISTORY.to_le_bytes());
+        bytes.extend_from_slice(&8u16.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&3i32.to_le_bytes());
+        // PID_ENDPOINT_GUID reader
+        bytes.extend_from_slice(&PID_ENDPOINT_GUID.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        let mut guid = [0u8; 16];
+        guid[11] = 4;
+        guid[15] = 0x07;
+        bytes.extend_from_slice(&guid);
+        // PID_TOPIC_NAME
+        bytes.extend_from_slice(&PID_TOPIC_NAME.to_le_bytes());
+        bytes.extend_from_slice(&14u16.to_le_bytes());
+        bytes.extend_from_slice(b"QosFirstTopic\0");
+        bytes.extend_from_slice(&[0, 0]); // pad topic to 16 bytes
+        // PID_TYPE_NAME
+        bytes.extend_from_slice(&PID_TYPE_NAME.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"QosFirstType\0");
+        bytes.extend_from_slice(&[0, 0, 0]); // pad type to 16 bytes
+        bytes.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // PID_SENTINEL
+
+        let decoded = parse_sedp_packet(&bytes).unwrap();
+        let qos = decoded.qos_reader.expect("reader qos");
+        assert_eq!(qos.history.kind, dds_types::qos::HistoryKind::KeepAll);
+        assert_eq!(qos.history.depth, 3);
     }
 
     #[test]

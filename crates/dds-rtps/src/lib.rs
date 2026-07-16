@@ -348,6 +348,8 @@ pub struct Heartbeat {
     pub last_sn: SequenceNumber,
     /// Identifies the state of the writer.
     pub count: i32,
+    /// RTPS submessage flags (includes `FLAG_LIVELINESS` when asserting liveliness).
+    pub flags: u8,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -741,6 +743,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             first_sn,
                             last_sn,
                             count,
+                            flags,
                         }));
                     }
                 }
@@ -1060,7 +1063,7 @@ pub fn serialize_rtps_message(
             }
             Submessage::Heartbeat(hb) => {
                 buf.put_u8(SubmessageKind::Heartbeat as u8);
-                buf.put_u8(flags);
+                buf.put_u8(hb.flags);
 
                 if is_le {
                     buf.put_u16_le(28); // submessage size
@@ -1424,6 +1427,7 @@ impl RtpsEngine {
                 first_sn,
                 last_sn,
                 count,
+                flags: FLAG_LIVELINESS,
             };
 
             let subs = [Submessage::Heartbeat(hb)];
@@ -1462,11 +1466,13 @@ impl HistoryCache {
         }
     }
 
-    pub fn add_change(&mut self, change: CacheChange) {
-        // Enforce max_samples_per_instance
+    pub fn add_change(&mut self, change: CacheChange) -> bool {
         if self.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
             && self.changes.len() >= self.max_samples_per_instance as usize
         {
+            if matches!(self.history_kind, dds_types::qos::HistoryKind::KeepAll) {
+                return false;
+            }
             self.changes.remove(0);
         }
 
@@ -1484,6 +1490,7 @@ impl HistoryCache {
                 self.changes.remove(0);
             }
         }
+        true
     }
 
     pub fn remove_change(&mut self, sequence_number: SequenceNumber) {
@@ -2514,6 +2521,7 @@ mod tests {
             first_sn: SequenceNumber(1),
             last_sn: SequenceNumber(3),
             count: 1,
+            flags: 0,
         };
         let ack = reader.process_heartbeat(&hb);
         assert!(ack.is_some());

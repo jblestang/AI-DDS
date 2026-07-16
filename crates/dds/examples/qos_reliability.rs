@@ -197,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Reader] Received sample packet over UDP (len = {}).", len);
 
-            reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec());
+            reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec(), None);
 
             let received_boxed = reader.read_next()?;
             if let Some(received) = received_boxed.downcast_ref::<ReliableTelemetry>() {
@@ -260,7 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Simulate loopback network delivery.
             let serialized = ts.serialize(&sample)?;
-            reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized);
+            reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized, None);
 
             // 6. Read and assert the reliable sample.
             let received_boxed = reader.read_next()?;

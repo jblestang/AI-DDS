@@ -229,6 +229,8 @@ pub struct DataWriter {
     /// Registered keyed instances (DCPS instance lifecycle).
     registered_instances: Mutex<std::collections::HashMap<dds_types::instance::InstanceHandle, InstanceState>>,
     publication_matched_count: Mutex<i32>,
+    last_liveliness_assertion: Mutex<std::time::Instant>,
+    liveliness_lost_count: Mutex<i32>,
     is_enabled: std::sync::atomic::AtomicBool,
 }
 
@@ -276,8 +278,14 @@ impl DataWriter {
         };
 
         let mut w = self.rtps_writer.lock().unwrap();
-        w.writer_cache.add_change(change);
+        if !w.writer_cache.add_change(change) {
+            return Err(DdsError::OutOfResources("writer history cache full".into()));
+        }
         w.last_change_sequence_number = sn;
+
+        if self.qos.liveliness.kind != dds_types::qos::LivelinessKind::ManualByParticipant {
+            *self.last_liveliness_assertion.lock().unwrap() = std::time::Instant::now();
+        }
 
         if self.qos.durability.kind != dds_types::qos::DurabilityKind::Volatile {
             let mut cache = self.durability_cache.lock().unwrap();
@@ -286,9 +294,55 @@ impl DataWriter {
                 while cache.len() > self.qos.history.depth as usize {
                     cache.remove(0);
                 }
+            } else if self.qos.resource_limits.max_samples_per_instance
+                != dds_types::qos::LENGTH_UNLIMITED
+                && cache.len() > self.qos.resource_limits.max_samples_per_instance as usize
+            {
+                return Err(DdsError::OutOfResources("writer history cache full".into()));
             }
         }
         Ok(())
+    }
+
+    /// Assert writer liveliness for manual liveliness QoS modes.
+    pub fn assert_liveliness(&self) -> DdsResult<()> {
+        if !self.is_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DdsError::NotEnabled);
+        }
+        *self.last_liveliness_assertion.lock().unwrap() = std::time::Instant::now();
+        Ok(())
+    }
+
+    /// Detect manual liveliness lease expiry and notify listeners.
+    pub fn check_liveliness_timeouts(&self) {
+        let lease = self.qos.liveliness.lease_duration;
+        if lease.is_infinite() {
+            return;
+        }
+        let Some(std_lease) = lease.to_std() else {
+            return;
+        };
+        if matches!(
+            self.qos.liveliness.kind,
+            dds_types::qos::LivelinessKind::Automatic
+        ) {
+            return;
+        }
+        let last = *self.last_liveliness_assertion.lock().unwrap();
+        if std::time::Instant::now().duration_since(last) > std_lease {
+            let mut lost_count = self.liveliness_lost_count.lock().unwrap();
+            *lost_count += 1;
+            if let Some(listener) = self.listener.lock().unwrap().as_ref() {
+                listener.on_liveliness_lost(
+                    self,
+                    dds_types::status::LivelinessLostStatus {
+                        total_count: *lost_count,
+                        total_count_change: 1,
+                    },
+                );
+            }
+            *self.last_liveliness_assertion.lock().unwrap() = std::time::Instant::now();
+        }
     }
 
     /// Return cached samples for durability service (TransientLocal late joiners).
@@ -394,6 +448,9 @@ pub struct DataReader {
     pub acknack_count: Mutex<i32>,
     last_received_time: Mutex<Option<std::time::Instant>>,
     matched_writers: Mutex<std::collections::HashSet<Guid>>,
+    writer_liveliness_last: Mutex<std::collections::HashMap<Guid, std::time::Instant>>,
+    writer_is_alive: Mutex<std::collections::HashMap<Guid, bool>>,
+    alive_writer_count: Mutex<i32>,
     publication_matched_count: Mutex<i32>,
     is_enabled: std::sync::atomic::AtomicBool,
 }
@@ -459,10 +516,102 @@ impl DataReader {
         *l = listener;
     }
 
+    /// Record that a matched writer is still alive (DATA, Heartbeat, or matchmaking).
+    pub fn note_writer_liveliness(&self, writer_guid: Guid) {
+        let now = std::time::Instant::now();
+        self.writer_liveliness_last
+            .lock()
+            .unwrap()
+            .insert(writer_guid, now);
+
+        let mut alive_map = self.writer_is_alive.lock().unwrap();
+        let was_alive = alive_map.get(&writer_guid).copied().unwrap_or(false);
+        if !was_alive {
+            alive_map.insert(writer_guid, true);
+            let mut alive_count = self.alive_writer_count.lock().unwrap();
+            *alive_count += 1;
+            let not_alive_count = alive_map.values().filter(|alive| !**alive).count() as i32;
+            if let Some(listener) = self.listener.lock().unwrap().as_ref() {
+                listener.on_liveliness_changed(
+                    self,
+                    dds_types::status::LivelinessChangedStatus {
+                        alive_count: *alive_count,
+                        not_alive_count,
+                        alive_count_change: 1,
+                        not_alive_count_change: 0,
+                        last_publication_handle:
+                            dds_types::instance::InstanceHandle::from_key_bytes(
+                                &writer_guid.to_bytes(),
+                            ),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Expire writers that missed their liveliness lease duration.
+    pub fn check_liveliness_timeouts(&self) {
+        let lease = self.qos.liveliness.lease_duration;
+        if lease.is_infinite() {
+            return;
+        }
+        let Some(std_lease) = lease.to_std() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let matched: Vec<Guid> = self.matched_writers.lock().unwrap().iter().copied().collect();
+        let mut expired = Vec::new();
+        {
+            let last_seen = self.writer_liveliness_last.lock().unwrap();
+            let alive_map = self.writer_is_alive.lock().unwrap();
+            for writer_guid in matched {
+                if alive_map.get(&writer_guid).copied().unwrap_or(false) {
+                    if let Some(seen) = last_seen.get(&writer_guid) {
+                        if now.duration_since(*seen) > std_lease {
+                            expired.push(writer_guid);
+                        }
+                    }
+                }
+            }
+        }
+        for writer_guid in expired {
+            let mut alive_map = self.writer_is_alive.lock().unwrap();
+            if alive_map.get(&writer_guid).copied().unwrap_or(false) {
+                alive_map.insert(writer_guid, false);
+                let mut alive_count = self.alive_writer_count.lock().unwrap();
+                *alive_count = (*alive_count - 1).max(0);
+                let not_alive_count = alive_map.values().filter(|alive| !**alive).count() as i32;
+                if let Some(listener) = self.listener.lock().unwrap().as_ref() {
+                    listener.on_liveliness_changed(
+                        self,
+                        dds_types::status::LivelinessChangedStatus {
+                            alive_count: *alive_count,
+                            not_alive_count,
+                            alive_count_change: -1,
+                            not_alive_count_change: 1,
+                            last_publication_handle:
+                                dds_types::instance::InstanceHandle::from_key_bytes(
+                                    &writer_guid.to_bytes(),
+                                ),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     /// Push a received packet into the reader's cache (simulating RTPS matching).
-    pub fn push_sample(&self, key: dds_types::instance::InstanceHandle, bytes: Vec<u8>) {
+    pub fn push_sample(
+        &self,
+        key: dds_types::instance::InstanceHandle,
+        bytes: Vec<u8>,
+        writer_guid: Option<Guid>,
+    ) {
         if !self.is_enabled.load(std::sync::atomic::Ordering::SeqCst) {
             return;
+        }
+        if let Some(guid) = writer_guid {
+            self.note_writer_liveliness(guid);
         }
         let now = std::time::Instant::now();
         {
@@ -487,6 +636,9 @@ impl DataReader {
             if self.qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && samples.len() >= self.qos.resource_limits.max_samples_per_instance as usize
             {
+                if matches!(self.qos.history.kind, dds_types::qos::HistoryKind::KeepAll) {
+                    return;
+                }
                 samples.remove(0);
             }
 
@@ -544,7 +696,14 @@ impl DataReader {
         *count
     }
 
-    pub fn push_sample_sn(&self, key: dds_types::instance::InstanceHandle, bytes: Vec<u8>, sn: SequenceNumber) {
+    pub fn push_sample_sn(
+        &self,
+        key: dds_types::instance::InstanceHandle,
+        bytes: Vec<u8>,
+        sn: SequenceNumber,
+        writer_guid: Guid,
+    ) {
+        self.note_writer_liveliness(writer_guid);
         {
             let mut received = self.received_sns.lock().unwrap();
             received.insert(sn);
@@ -573,6 +732,9 @@ impl DataReader {
             if self.qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && samples.len() >= self.qos.resource_limits.max_samples_per_instance as usize
             {
+                if matches!(self.qos.history.kind, dds_types::qos::HistoryKind::KeepAll) {
+                    return;
+                }
                 samples.remove(0);
             }
             let sample_info = SampleInfo {
@@ -722,6 +884,8 @@ impl Publisher {
             durability_cache: Mutex::new(Vec::new()),
             registered_instances: Mutex::new(std::collections::HashMap::new()),
             publication_matched_count: Mutex::new(0),
+            last_liveliness_assertion: Mutex::new(std::time::Instant::now()),
+            liveliness_lost_count: Mutex::new(0),
             is_enabled: std::sync::atomic::AtomicBool::new(self.qos.entity_factory.autoenable_created_entities),
         });
 
@@ -862,6 +1026,9 @@ impl Subscriber {
             acknack_count: Mutex::new(1),
             last_received_time: Mutex::new(None),
             matched_writers: Mutex::new(std::collections::HashSet::new()),
+            writer_liveliness_last: Mutex::new(std::collections::HashMap::new()),
+            writer_is_alive: Mutex::new(std::collections::HashMap::new()),
+            alive_writer_count: Mutex::new(0),
             publication_matched_count: Mutex::new(0),
             is_enabled: std::sync::atomic::AtomicBool::new(self.qos.entity_factory.autoenable_created_entities),
         });
@@ -1013,6 +1180,7 @@ impl ParticipantHooks {
             reader.push_sample(
                 dds_types::instance::InstanceHandle::from_key_bytes(&endpoint.guid.to_bytes()),
                 payload.into_bytes(),
+                None,
             );
         }
     }
@@ -1111,6 +1279,8 @@ impl ParticipantHooks {
                         continue;
                     }
                     matched.insert(*remote_guid);
+                    drop(matched);
+                    reader.note_writer_liveliness(*remote_guid);
 
                     let mut sub_count = reader.publication_matched_count.lock().unwrap();
                     *sub_count += 1;
@@ -1127,6 +1297,105 @@ impl ParticipantHooks {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    fn run_unmatch_removed(
+        &self,
+        removed: Vec<(GuidPrefix, Vec<(Guid, dds_discovery::DiscoveredEndpoint)>)>,
+    ) {
+        for (_prefix, endpoints) in removed {
+            for (remote_guid, remote_ep) in endpoints {
+                if remote_ep.qos_reader.is_some() {
+                    for publisher in self.publishers.lock().unwrap().iter() {
+                        for writer in publisher.writers.lock().unwrap().values() {
+                            let removed_proxy = {
+                                let mut rtps_writer = writer.rtps_writer.lock().unwrap();
+                                let had = rtps_writer
+                                    .reader_proxies
+                                    .iter()
+                                    .any(|p| p.remote_reader_guid == remote_guid);
+                                if had {
+                                    rtps_writer.matched_reader_remove(&remote_guid);
+                                }
+                                had
+                            };
+                            if removed_proxy {
+                                let mut matched_count =
+                                    writer.publication_matched_count.lock().unwrap();
+                                *matched_count = (*matched_count - 1).max(0);
+                                if let Some(listener) = writer.listener.lock().unwrap().as_ref() {
+                                    listener.on_publication_matched(
+                                        writer,
+                                        dds_types::status::PublicationMatchedStatus {
+                                            total_count: *matched_count,
+                                            total_count_change: -1,
+                                            current_count: *matched_count,
+                                            current_count_change: -1,
+                                            last_subscription_handle:
+                                                dds_types::instance::InstanceHandle::from_key_bytes(
+                                                    &remote_guid.to_bytes(),
+                                                ),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if remote_ep.qos_writer.is_some() {
+                    for reader in self.local_readers.lock().unwrap().iter() {
+                        let removed_writer = {
+                            let mut matched = reader.matched_writers.lock().unwrap();
+                            matched.remove(&remote_guid)
+                        };
+                        if removed_writer {
+                            {
+                                let mut alive_map = reader.writer_is_alive.lock().unwrap();
+                                if alive_map.remove(&remote_guid).is_some() {
+                                    let mut alive_count =
+                                        reader.alive_writer_count.lock().unwrap();
+                                    *alive_count = (*alive_count - 1).max(0);
+                                }
+                            }
+                            reader
+                                .writer_liveliness_last
+                                .lock()
+                                .unwrap()
+                                .remove(&remote_guid);
+                            let mut sub_count = reader.publication_matched_count.lock().unwrap();
+                            *sub_count = (*sub_count - 1).max(0);
+                            if let Some(listener) = reader.listener.lock().unwrap().as_ref() {
+                                listener.on_subscription_matched(
+                                    reader,
+                                    dds_types::status::SubscriptionMatchedStatus {
+                                        total_count: *sub_count,
+                                        total_count_change: -1,
+                                        current_count: *sub_count,
+                                        current_count_change: -1,
+                                        last_publication_handle:
+                                            dds_types::instance::InstanceHandle::from_key_bytes(
+                                                &remote_guid.to_bytes(),
+                                            ),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_all_liveliness(&self) {
+        for reader in self.local_readers.lock().unwrap().iter() {
+            reader.check_liveliness_timeouts();
+        }
+        for publisher in self.publishers.lock().unwrap().iter() {
+            for writer in publisher.writers.lock().unwrap().values() {
+                writer.check_liveliness_timeouts();
             }
         }
     }
@@ -1550,10 +1819,14 @@ impl DomainParticipant {
             loop {
                 if shutdown_rx.try_recv().is_ok() { break; }
                 if last_lease_check.elapsed() >= std::time::Duration::from_secs(1) {
-                    {
+                    let removed = {
                         let mut disc = discovery.lock().unwrap();
-                        disc.check_lease_timeouts();
+                        disc.check_lease_timeouts()
+                    };
+                    if !removed.is_empty() {
+                        hooks.run_unmatch_removed(removed);
                     }
+                    hooks.check_all_liveliness();
                     last_lease_check = std::time::Instant::now();
                 }
                 let (len, from) = match recv_transport.recv_from_blocking(&mut buf) {
@@ -1619,6 +1892,18 @@ impl DomainParticipant {
                         }
 
                         let writer_id = d.writer_id;
+
+                        if writer_id
+                            == dds_types::guid::EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER
+                        {
+                            if let Some(participant) =
+                                dds_discovery::parse_spdp_packet(&final_payload)
+                            {
+                                discovery.lock().unwrap().process_spdp_packet(participant);
+                                hooks.run_matchmaking();
+                            }
+                            continue;
+                        }
                         
                         if writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER || writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER {
                             if let Some(endpoint) = dds_discovery::parse_sedp_packet(&final_payload) {
@@ -1673,6 +1958,7 @@ impl DomainParticipant {
                                         dds_types::instance::InstanceHandle::NIL,
                                         final_payload.clone(),
                                         d.writer_sn,
+                                        writer_guid,
                                     );
                                     delivered = true;
                                 }
@@ -1686,6 +1972,7 @@ impl DomainParticipant {
                                         dds_types::instance::InstanceHandle::NIL,
                                         final_payload.clone(),
                                         d.writer_sn,
+                                        writer_guid,
                                     );
                                     delivered = true;
                                     break;
@@ -1783,6 +2070,7 @@ impl DomainParticipant {
                                             dds_types::instance::InstanceHandle::NIL,
                                             final_payload.clone(),
                                             df.writer_sn,
+                                            writer_guid,
                                         );
                                         delivered = true;
                                     }
@@ -1796,6 +2084,7 @@ impl DomainParticipant {
                                             dds_types::instance::InstanceHandle::NIL,
                                             final_payload.clone(),
                                             df.writer_sn,
+                                            writer_guid,
                                         );
                                         delivered = true;
                                         break;
@@ -1866,8 +2155,18 @@ impl DomainParticipant {
                         }
                     } else if let Submessage::Heartbeat(hb) = sub {
                         println!("[spawn_receiver_loop] Found Submessage::Heartbeat. Reader: {:?}, Writer: {:?}", hb.reader_id, hb.writer_id);
+                        let remote_writer_guid = Guid::new(header.guid_prefix, hb.writer_id);
                         for reader in reg.values() {
                             if hb.reader_id == reader.guid.entity_id || hb.reader_id == EntityId::UNKNOWN {
+                                if (hb.flags & dds_rtps::FLAG_LIVELINESS) != 0
+                                    || reader
+                                        .matched_writers
+                                        .lock()
+                                        .unwrap()
+                                        .contains(&remote_writer_guid)
+                                {
+                                    reader.note_writer_liveliness(remote_writer_guid);
+                                }
                                 if reader.qos.reliability.kind == dds_types::qos::ReliabilityKind::Reliable {
                                     let mut missing = Vec::new();
                                     {
@@ -2393,7 +2692,7 @@ mod tests {
             let change = rtps.writer_cache.get_changes().first().unwrap();
             change.data_value.to_vec()
         };
-        reader.push_sample(dds_types::instance::InstanceHandle::NIL, bytes);
+        reader.push_sample(dds_types::instance::InstanceHandle::NIL, bytes, None);
 
         let read_boxed = reader.read_next().unwrap();
         let read_hw = read_boxed.downcast_ref::<HelloWorld>().unwrap();
@@ -2507,7 +2806,7 @@ mod tests {
         reader.set_listener(Some(listener.clone()));
 
         // Push a sample and check if call count incremented
-        reader.push_sample(dds_types::instance::InstanceHandle::NIL, vec![1, 2, 3]);
+        reader.push_sample(dds_types::instance::InstanceHandle::NIL, vec![1, 2, 3], None);
         assert_eq!(*listener.call_count.lock().unwrap(), 1);
     }
 

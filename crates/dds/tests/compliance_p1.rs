@@ -88,6 +88,7 @@ fn test_read_vs_take_semantics() {
         )
         .unwrap()
         .to_vec(),
+        None,
     );
 
     let (boxed, info) = reader.read().unwrap();

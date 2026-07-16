@@ -173,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Subscriber] Received sample packet over UDP (len = {}).", len);
 
-            reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec());
+            reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec(), None);
 
             let received_boxed = reader.read_next()?;
             if let Some(received) = received_boxed.downcast_ref::<HelloWorld>() {
@@ -229,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 7. Manually simulate delivery to the Reader's queue
             let serialized_bytes = ts.serialize(&sample)?;
-            reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized_bytes);
+            reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized_bytes, None);
 
             // 8. Read the sample
             let received_boxed = reader.read_next()?;

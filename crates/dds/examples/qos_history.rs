@@ -190,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut buf = [0u8; RECV_BUFFER_SIZE];
             for _ in 1..=SAMPLE_COUNT {
                 let (len, _) = socket.recv_from(&mut buf)?;
-                reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec());
+                reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec(), None);
             }
             println!("[Reader] Received {SAMPLE_COUNT} sample packets over UDP.");
 
@@ -256,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Simulate loopback network delivery.
                 let serialized = ts.serialize(&sample)?;
-                reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized);
+                reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized, None);
             }
 
             // 6. Read and assert the historical samples from the Reader queue.

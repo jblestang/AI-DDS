@@ -251,6 +251,7 @@ fn e2e_validate_implemented_features() {
         dds::cdr::serialize_to_bytes(&sample, dds::cdr::Endianness::LittleEndian)
             .unwrap()
             .to_vec(),
+        None,
     );
     let (still_there, info) = reader.read().unwrap();
     assert!(info.valid_data);
