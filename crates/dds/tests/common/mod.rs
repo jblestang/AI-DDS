@@ -242,12 +242,26 @@ pub fn inject_remote_participant(
     remote_prefix: GuidPrefix,
     remote_unicast: Locator,
 ) {
+    inject_remote_participant_with_lease(
+        local,
+        remote_prefix,
+        remote_unicast,
+        dds::types::time::Duration::from_secs(120),
+    );
+}
+
+pub fn inject_remote_participant_with_lease(
+    local: &dds::core::DomainParticipant,
+    remote_prefix: GuidPrefix,
+    remote_unicast: Locator,
+    lease_duration: dds::types::time::Duration,
+) {
     let mut disc = local.discovery.lock().unwrap();
     disc.process_spdp_packet(dds::discovery::DiscoveredParticipant {
         guid_prefix: remote_prefix,
         unicast_locators: vec![remote_unicast],
         multicast_locators: vec![],
-        lease_duration: dds::types::time::Duration::from_secs(120),
+        lease_duration,
         last_contact: std::time::Instant::now(),
     });
 }
