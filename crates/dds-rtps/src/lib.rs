@@ -141,7 +141,11 @@ pub const FLAG_LIVELINESS: u8 = 0x04;
 /// Submessage flag indicating invalid time
 pub const FLAG_INVALID_TIME: u8 = 0x02;
 
-/// Fixed length of Data submessage header (octetsToInlineQos)
+/// Octets from after the `octetsToInlineQos` field to inline QoS (readerId + writerId + writerSN).
+/// CycloneDDS sets this to 16; using 20 shifts the payload pointer and breaks PL-CDR deserialization.
+pub const DATA_OCTETS_TO_INLINE_QOS: u16 = 16;
+
+/// Bytes in a Data submessage before inline QoS / serialized payload (extraFlags through writerSN).
 pub const DATA_SUBMESSAGE_HEADER_LENGTH: u16 = 20;
 
 /// Fixed length of Heartbeat submessage header
@@ -1005,7 +1009,7 @@ pub fn serialize_rtps_message(
                 if is_le {
                     buf.put_u16_le(submessage_len as u16);
                     buf.put_u16_le(0); // extraFlags
-                    buf.put_u16_le(DATA_SUBMESSAGE_HEADER_LENGTH);
+                    buf.put_u16_le(DATA_OCTETS_TO_INLINE_QOS);
                     buf.put_slice(data.reader_id.as_bytes());
                     buf.put_slice(data.writer_id.as_bytes());
                     let (high, low) = data.writer_sn.to_high_low();
@@ -1014,7 +1018,7 @@ pub fn serialize_rtps_message(
                 } else {
                     buf.put_u16(submessage_len as u16);
                     buf.put_u16(0);
-                    buf.put_u16(DATA_SUBMESSAGE_HEADER_LENGTH);
+                    buf.put_u16(DATA_OCTETS_TO_INLINE_QOS);
                     buf.put_slice(data.reader_id.as_bytes());
                     buf.put_slice(data.writer_id.as_bytes());
                     let (high, low) = data.writer_sn.to_high_low();
@@ -2179,6 +2183,13 @@ mod tests {
         } else {
             panic!("Expected Data submessage");
         }
+
+        // CycloneDDS locates serializedPayload at smhdr + 8 + octetsToInlineQos (8 = through otiq field).
+        let sub_off = RTPS_HEADER_SIZE;
+        let octets_to_inline_qos = LittleEndian::read_u16(&msg[sub_off + 6..sub_off + 8]);
+        assert_eq!(octets_to_inline_qos, DATA_OCTETS_TO_INLINE_QOS);
+        let payload_off = sub_off + 8 + usize::from(octets_to_inline_qos);
+        assert_eq!(&msg[payload_off..payload_off + 3], &[10, 20, 30]);
     }
 
     #[test]

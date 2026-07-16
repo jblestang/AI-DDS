@@ -267,13 +267,6 @@ pub struct DiscoveryManager {
     type_lookup_replies: Vec<dds_xtypes::TypeLookupReply>,
 }
 
-/// Build an RTPS header for discovery samples with CycloneDDS-compatible vendor ID.
-fn interop_rtps_header(prefix: GuidPrefix) -> dds_rtps::RtpsHeader {
-    let mut header = dds_rtps::RtpsHeader::new(prefix);
-    header.vendor_id = dds_types::vendor::VendorId::new([0x01, 0x10]);
-    header
-}
-
 impl DiscoveryManager {
     #[must_use]
     pub fn new(local_prefix: GuidPrefix) -> Self {
@@ -360,7 +353,7 @@ impl DiscoveryManager {
             inline_qos: None,
             serialized_payload: bytes::Bytes::from(payload),
         };
-        let header = interop_rtps_header(self.local_prefix);
+        let header = dds_rtps::RtpsHeader::new(self.local_prefix);
         let msg = dds_rtps::serialize_rtps_message(
             &header,
             &[dds_rtps::Submessage::Data(data_sub)],
@@ -403,7 +396,7 @@ impl DiscoveryManager {
                         inline_qos: None,
                         serialized_payload: bytes::Bytes::from(payload),
                     };
-                    let header = interop_rtps_header(local_prefix);
+                    let header = dds_rtps::RtpsHeader::new(local_prefix);
                     let msg = dds_rtps::serialize_rtps_message(
                         &header,
                         &[dds_rtps::Submessage::Data(data_sub)],
@@ -482,7 +475,7 @@ impl DiscoveryManager {
             inline_qos: None,
             serialized_payload: Bytes::from(payload),
         };
-        let header = interop_rtps_header(self.local_prefix);
+        let header = dds_rtps::RtpsHeader::new(self.local_prefix);
         let msg = serialize_rtps_message(
             &header,
             &[Submessage::Data(data_sub)],
@@ -798,6 +791,41 @@ fn append_locator_param(parameters: &mut Vec<(u16, Vec<u8>)>, pid: u16, locator:
     parameters.push((pid, loc_bytes));
 }
 
+fn append_plcdr_string(parameters: &mut Vec<(u16, Vec<u8>)>, pid: u16, value: &str) {
+    let mut bytes = Vec::new();
+    append_plcdr_string_value(&mut bytes, value);
+    parameters.push((pid, bytes));
+}
+
+fn append_plcdr_string_value(out: &mut Vec<u8>, value: &str) {
+    let len = u32::try_from(value.len() + 1).unwrap_or(u32::MAX);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+    out.push(0);
+    while !out.len().is_multiple_of(4) {
+        out.push(0);
+    }
+}
+
+fn append_plcdr_string_sequence(out: &mut Vec<u8>, values: &[String]) {
+    out.extend_from_slice(&(values.len() as u32).to_le_bytes());
+    for value in values {
+        append_plcdr_string_value(out, value);
+    }
+}
+
+fn parse_plcdr_string(bytes: &[u8]) -> Option<String> {
+    if bytes.len() >= 4 {
+        let len = u32::from_le_bytes(bytes[0..4].try_into().ok()?) as usize;
+        if len >= 1 && 4 + len <= bytes.len() {
+            return Some(String::from_utf8_lossy(&bytes[4..4 + len - 1]).into_owned());
+        }
+    }
+    std::ffi::CStr::from_bytes_until_nul(bytes)
+        .ok()
+        .map(|s| s.to_string_lossy().into_owned())
+}
+
 fn append_participant_guid(parameters: &mut Vec<(u16, Vec<u8>)>, prefix: GuidPrefix) {
     let mut guid_bytes = Vec::new();
     guid_bytes.extend_from_slice(prefix.as_bytes());
@@ -817,122 +845,6 @@ fn append_protocol_vendor_domain(
     parameters.push((PID_DOMAIN_ID, domain_id.to_le_bytes().to_vec()));
 }
 
-fn patch_locator_bytes(value: &mut [u8], locator: &Locator) {
-    if value.len() >= 24 {
-        value[0..4].copy_from_slice(&(locator.kind as i32).to_le_bytes());
-        value[4..8].copy_from_slice(&locator.port.to_le_bytes());
-        value[8..24].copy_from_slice(&locator.address);
-    }
-}
-
-/// Patch a CycloneDDS SPDP PL-CDR capture for the local participant (interop path).
-fn patch_cyclonedds_spdp_template(
-    participant: &DiscoveredParticipant,
-    domain_id: u32,
-) -> Option<Vec<u8>> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../interop/wire/cyclonedds_spdp_plcdr_template.bin");
-    if std::env::var("AIDDS_USE_CYCLONE_SPDP_TEMPLATE").is_err() {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    let body_start = if bytes.len() >= 4
-        && (bytes[0..4] == [0x00, 0x03, 0x00, 0x00] || bytes[0..4] == [0x03, 0x00, 0x00, 0x00])
-    {
-        4
-    } else {
-        0
-    };
-    let header = bytes[..body_start].to_vec();
-    let body = bytes[body_start..].to_vec();
-    let mut off = 0;
-    let mut default_uc_idx = 0usize;
-    let mut met_uc_idx = 0usize;
-    let mut default_mc_idx = 0usize;
-    let mut met_mc_idx = 0usize;
-    let mut rebuilt = Vec::new();
-    rebuilt.extend_from_slice(&header);
-
-    while off + 4 <= body.len() {
-        let pid = u16::from_le_bytes(body[off..off + 2].try_into().ok()?);
-        let ln = u16::from_le_bytes(body[off + 2..off + 4].try_into().ok()?);
-        off += 4;
-        if pid == 0x0001 {
-            rebuilt.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
-            break;
-        }
-        if pid == 0x0000 {
-            off = off.saturating_add((ln as usize + 3) & !3);
-            continue;
-        }
-        if off + ln as usize > body.len() {
-            return None;
-        }
-        // Drop vendor-specific extended parameters when advertising vendor 1.26.
-        if pid >= 0x8000 {
-            off += (ln as usize + 3) & !3;
-            continue;
-        }
-        let val_start = off;
-        let val_end = off + ln as usize;
-        let mut value = body[val_start..val_end].to_vec();
-        match pid {
-            PID_DOMAIN_ID if ln >= 4 => {
-                value[0..4].copy_from_slice(&domain_id.to_le_bytes());
-            }
-            PID_VENDOR_ID if ln >= 2 => {
-                value[0..2].copy_from_slice(&dds_types::vendor::VendorId::THIS_IMPLEMENTATION.0);
-            }
-            PID_PARTICIPANT_GUID if ln >= 16 => {
-                value[0..12].copy_from_slice(participant.guid_prefix.as_bytes());
-                value[12..16].copy_from_slice(&EntityId::PARTICIPANT.0);
-            }
-            PID_LEASE_DURATION if ln >= 8 => {
-                value[0..4].copy_from_slice(&participant.lease_duration.seconds.to_le_bytes());
-                value[4..8].copy_from_slice(&participant.lease_duration.nanoseconds.to_le_bytes());
-            }
-            PID_DEFAULT_UNICAST_LOCATOR if ln >= 24 => {
-                if let Some(loc) = participant.unicast_locators.get(default_uc_idx) {
-                    patch_locator_bytes(&mut value, loc);
-                }
-                default_uc_idx += 1;
-            }
-            PID_METATRAFFIC_UNICAST_LOCATOR if ln >= 24 => {
-                let loc = participant
-                    .metatraffic_unicast_locators
-                    .get(met_uc_idx)
-                    .or_else(|| participant.unicast_locators.get(met_uc_idx));
-                if let Some(loc) = loc {
-                    patch_locator_bytes(&mut value, loc);
-                }
-                met_uc_idx += 1;
-            }
-            PID_DEFAULT_MULTICAST_LOCATOR if ln >= 24 => {
-                if let Some(loc) = participant.multicast_locators.get(default_mc_idx) {
-                    patch_locator_bytes(&mut value, loc);
-                }
-                default_mc_idx += 1;
-            }
-            PID_METATRAFFIC_MULTICAST_LOCATOR if ln >= 24 => {
-                if let Some(loc) = participant.multicast_locators.get(met_mc_idx) {
-                    patch_locator_bytes(&mut value, loc);
-                }
-                met_mc_idx += 1;
-            }
-            _ => {}
-        }
-        let padded = (value.len() + 3) & !3;
-        rebuilt.extend_from_slice(&pid.to_le_bytes());
-        rebuilt.extend_from_slice(&(padded as u16).to_le_bytes());
-        rebuilt.extend_from_slice(&value);
-        while !rebuilt.len().is_multiple_of(4) {
-            rebuilt.push(0);
-        }
-        off += (ln as usize + 3) & !3;
-    }
-    Some(rebuilt)
-}
-
 /// Serializes a `DiscoveredParticipant` to a PL-CDR parameter list.
 ///
 /// Reference: RTPS §9.6.3 — ParameterList values
@@ -940,20 +852,7 @@ pub fn spdp_to_plcdr(
     participant: &DiscoveredParticipant,
     domain_id: u32,
 ) -> dds_cdr::CdrResult<Vec<u8>> {
-    if std::env::var("AIDDS_USE_CYCLONE_SPDP_TEMPLATE").is_ok() {
-        if let Some(patched) = patch_cyclonedds_spdp_template(participant, domain_id) {
-            return Ok(patched);
-        }
-    }
-
     let mut parameters = Vec::new();
-
-    // CycloneDDS expects a PROPERTY_LIST (PID 0x0059) in SPDP samples.
-    if std::env::var("AIDDS_USE_CYCLONE_SPDP_TEMPLATE").is_ok() {
-        if let Ok(prop_list) = std::fs::read("/workspace/interop/wire/cyclonedds_spdp_property_list.bin") {
-            parameters.push((PID_PROPERTY_LIST, prop_list));
-        }
-    }
 
     append_protocol_vendor_domain(&mut parameters, domain_id);
 
@@ -1278,13 +1177,8 @@ pub fn sedp_to_plcdr(
     append_protocol_vendor_domain(&mut parameters, domain_id);
     append_participant_guid(&mut parameters, endpoint.guid.prefix);
 
-    let mut topic_name_bytes = endpoint.topic_name.as_bytes().to_vec();
-    topic_name_bytes.push(0);
-    parameters.push((PID_TOPIC_NAME, topic_name_bytes));
-
-    let mut type_name_bytes = endpoint.type_name.as_bytes().to_vec();
-    type_name_bytes.push(0);
-    parameters.push((PID_TYPE_NAME, type_name_bytes));
+    append_plcdr_string(&mut parameters, PID_TOPIC_NAME, &endpoint.topic_name);
+    append_plcdr_string(&mut parameters, PID_TYPE_NAME, &endpoint.type_name);
 
     let mut guid_bytes = Vec::with_capacity(16);
     guid_bytes.extend_from_slice(&endpoint.guid.prefix.0);
@@ -1316,15 +1210,7 @@ pub fn sedp_to_plcdr(
 
     if !endpoint.partition.is_empty() {
         let mut partition_bytes = Vec::new();
-        for name in &endpoint.partition {
-            let mut name_bytes = name.as_bytes().to_vec();
-            name_bytes.push(0);
-            while !name_bytes.len().is_multiple_of(4) {
-                name_bytes.push(0);
-            }
-            partition_bytes.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-            partition_bytes.extend_from_slice(&name_bytes);
-        }
+        append_plcdr_string_sequence(&mut partition_bytes, &endpoint.partition);
         parameters.push((PID_PARTITION, partition_bytes));
     }
 
@@ -1363,13 +1249,13 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                 }
             }
             PID_TOPIC_NAME => {
-                if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value) {
-                    topic_name = s.to_string_lossy().into_owned();
+                if let Some(name) = parse_plcdr_string(&param.value) {
+                    topic_name = name;
                 }
             }
             PID_TYPE_NAME => {
-                if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value) {
-                    type_name = s.to_string_lossy().into_owned();
+                if let Some(name) = parse_plcdr_string(&param.value) {
+                    type_name = name;
                 }
             }
             PID_DURABILITY => {
@@ -1394,21 +1280,31 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
             }
             PID_PARTITION => {
                 let mut offset = 0;
-                while offset + 4 <= param.value.len() {
-                    let len = u32::from_le_bytes([
-                        param.value[offset],
-                        param.value[offset + 1],
-                        param.value[offset + 2],
-                        param.value[offset + 3],
+                if param.value.len() >= 4 {
+                    let count = u32::from_le_bytes([
+                        param.value[0],
+                        param.value[1],
+                        param.value[2],
+                        param.value[3],
                     ]) as usize;
-                    offset += 4;
-                    if offset + len > param.value.len() {
-                        break;
+                    offset = 4;
+                    for _ in 0..count {
+                        if offset + 4 > param.value.len() {
+                            break;
+                        }
+                        if let Some(name) = parse_plcdr_string(&param.value[offset..]) {
+                            let len = u32::from_le_bytes([
+                                param.value[offset],
+                                param.value[offset + 1],
+                                param.value[offset + 2],
+                                param.value[offset + 3],
+                            ]) as usize;
+                            partition.push(name);
+                            offset += ((4 + len + 3) / 4) * 4;
+                        } else {
+                            break;
+                        }
                     }
-                    if let Ok(s) = std::ffi::CStr::from_bytes_until_nul(&param.value[offset..offset + len]) {
-                        partition.push(s.to_string_lossy().into_owned());
-                    }
-                    offset += len;
                 }
             }
             PID_UNICAST_LOCATOR
