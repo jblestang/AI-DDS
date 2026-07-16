@@ -11,6 +11,161 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
+/// External DDS implementation used for live interoperability tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteropVendor {
+    CycloneDds,
+    FastDds,
+    OpenSplice,
+}
+
+impl InteropVendor {
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::CycloneDds => "cyclonedds",
+            Self::FastDds => "fastdds",
+            Self::OpenSplice => "opensplice",
+        }
+    }
+
+    pub fn build_script(self) -> &'static str {
+        match self {
+            Self::CycloneDds => "interop/scripts/build-cyclonedds-apps.sh",
+            Self::FastDds => "interop/scripts/build-fastdds-apps.sh",
+            Self::OpenSplice => "interop/scripts/build-opensplice-apps.sh",
+        }
+    }
+
+    fn bin_env_var(self) -> &'static str {
+        match self {
+            Self::CycloneDds => "AIDDS_INTEROP_BIN_CYCLONEDDS",
+            Self::FastDds => "AIDDS_INTEROP_BIN_FASTDDS",
+            Self::OpenSplice => "AIDDS_INTEROP_BIN_OPENSPLICE",
+        }
+    }
+
+    fn default_build_dir(self) -> &'static str {
+        match self {
+            Self::CycloneDds => "target/interop-cyclonedds",
+            Self::FastDds => "target/interop-fastdds",
+            Self::OpenSplice => "target/interop-opensplice",
+        }
+    }
+}
+
+pub fn vendor_display_name(vendor: InteropVendor) -> &'static str {
+    match vendor {
+        InteropVendor::CycloneDds => "CycloneDDS",
+        InteropVendor::FastDds => "Fast DDS",
+        InteropVendor::OpenSplice => "OpenSplice",
+    }
+}
+
+/// Base domain id per vendor (tests use +0, +1, +2 offsets).
+pub fn vendor_base_domain(vendor: InteropVendor) -> u32 {
+    match vendor {
+        InteropVendor::CycloneDds => INTEROP_DOMAIN,
+        InteropVendor::FastDds => 80,
+        InteropVendor::OpenSplice => 90,
+    }
+}
+
+pub fn vendor_bin_dir(vendor: InteropVendor) -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var(vendor.bin_env_var()) {
+        let path = PathBuf::from(dir);
+        if path.join("interop_publisher").exists() {
+            return Some(path);
+        }
+    }
+
+    // Legacy env: only applies to CycloneDDS peer apps.
+    if vendor == InteropVendor::CycloneDds {
+        if let Ok(dir) = std::env::var("AIDDS_INTEROP_BIN") {
+            let path = PathBuf::from(dir);
+            if path.join("interop_publisher").exists() {
+                return Some(path);
+            }
+        }
+    }
+
+    let rel = PathBuf::from(vendor.default_build_dir());
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../")
+        .join(vendor.default_build_dir());
+    for dir in [rel, manifest] {
+        if dir.join("interop_publisher").exists() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+pub fn vendor_available(vendor: InteropVendor) -> bool {
+    vendor_bin_dir(vendor).is_some()
+}
+
+pub fn vendor_publisher(vendor: InteropVendor) -> Option<PathBuf> {
+    vendor_bin_dir(vendor).map(|d| d.join("interop_publisher"))
+}
+
+pub fn vendor_subscriber(vendor: InteropVendor) -> Option<PathBuf> {
+    vendor_bin_dir(vendor).map(|d| d.join("interop_subscriber"))
+}
+
+pub fn spawn_vendor_publisher(
+    vendor: InteropVendor,
+    domain: u32,
+    sample_id: u32,
+    payload: &str,
+) -> std::io::Result<std::process::Child> {
+    let bin = vendor_publisher(vendor).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "{} interop_publisher not found; run {}",
+                vendor_display_name(vendor),
+                vendor.build_script()
+            ),
+        )
+    })?;
+    Command::new(bin)
+        .arg(sample_id.to_string())
+        .arg(payload)
+        .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+pub fn spawn_vendor_subscriber(
+    vendor: InteropVendor,
+    domain: u32,
+    expect_id: Option<u32>,
+) -> std::io::Result<std::process::Child> {
+    let bin = vendor_subscriber(vendor).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "{} interop_subscriber not found; run {}",
+                vendor_display_name(vendor),
+                vendor.build_script()
+            ),
+        )
+    })?;
+    let mut cmd = Command::new(bin);
+    if let Some(id) = expect_id {
+        cmd.arg(id.to_string());
+    }
+    cmd.env("AIDDS_INTEROP_DOMAIN", domain.to_string())
+        .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+#[path = "interop_vendor.rs"]
+pub mod interop_vendor;
+
 pub const INTEROP_DOMAIN: u32 = 70;
 pub const INTEROP_TOPIC: &str = "AiDdsInteropMessage";
 pub const INTEROP_TYPE: &str = "AiDdsInterop::Message";
@@ -171,35 +326,19 @@ mod interop_type_tests {
 
 /// Locate CycloneDDS interop binaries built by `interop/scripts/build-cyclonedds-apps.sh`.
 pub fn cyclonedds_bin_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("AIDDS_INTEROP_BIN") {
-        let path = PathBuf::from(dir);
-        if path.join("interop_publisher").exists() {
-            return Some(path);
-        }
-    }
-
-    let candidates = [
-        PathBuf::from("target/interop-cyclonedds"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/interop-cyclonedds"),
-    ];
-    for dir in candidates {
-        if dir.join("interop_publisher").exists() {
-            return Some(dir);
-        }
-    }
-    None
+    vendor_bin_dir(InteropVendor::CycloneDds)
 }
 
 pub fn cyclonedds_available() -> bool {
-    cyclonedds_bin_dir().is_some()
+    vendor_available(InteropVendor::CycloneDds)
 }
 
 pub fn cyclonedds_publisher() -> Option<PathBuf> {
-    cyclonedds_bin_dir().map(|d| d.join("interop_publisher"))
+    vendor_publisher(InteropVendor::CycloneDds)
 }
 
 pub fn cyclonedds_subscriber() -> Option<PathBuf> {
-    cyclonedds_bin_dir().map(|d| d.join("interop_subscriber"))
+    vendor_subscriber(InteropVendor::CycloneDds)
 }
 
 pub fn spawn_cyclonedds_publisher(
@@ -207,37 +346,11 @@ pub fn spawn_cyclonedds_publisher(
     sample_id: u32,
     payload: &str,
 ) -> std::io::Result<std::process::Child> {
-    let bin = cyclonedds_publisher().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "CycloneDDS interop_publisher not found; run interop/scripts/build-cyclonedds-apps.sh",
-        )
-    })?;
-    Command::new(bin)
-        .arg(sample_id.to_string())
-        .arg(payload)
-        .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+    spawn_vendor_publisher(InteropVendor::CycloneDds, domain, sample_id, payload)
 }
 
 pub fn spawn_cyclonedds_subscriber(expect_id: Option<u32>) -> std::io::Result<std::process::Child> {
-    let bin = cyclonedds_subscriber().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "CycloneDDS interop_subscriber not found",
-        )
-    })?;
-    let mut cmd = Command::new(bin);
-    if let Some(id) = expect_id {
-        cmd.arg(id.to_string());
-    }
-    cmd.env("AIDDS_INTEROP_DOMAIN", INTEROP_DOMAIN.to_string())
-        .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+    spawn_vendor_subscriber(InteropVendor::CycloneDds, INTEROP_DOMAIN, expect_id)
 }
 
 pub fn wait_output(mut child: std::process::Child, timeout: Duration) -> std::io::Result<Output> {
