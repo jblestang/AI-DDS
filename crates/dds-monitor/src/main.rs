@@ -152,6 +152,55 @@ impl Default for MonitorApp {
     }
 }
 
+impl MonitorApp {
+    /// Build monitor state from a live `DiscoveryManager` snapshot.
+    #[must_use]
+    pub fn from_discovery_snapshot(snapshot: &dds_discovery::MonitorSnapshot) -> Self {
+        let participants = snapshot
+            .participants
+            .iter()
+            .map(|p| MonitoredParticipant {
+                alive: p.alive,
+                guid_prefix: format!("{:02x?}", p.guid_prefix.as_bytes()),
+                lease_duration: format!("{}s", p.lease_duration.seconds),
+                unicast_locators: p
+                    .unicast_locators
+                    .iter()
+                    .map(|l| format!("{l}"))
+                    .collect(),
+            })
+            .collect();
+        let endpoints = snapshot
+            .endpoints
+            .iter()
+            .map(|e| MonitoredEndpoint {
+                durability: "Volatile",
+                guid: format!("{:02x?}", e.guid.to_bytes()),
+                kind: if e.is_writer { "DataWriter" } else { "DataReader" },
+                matched: true,
+                reliability: "Reliable",
+                topic_name: e.topic_name.clone(),
+                type_name: e.type_name.clone(),
+            })
+            .collect();
+        Self {
+            endpoints,
+            handshakes: Vec::new(),
+            messages: Vec::new(),
+            participants,
+            selected_endpoint: None,
+            selected_panel: "Participants",
+            selected_participant: None,
+            stats: TrafficStats {
+                decrypted_packets: 0,
+                encrypted_packets: 0,
+                received_packets: 0,
+                sent_packets: 0,
+            },
+        }
+    }
+}
+
 impl eframe::App for MonitorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Visual configuration for premium dark theme
@@ -364,5 +413,38 @@ mod tests {
         assert_eq!(app.messages.len(), 1);
         assert!(app.selected_participant.is_none());
         assert!(app.selected_endpoint.is_none());
+    }
+
+    #[test]
+    fn test_monitor_from_discovery_snapshot() {
+        use dds_discovery::{DiscoveredEndpoint, DiscoveryManager, MonitorSnapshot};
+        use dds_types::guid::{EntityId, EntityKind, Guid, GuidPrefix};
+        use dds_types::locator::Locator;
+        use dds_types::time::Duration;
+
+        let local = GuidPrefix::new([1; 12]);
+        let mut manager = DiscoveryManager::new(local);
+        let remote = GuidPrefix::new([2; 12]);
+        manager.process_spdp_packet(dds_discovery::DiscoveredParticipant {
+            guid_prefix: remote,
+            unicast_locators: vec![Locator::udpv4(std::net::Ipv4Addr::LOCALHOST, 7400)],
+            multicast_locators: vec![],
+            lease_duration: Duration::from_secs(30),
+            last_contact: std::time::Instant::now(),
+        });
+        manager.process_sedp_endpoint(DiscoveredEndpoint {
+            guid: Guid::new(remote, EntityId::new([0, 0, 1, EntityKind::WriterWithKey as u8])),
+            topic_name: "Position".into(),
+            type_name: "Point".into(),
+            qos_writer: Some(dds_types::qos::DataWriterQos::default()),
+            qos_reader: None,
+            partition: vec![],
+            type_info: None,
+        });
+        let snapshot: MonitorSnapshot = manager.monitor_snapshot();
+        let app = MonitorApp::from_discovery_snapshot(&snapshot);
+        assert_eq!(app.participants.len(), 1);
+        assert_eq!(app.endpoints.len(), 1);
+        assert_eq!(app.endpoints[0].topic_name, "Position");
     }
 }

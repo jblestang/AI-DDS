@@ -337,15 +337,17 @@ impl CdrSerializer {
     }
 
     /// XCDR2: Write an Extended Member Header (EMHEADER).
-    /// Format: [1 bit (MustUnderstand) | 1 bit (Reserved) | 14 bits (Length) | 16 bits (MemberId)]
-    /// Or a larger version if length > 7. We'll use the short version for simplicity (assuming len < 65536).
+    /// Uses short form when length fits in 14 bits; long form (LC=4) otherwise.
     pub fn serialize_emheader(&mut self, member_id: u32, length: u32) {
         self.align(4);
-        // Short EMHEADER:
-        // [ 0 | 0 | Length (14 bits) | MemberId (16 bits) ]
-        // We'll write it as a u32
-        let header = ((length & 0x3FFF) << 16) | (member_id & 0xFFFF);
-        self.serialize_u32(header);
+        if length <= 0x3FFF {
+            let header = ((length & 0x3FFF) << 16) | (member_id & 0xFFFF);
+            self.serialize_u32(header);
+        } else {
+            let header = (4_u32 << 28) | (member_id & 0x0FFF_FFFF);
+            self.serialize_u32(header);
+            self.serialize_u32(length);
+        }
     }
 }
 
@@ -615,13 +617,19 @@ impl<'a> CdrDeserializer<'a> {
         self.deserialize_u32()
     }
 
-    /// XCDR2: Read an Extended Member Header (EMHEADER)
-    /// Returns (member_id, length)
+    /// XCDR2: Read an Extended Member Header (EMHEADER). Returns (member_id, length).
     pub fn deserialize_emheader(&mut self) -> CdrResult<(u32, u32)> {
         let header = self.deserialize_u32()?;
-        let length = (header >> 16) & 0x3FFF;
-        let member_id = header & 0xFFFF;
-        Ok((member_id, length))
+        let lc = (header >> 28) & 0x0F;
+        if lc == 4 {
+            let member_id = header & 0x0FFF_FFFF;
+            let length = self.deserialize_u32()?;
+            Ok((member_id, length))
+        } else {
+            let length = (header >> 16) & 0x3FFF;
+            let member_id = header & 0xFFFF;
+            Ok((member_id, length))
+        }
     }
 }
 
@@ -1272,5 +1280,19 @@ mod tests {
         let (id2, _len2) = de.deserialize_emheader().unwrap();
         assert_eq!(id2, 2);
         assert_eq!(de.deserialize_str().unwrap(), "hi");
+    }
+
+    #[test]
+    fn test_xcdr2_long_emheader_roundtrip() {
+        let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        let long_len = 20_000_u32;
+        ser.serialize_emheader(5, long_len);
+        ser.serialize_u32(99);
+        let bytes = ser.into_bytes();
+        let mut de = CdrDeserializer::new(&bytes, Endianness::LittleEndian);
+        let (id, len) = de.deserialize_emheader().unwrap();
+        assert_eq!(id, 5);
+        assert_eq!(len, long_len);
+        assert_eq!(de.deserialize_u32().unwrap(), 99);
     }
 }

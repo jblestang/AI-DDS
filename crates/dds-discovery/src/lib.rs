@@ -163,6 +163,32 @@ pub const fn is_writer_entity(entity_id: &EntityId) -> bool {
 
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Participant row for monitor UIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorParticipant {
+    pub guid_prefix: GuidPrefix,
+    pub alive: bool,
+    pub lease_duration: Duration,
+    pub unicast_locators: Vec<Locator>,
+}
+
+/// Endpoint row for monitor UIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorEndpoint {
+    pub guid: Guid,
+    pub topic_name: String,
+    pub type_name: String,
+    pub is_writer: bool,
+    pub partition: Vec<String>,
+}
+
+/// Point-in-time discovery state for monitoring tools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorSnapshot {
+    pub participants: Vec<MonitorParticipant>,
+    pub endpoints: Vec<MonitorEndpoint>,
+}
+
 /// Represents a remote `DataWriter` or `DataReader` discovered via SEDP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredEndpoint {
@@ -424,6 +450,44 @@ impl DiscoveryManager {
     #[must_use]
     pub const fn discovered_endpoints(&self) -> &HashMap<Guid, DiscoveredEndpoint> {
         &self.discovered_endpoints
+    }
+
+    /// Export a snapshot suitable for the `dds-monitor` application.
+    #[must_use]
+    pub fn monitor_snapshot(&self) -> MonitorSnapshot {
+        let participants = self
+            .discovered_participants
+            .values()
+            .map(|p| MonitorParticipant {
+                guid_prefix: p.guid_prefix,
+                alive: p.lease_duration != Duration::from_secs(0),
+                lease_duration: p.lease_duration,
+                unicast_locators: p.unicast_locators.clone(),
+            })
+            .collect();
+        let mut endpoints = Vec::new();
+        for ep in self.discovered_endpoints.values() {
+            endpoints.push(MonitorEndpoint {
+                guid: ep.guid,
+                topic_name: ep.topic_name.clone(),
+                type_name: ep.type_name.clone(),
+                is_writer: ep.qos_writer.is_some(),
+                partition: ep.partition.clone(),
+            });
+        }
+        for ep in self.local_endpoints.values() {
+            endpoints.push(MonitorEndpoint {
+                guid: ep.guid,
+                topic_name: ep.topic_name.clone(),
+                type_name: ep.type_name.clone(),
+                is_writer: ep.qos_writer.is_some(),
+                partition: ep.partition.clone(),
+            });
+        }
+        MonitorSnapshot {
+            participants,
+            endpoints,
+        }
     }
 
     /// Simulates a `TypeLookup` service request to retrieve a complete `TypeObject` for a discovered type.
@@ -1096,5 +1160,22 @@ mod tests {
         let parsed = parse_sedp_packet(&bytes).unwrap();
         assert_eq!(parsed.partition, endpoint.partition);
         assert_eq!(parsed.topic_name, "PartitionTopic");
+    }
+
+    #[test]
+    fn test_monitor_snapshot() {
+        let local = GuidPrefix::new([1; 12]);
+        let mut manager = DiscoveryManager::new(local);
+        let remote = GuidPrefix::new([2; 12]);
+        manager.process_spdp_packet(DiscoveredParticipant {
+            guid_prefix: remote,
+            unicast_locators: vec![],
+            multicast_locators: vec![],
+            lease_duration: Duration::from_secs(10),
+            last_contact: std::time::Instant::now(),
+        });
+        let snapshot = manager.monitor_snapshot();
+        assert_eq!(snapshot.participants.len(), 1);
+        assert!(snapshot.endpoints.is_empty());
     }
 }

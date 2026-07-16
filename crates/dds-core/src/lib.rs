@@ -144,6 +144,38 @@ pub trait TypeSupport: Send + Sync {
     ) -> DdsResult<dds_types::instance::InstanceHandle>;
 }
 
+/// Payload wrapper for builtin topic samples (raw bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinBytes(pub Vec<u8>);
+
+/// TypeSupport for builtin DCPS topic introspection readers.
+pub struct BuiltinBytesTypeSupport;
+
+impl TypeSupport for BuiltinBytesTypeSupport {
+    fn get_type_name(&self) -> &str {
+        "BuiltinBytes"
+    }
+
+    fn serialize(&self, value: &dyn core::any::Any) -> DdsResult<Vec<u8>> {
+        if let Some(v) = value.downcast_ref::<BuiltinBytes>() {
+            Ok(v.0.clone())
+        } else {
+            Err(DdsError::BadParameter("expected BuiltinBytes".into()))
+        }
+    }
+
+    fn deserialize(&self, bytes: &[u8]) -> DdsResult<Box<dyn core::any::Any>> {
+        Ok(Box::new(BuiltinBytes(bytes.to_vec())))
+    }
+
+    fn get_key_hash(
+        &self,
+        _value: &dyn core::any::Any,
+    ) -> DdsResult<dds_types::instance::InstanceHandle> {
+        Ok(dds_types::instance::InstanceHandle::NIL)
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Topic (DCPS §2.2.2.1.2)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -194,8 +226,16 @@ pub struct DataWriter {
     next_sn: Mutex<SequenceNumber>,
     /// Durability service cache for TransientLocal+ late joiners.
     durability_cache: Mutex<Vec<(dds_types::instance::InstanceHandle, Vec<u8>, SequenceNumber)>>,
+    /// Registered keyed instances (DCPS instance lifecycle).
+    registered_instances: Mutex<std::collections::HashMap<dds_types::instance::InstanceHandle, InstanceState>>,
     publication_matched_count: Mutex<i32>,
     is_enabled: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstanceState {
+    Alive,
+    Disposed,
 }
 
 impl DataWriter {
@@ -207,6 +247,17 @@ impl DataWriter {
         }
         let serialized = self.type_support.serialize(value)?;
         let key_hash = self.type_support.get_key_hash(value)?;
+        if !key_hash.is_nil() {
+            let instances = self.registered_instances.lock().unwrap();
+            if !instances.contains_key(&key_hash) {
+                return Err(DdsError::PreconditionNotMet(
+                    "instance not registered".into(),
+                ));
+            }
+            if instances.get(&key_hash) == Some(&InstanceState::Disposed) {
+                return Err(DdsError::PreconditionNotMet("instance disposed".into()));
+            }
+        }
 
         let sn = {
             let mut sn = self.next_sn.lock().unwrap();
@@ -244,6 +295,38 @@ impl DataWriter {
     #[must_use]
     pub fn durability_samples(&self) -> Vec<(dds_types::instance::InstanceHandle, Vec<u8>, SequenceNumber)> {
         self.durability_cache.lock().unwrap().clone()
+    }
+
+    /// Register a keyed instance before writing samples for it.
+    pub fn register_instance(&self, value: &dyn core::any::Any) -> DdsResult<dds_types::instance::InstanceHandle> {
+        let handle = self.type_support.get_key_hash(value)?;
+        if handle.is_nil() {
+            return Err(DdsError::BadParameter("type has no key".into()));
+        }
+        self.registered_instances
+            .lock()
+            .unwrap()
+            .insert(handle, InstanceState::Alive);
+        Ok(handle)
+    }
+
+    /// Mark an instance as disposed (DCPS dispose).
+    pub fn dispose(&self, handle: dds_types::instance::InstanceHandle) -> DdsResult<()> {
+        let mut instances = self.registered_instances.lock().unwrap();
+        if instances.get(&handle) != Some(&InstanceState::Alive) {
+            return Err(DdsError::PreconditionNotMet("instance not alive".into()));
+        }
+        instances.insert(handle, InstanceState::Disposed);
+        Ok(())
+    }
+
+    /// Unregister an instance (DCPS unregister_instance).
+    pub fn unregister_instance(&self, handle: dds_types::instance::InstanceHandle) -> DdsResult<()> {
+        let mut instances = self.registered_instances.lock().unwrap();
+        if instances.remove(&handle).is_none() {
+            return Err(DdsError::PreconditionNotMet("instance not registered".into()));
+        }
+        Ok(())
     }
 
     /// Set a listener to receive callbacks.
@@ -637,6 +720,7 @@ impl Publisher {
             listener: Mutex::new(None),
             next_sn: Mutex::new(SequenceNumber(1)),
             durability_cache: Mutex::new(Vec::new()),
+            registered_instances: Mutex::new(std::collections::HashMap::new()),
             publication_matched_count: Mutex::new(0),
             is_enabled: std::sync::atomic::AtomicBool::new(self.qos.entity_factory.autoenable_created_entities),
         });
@@ -800,6 +884,52 @@ impl Subscriber {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Durability service helper
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Send durability-cache samples directly to a newly matched reader proxy.
+fn send_durability_to_proxy(
+    writer: &DataWriter,
+    proxy: &dds_rtps::ReaderProxy,
+    transport: &UdpTransport,
+) -> SequenceNumber {
+    if writer.qos().durability.kind == dds_types::qos::DurabilityKind::Volatile {
+        return proxy.next_unsent_sn;
+    }
+    let samples = writer.durability_samples();
+    if samples.is_empty() {
+        return proxy.next_unsent_sn;
+    }
+    let header = dds_rtps::RtpsHeader::new(writer.guid().prefix);
+    let mut max_sn = proxy.next_unsent_sn;
+    for (_key, bytes, sn) in samples {
+        let data = dds_rtps::Data {
+            reader_id: proxy.remote_reader_guid.entity_id,
+            writer_id: writer.guid().entity_id,
+            writer_sn: sn,
+            inline_qos: None,
+            serialized_payload: bytes::Bytes::from(bytes),
+        };
+        let msg = dds_rtps::serialize_rtps_message(
+            &header,
+            &[dds_rtps::Submessage::Data(data)],
+            dds_rtps::Endianness::LittleEndian,
+        );
+        for loc in proxy
+            .unicast_locator_list
+            .iter()
+            .chain(proxy.multicast_locator_list.iter())
+        {
+            let _ = transport.send(&msg, loc);
+        }
+        if sn >= max_sn {
+            max_sn = SequenceNumber(sn.0 + 1);
+        }
+    }
+    max_sn
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Participant coordination (discovery matchmaking)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -933,6 +1063,15 @@ impl ParticipantHooks {
                             next_unsent_sn: dds_types::guid::SequenceNumber(1),
                         };
                         rtps_writer.matched_reader_add(proxy);
+                        let proxy_idx = rtps_writer.reader_proxies.len() - 1;
+                        if writer.qos().durability.kind != dds_types::qos::DurabilityKind::Volatile {
+                            let new_sn = send_durability_to_proxy(
+                                writer,
+                                &rtps_writer.reader_proxies[proxy_idx],
+                                &self.transport,
+                            );
+                            rtps_writer.reader_proxies[proxy_idx].next_unsent_sn = new_sn;
+                        }
 
                         let mut matched_count = writer.publication_matched_count.lock().unwrap();
                         *matched_count += 1;
@@ -947,13 +1086,6 @@ impl ParticipantHooks {
                                     last_subscription_handle: dds_types::instance::InstanceHandle::from_key_bytes(&remote_guid.to_bytes()),
                                 },
                             );
-                        }
-
-                        // Durability service: push cached samples to newly matched reader
-                        for (key, bytes, sn) in writer.durability_samples() {
-                            let _ = sn;
-                            let _ = key;
-                            let _ = bytes;
                         }
                     }
                 }
@@ -1274,6 +1406,22 @@ impl DomainParticipant {
         self.hooks.run_matchmaking();
     }
 
+    /// Create builtin DCPS topic readers (`DCPSPublication`, `DCPSSubscription`, `DCPSParticipant`).
+    pub fn enable_builtin_topics(&self) -> DdsResult<()> {
+        let ts = Arc::new(BuiltinBytesTypeSupport);
+        self.register_type("BuiltinBytes", ts.clone())?;
+        let subscriber = self.create_subscriber(SubscriberQos::default())?;
+        for topic_name in [
+            dds_types::builtin_topics::PARTICIPANT_TOPIC_NAME,
+            dds_types::builtin_topics::PUBLICATION_TOPIC_NAME,
+            dds_types::builtin_topics::SUBSCRIPTION_TOPIC_NAME,
+        ] {
+            let topic = self.create_topic(topic_name, "BuiltinBytes", TopicQos::default())?;
+            subscriber.create_datareader(&topic, DataReaderQos::default(), ts.clone())?;
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn spawn_receiver_loop(&self) -> std::thread::JoinHandle<()> {
         let registry = self.reader_registry.clone();
@@ -1579,6 +1727,64 @@ impl DomainParticipant {
                             }
                             if !delivered {
                                 println!("[spawn_receiver_loop] WARNING: Failed to deliver reassembled payload!");
+                            }
+                        } else if frag_entry.received_bytes < frag_entry.data_size {
+                            let missing: Vec<u32> = frag_entry
+                                .received_mask
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, received)| !**received)
+                                .map(|(i, _)| i as u32 + 1)
+                                .collect();
+                            if !missing.is_empty() {
+                                let nf = dds_rtps::NackFrag {
+                                    reader_id: df.reader_id,
+                                    writer_id: df.writer_id,
+                                    writer_sn: df.writer_sn,
+                                    fragment_starting_num: 1,
+                                    fragment_state: missing,
+                                    count: 1,
+                                };
+                                let header = dds_rtps::RtpsHeader::new(guid_prefix);
+                                let msg = dds_rtps::serialize_rtps_message(
+                                    &header,
+                                    &[dds_rtps::Submessage::NackFrag(nf)],
+                                    dds_rtps::Endianness::LittleEndian,
+                                );
+                                let dest = Locator::from_socket_addr(from);
+                                let _ = transport.send(&msg, &dest);
+                            }
+                        }
+                    } else if let Submessage::HeartbeatFrag(hbf) = sub {
+                        let writer_guid = Guid::new(header.guid_prefix, hbf.writer_id);
+                        let key = (writer_guid, hbf.writer_sn);
+                        if let Some(frag_entry) = reassembly_buffers.get(&key) {
+                            if frag_entry.received_bytes < frag_entry.data_size {
+                                let missing: Vec<u32> = frag_entry
+                                    .received_mask
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, received)| !**received)
+                                    .map(|(i, _)| i as u32 + 1)
+                                    .collect();
+                                if !missing.is_empty() {
+                                    let nf = dds_rtps::NackFrag {
+                                        reader_id: hbf.reader_id,
+                                        writer_id: hbf.writer_id,
+                                        writer_sn: hbf.writer_sn,
+                                        fragment_starting_num: 1,
+                                        fragment_state: missing,
+                                        count: 1,
+                                    };
+                                    let header = dds_rtps::RtpsHeader::new(guid_prefix);
+                                    let msg = dds_rtps::serialize_rtps_message(
+                                        &header,
+                                        &[dds_rtps::Submessage::NackFrag(nf)],
+                                        dds_rtps::Endianness::LittleEndian,
+                                    );
+                                    let dest = Locator::from_socket_addr(from);
+                                    let _ = transport.send(&msg, &dest);
+                                }
                             }
                         }
                     } else if let Submessage::Heartbeat(hb) = sub {
@@ -1988,6 +2194,22 @@ pub trait DataReaderListener: Listener {
         _status: dds_types::status::SubscriptionMatchedStatus,
     ) {
     }
+
+    /// Callback when requested deadline is missed.
+    fn on_requested_deadline_missed(
+        &self,
+        _reader: &DataReader,
+        _status: dds_types::status::RequestedDeadlineMissedStatus,
+    ) {
+    }
+
+    /// Callback when writer liveliness changes.
+    fn on_liveliness_changed(
+        &self,
+        _reader: &DataReader,
+        _status: dds_types::status::LivelinessChangedStatus,
+    ) {
+    }
 }
 
 /// `DataWriter` listener callback interface.
@@ -1998,6 +2220,22 @@ pub trait DataWriterListener: Listener {
         writer: &DataWriter,
         status: dds_types::status::PublicationMatchedStatus,
     );
+
+    /// Callback when offered deadline is missed.
+    fn on_offered_deadline_missed(
+        &self,
+        _writer: &DataWriter,
+        _status: dds_types::status::OfferedDeadlineMissedStatus,
+    ) {
+    }
+
+    /// Callback when liveliness is lost.
+    fn on_liveliness_lost(
+        &self,
+        _writer: &DataWriter,
+        _status: dds_types::status::LivelinessLostStatus,
+    ) {
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
