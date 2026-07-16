@@ -227,6 +227,11 @@ impl CdrSerializer {
         }
     }
 
+    /// Append raw bytes without alignment.
+    pub fn append_bytes(&mut self, bytes: &[u8]) {
+        self.buf.put_slice(bytes);
+    }
+
     /// Serialize a single octet (u8/i8).
     pub fn serialize_u8(&mut self, val: u8) {
         self.buf.put_u8(val);
@@ -337,10 +342,10 @@ impl CdrSerializer {
     }
 
     /// XCDR2: Write an Extended Member Header (EMHEADER).
-    /// Uses short form when length fits in 14 bits; long form (LC=4) otherwise.
+    /// Uses short form when length fits in 14 bits and member_id fits in 16 bits; long form (LC=4) otherwise.
     pub fn serialize_emheader(&mut self, member_id: u32, length: u32) {
         self.align(4);
-        if length <= 0x3FFF {
+        if length <= 0x3FFF && member_id <= 0xFFFF {
             let header = ((length & 0x3FFF) << 16) | (member_id & 0xFFFF);
             self.serialize_u32(header);
         } else {

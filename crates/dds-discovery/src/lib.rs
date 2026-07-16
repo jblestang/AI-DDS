@@ -222,6 +222,12 @@ pub struct DiscoveryManager {
     local_endpoints: HashMap<Guid, DiscoveredEndpoint>,
     // Mapping built-in or user-defined topics to active endpoints
     builtin_mappings: HashMap<String, Vec<Guid>>,
+    /// Local TypeObject database for TypeLookup replies.
+    type_object_db: HashMap<dds_xtypes::TypeIdentifier, dds_xtypes::TypeObject>,
+    /// Sequence number for TypeLookup reply samples.
+    type_lookup_reply_sn: dds_types::guid::SequenceNumber,
+    /// Replies received on the TypeLookup reply builtin endpoint.
+    type_lookup_replies: Vec<dds_xtypes::TypeLookupReply>,
 }
 
 impl DiscoveryManager {
@@ -233,6 +239,9 @@ impl DiscoveryManager {
             discovered_endpoints: HashMap::new(),
             local_endpoints: HashMap::new(),
             builtin_mappings: HashMap::new(),
+            type_object_db: HashMap::new(),
+            type_lookup_reply_sn: dds_types::guid::SequenceNumber(1),
+            type_lookup_replies: Vec::new(),
         }
     }
 
@@ -490,6 +499,123 @@ impl DiscoveryManager {
         }
     }
 
+    /// Store a TypeLookup reply received from the wire.
+    pub fn push_type_lookup_reply(&mut self, reply: dds_xtypes::TypeLookupReply) {
+        self.type_lookup_replies.push(reply);
+    }
+
+    /// Drain all pending TypeLookup replies (client-side inbox).
+    #[must_use]
+    pub fn drain_type_lookup_replies(&mut self) -> Vec<dds_xtypes::TypeLookupReply> {
+        std::mem::take(&mut self.type_lookup_replies)
+    }
+
+    /// Register a complete TypeObject for wire TypeLookup responses.
+    pub fn register_type_object(&mut self, type_object: dds_xtypes::TypeObject) {
+        let id = type_object.get_identifier();
+        self.type_object_db.insert(id, type_object);
+    }
+
+    /// Return the local TypeObject database (for tests and monitor tools).
+    #[must_use]
+    pub fn type_object_db(&self) -> &HashMap<dds_xtypes::TypeIdentifier, dds_xtypes::TypeObject> {
+        &self.type_object_db
+    }
+
+    /// Parse a TypeLookup request payload and build a compliant reply.
+    #[must_use]
+    pub fn handle_type_lookup_request(
+        &self,
+        payload: &[u8],
+    ) -> Option<dds_xtypes::TypeLookupReply> {
+        let request = dds_xtypes::TypeLookupRequest::from_wire_bytes(payload).ok()?;
+        Some(dds_xtypes::serve_type_lookup_request(
+            &request,
+            &self.type_object_db,
+        ))
+    }
+
+    /// Send a TypeLookup reply on the metatraffic channel (XCDR2 wire format).
+    pub fn send_type_lookup_reply(
+        &mut self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        _domain_id: u32,
+        reply: &dds_xtypes::TypeLookupReply,
+        destination: &Locator,
+    ) -> Result<(), String> {
+        use bytes::Bytes;
+        use dds_rtps::{serialize_rtps_message, Data, Endianness as RtpsEndianness, RtpsHeader, Submessage};
+
+        let payload = reply
+            .to_wire_bytes()
+            .map_err(|e| format!("{e:?}"))?;
+        let data_sub = Data {
+            reader_id: EntityId::UNKNOWN,
+            writer_id: EntityId::BUILTIN_TYPE_LOOKUP_REPLY_DATA_WRITER,
+            writer_sn: self.type_lookup_reply_sn,
+            inline_qos: None,
+            serialized_payload: Bytes::from(payload),
+        };
+        self.type_lookup_reply_sn = dds_types::guid::SequenceNumber(self.type_lookup_reply_sn.0 + 1);
+        let header = RtpsHeader::new(self.local_prefix);
+        let msg = serialize_rtps_message(
+            &header,
+            &[Submessage::Data(data_sub)],
+            RtpsEndianness::LittleEndian,
+        );
+        transport
+            .send(&msg, destination)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Send a TypeLookup request (client role) to a remote TypeLookup service.
+    pub fn send_type_lookup_request(
+        &mut self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        request: &dds_xtypes::TypeLookupRequest,
+        destination: &Locator,
+    ) -> Result<(), String> {
+        use bytes::Bytes;
+        use dds_rtps::{serialize_rtps_message, Data, Endianness as RtpsEndianness, RtpsHeader, Submessage};
+
+        let payload = request
+            .to_wire_bytes()
+            .map_err(|e| format!("{e:?}"))?;
+        let sn = request.header.request_id.sequence_number;
+        let data_sub = Data {
+            reader_id: EntityId::UNKNOWN,
+            writer_id: EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER,
+            writer_sn: sn,
+            inline_qos: None,
+            serialized_payload: Bytes::from(payload),
+        };
+        let header = RtpsHeader::new(self.local_prefix);
+        let msg = serialize_rtps_message(
+            &header,
+            &[Submessage::Data(data_sub)],
+            RtpsEndianness::LittleEndian,
+        );
+        transport
+            .send(&msg, destination)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Process an incoming TypeLookup request and send the reply to `destination`.
+    pub fn process_type_lookup_request(
+        &mut self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        payload: &[u8],
+        destination: &Locator,
+    ) -> bool {
+        if let Some(reply) = self.handle_type_lookup_request(payload) {
+            self.send_type_lookup_reply(transport, domain_id, &reply, destination)
+                .is_ok()
+        } else {
+            false
+        }
+    }
+
     /// Simulates a `TypeLookup` service request to retrieve a complete `TypeObject` for a discovered type.
     #[must_use]
     pub fn lookup_type_object(
@@ -499,7 +625,9 @@ impl DiscoveryManager {
     ) -> Option<dds_xtypes::TypeObject> {
         let ep = self.discovered_endpoints.get(endpoint_guid)?;
         let info = ep.type_info.as_ref()?;
-        db.get(&info.type_id).cloned()
+        db.get(&info.type_id)
+            .or_else(|| self.type_object_db.get(&info.type_id))
+            .cloned()
     }
 
     /// Remove a participant and all its associated endpoints.
@@ -1099,7 +1227,6 @@ mod tests {
         let mut manager = DiscoveryManager::new(local_prefix);
         let remote_prefix = GuidPrefix::new([2; 12]);
 
-        // Register remote participant so we can accept its endpoints
         let remote_participant = DiscoveredParticipant {
             guid_prefix: remote_prefix,
             unicast_locators: vec![],
@@ -1109,17 +1236,13 @@ mod tests {
         };
         manager.process_spdp_packet(remote_participant);
 
-        // Define a type, compute type information and type_id
         let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType {
             name: "Dummy".to_string(),
             extensibility: dds_xtypes::ExtensibilityKind::Final,
             members: vec![],
         });
         let r_id = r_obj.get_identifier();
-        let type_info = dds_xtypes::TypeInformation {
-            type_name: "MyInt".to_string(),
-            type_id: r_id.clone(),
-        };
+        manager.register_type_object(r_obj.clone());
 
         let endpoint_guid = Guid::new(remote_prefix, EntityId::new([0, 0, 1, 4]));
         let endpoint = DiscoveredEndpoint {
@@ -1129,17 +1252,31 @@ mod tests {
             qos_writer: None,
             qos_reader: None,
             partition: vec![],
-            type_info: Some(type_info),
+            type_info: Some(dds_xtypes::TypeInformation {
+                type_name: "MyInt".to_string(),
+                type_id: r_id.clone(),
+            }),
         };
         manager.process_sedp_endpoint(endpoint);
 
-        // Store complete TypeObject in a global/local type database
-        let mut db = HashMap::new();
-        db.insert(r_id, r_obj.clone());
-
-        // Perform TypeLookup
-        let lookup_res = manager.lookup_type_object(&endpoint_guid, &db).unwrap();
+        let lookup_res = manager.lookup_type_object(&endpoint_guid, &HashMap::new()).unwrap();
         assert_eq!(lookup_res, r_obj);
+
+        let request = dds_xtypes::make_get_types_request(
+            Guid::new(remote_prefix, EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER),
+            dds_types::guid::SequenceNumber(1),
+            dds_xtypes::type_lookup_instance_name(&local_prefix),
+            vec![r_id.clone()],
+        );
+        let wire = request.to_wire_bytes().unwrap();
+        let reply = manager.handle_type_lookup_request(&wire).unwrap();
+        match reply.return_data {
+            dds_xtypes::TypeLookupReturn::GetTypes(dds_xtypes::TypeLookupGetTypesResult::Ok(out)) => {
+                assert_eq!(out.types.len(), 1);
+                assert_eq!(out.types[0].type_object, r_obj);
+            }
+            _ => panic!("expected getTypes wire reply"),
+        }
     }
 
     #[test]

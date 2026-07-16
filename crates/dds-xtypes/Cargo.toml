@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 dds-types = { workspace = true }
 dds-cdr = { workspace = true }
 sha2 = { workspace = true }
+md5 = "0.7"
 thiserror = { workspace = true }
 
 [lints]
