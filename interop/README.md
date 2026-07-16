@@ -10,6 +10,7 @@ All vendors share `interop/idl/InteropMessage.idl` and the same machine-parseabl
 |--------|---------|-----------|---------------------|--------------|
 | **CycloneDDS** | [Eclipse Cyclone DDS](https://github.com/eclipse-cyclonedds/cyclonedds) (Eclipse IoT) | C (`interop/cyclonedds/`) | 73 | `build-cyclonedds-apps.sh` |
 | **Fast DDS** | [eProsima Fast DDS](https://github.com/eProsima/Fast-DDS) | C++ (`interop/fastdds/`) | 83 | `build-fastdds-apps.sh` |
+| **OpenDDS** | [OpenDDS](https://github.com/OpenDDS/OpenDDS) | C++ (`interop/opendds/`) | 93 | `build-opendds-apps.sh` |
 
 Each vendor runs the same three live tests (domains `base`, `base+1`, `base+2`):
 
@@ -25,7 +26,25 @@ Each vendor runs the same three live tests (domains `base`, `base+1`, `base+2`):
 | **RTI Connext DDS** | Commercial; would need an RTI Connext install and licensed peer apps. Not automated here. |
 | **OpenSplice / Vortex** | Removed from the repo — requires a proprietary `OSPL_HOME` install that CI cannot provision. |
 
-Adding RTI or another vendor later means a new `interop/<vendor>/` peer app pair plus a thin `interop_<vendor>.rs` test crate, same pattern as Cyclone/Fast DDS.
+Adding RTI or another vendor later means a new `interop/<vendor>/` peer app pair plus a thin `interop_<vendor>.rs` test crate, same pattern as Cyclone/Fast DDS/OpenDDS.
+
+## OpenDDS setup
+
+```bash
+# One-shot SDK install (ACE/TAO + OpenDDS; requires C++14 compiler):
+interop/scripts/build-opendds.sh
+
+# Build peer apps (needs OpenDDS source/build tree for ACE libs + generated headers):
+export OPENDDS_PREFIX=/tmp/opendds-install
+export OPENDDS_SRC=/tmp/opendds
+export LD_LIBRARY_PATH="/tmp/opendds-install/lib:/tmp/opendds/build/ace_tao/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+./interop/scripts/build-opendds-apps.sh
+cargo test -p dds --test interop_opendds -- --ignored --nocapture --test-threads=1
+```
+
+OpenDDS peer apps use RTPS/UDP (`OpenDDS::Rtps`, `OpenDDS::Rtps_Udp`) via `interop/opendds/rtps.ini` (`DCPSDefaultDiscovery=DEFAULT_RTPS`). The install prefix omits ACE/TAO static libraries, so `build-opendds-apps.sh` points CMake at `$OPENDDS_SRC/build/ace_tao` for linking and at `$OPENDDS_SRC/build` for generated RTPS headers.
+
+**Known gap:** live OpenDDS interop tests are wired up but currently fail on endpoint matching in this environment; the DevGuide Messenger example built in-tree works, so further OpenDDS-specific QoS/type work is tracked separately.
 
 ## Quick start (CycloneDDS)
 
@@ -65,6 +84,7 @@ cargo test -p dds --test interop_fastdds -- --ignored --nocapture --test-threads
 | CDR encapsulation | (included in `interop_wire`) | No |
 | Live CycloneDDS | `cargo test -p dds --test interop_cyclonedds -- --ignored --test-threads=1` | Cyclone build |
 | Live Fast DDS | `cargo test -p dds --test interop_fastdds -- --ignored --test-threads=1` | Fast DDS build |
+| Live OpenDDS | `cargo test -p dds --test interop_opendds -- --ignored --test-threads=1` | OpenDDS build |
 
 Run all available vendors:
 
@@ -105,8 +125,12 @@ Rust tests use `InteropTypeSupport` with **CdrLe encapsulation** for outbound us
 | `CYCLONEDDS_PREFIX` | CycloneDDS install prefix |
 | `FASTDDS_PREFIX` | Fast DDS install prefix (`CMAKE_PREFIX_PATH`) |
 | `FASTDDSGEN` | Path to `fastddsgen` (optional if on `PATH`) |
+| `OPENDDS_PREFIX` | OpenDDS install prefix (`CMAKE_PREFIX_PATH`) |
+| `OPENDDS_SRC` | OpenDDS source tree (default `/tmp/opendds`; used for ACE/TAO libs) |
+| `AIDDS_OPENDDS_CONFIG` | Path to `rtps.ini` (default: `rtps.ini` next to peer binaries) |
 | `AIDDS_INTEROP_BIN_CYCLONEDDS` | Built Cyclone peer app directory |
 | `AIDDS_INTEROP_BIN_FASTDDS` | Built Fast DDS peer app directory |
+| `AIDDS_INTEROP_BIN_OPENDDS` | Built OpenDDS peer app directory |
 | `AIDDS_INTEROP_BIN` | Legacy alias for Cyclone peer app directory |
 | `AIDDS_INTEROP_DOMAIN` | DDS domain id for peer apps (per-run) |
 | `AIDDS_INTEROP_WAIT_MATCH` | Publisher waits for reader (`1` default) |
@@ -116,6 +140,7 @@ Default build output directories:
 
 - `target/interop-cyclonedds/`
 - `target/interop-fastdds/`
+- `target/interop-opendds/`
 
 ## OMG Shapes Demo (Square / Circle / Triangle)
 
@@ -164,6 +189,7 @@ Keyed AI-DDS writers must call `register_instance()` before `write()` (handled i
 | Parse CycloneDDS RTPS framing | Pass |
 | Live CycloneDDS pub/sub | Pass (`interop_cyclonedds`, `#[ignore]`) |
 | Live Fast DDS pub/sub | Pass (`interop_fastdds`, `#[ignore]`) |
+| Live OpenDDS pub/sub | Known gap (`interop_opendds`, `#[ignore]`) — peer apps build; live matching under investigation |
 | Shapes Demo CycloneDDS (Square/Circle/Triangle) | Pass (`interop_shapes_cyclonedds`, `#[ignore]`) |
 | Shapes Demo Fast DDS (AI-DDS → vendor) | Pass (`interop_shapes_fastdds`, `#[ignore]`) |
 | Shapes Demo Fast DDS (vendor → AI-DDS keyed) | Known gap (tests `#[ignore]`) |

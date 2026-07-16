@@ -11,6 +11,9 @@ fi
 if [[ -d /tmp/cyclonedds-install/lib ]]; then
   export LD_LIBRARY_PATH="/tmp/cyclonedds-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
+if [[ -d /tmp/opendds-install/lib ]]; then
+  export LD_LIBRARY_PATH="/tmp/opendds-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 echo "==> Wire compliance tests (no external deps)"
 cargo test -p dds --test interop_wire
@@ -51,9 +54,11 @@ run_shapes_tests() {
 # Legacy AIDDS_INTEROP_BIN still maps to CycloneDDS when set.
 CYCLONE_BIN="${AIDDS_INTEROP_BIN_CYCLONEDDS:-${AIDDS_INTEROP_BIN:-$ROOT/target/interop-cyclonedds}}"
 FASTDDS_BIN="${AIDDS_INTEROP_BIN_FASTDDS:-$ROOT/target/interop-fastdds}"
+OPENDDS_BIN="${AIDDS_INTEROP_BIN_OPENDDS:-$ROOT/target/interop-opendds}"
 
 run_vendor_tests "CycloneDDS" interop_cyclonedds "$CYCLONE_BIN" || true
 run_vendor_tests "Fast DDS" interop_fastdds "$FASTDDS_BIN" || true
+run_vendor_tests "OpenDDS" interop_opendds "$OPENDDS_BIN" || true
 
 run_shapes_tests "CycloneDDS" interop_shapes_cyclonedds "$CYCLONE_BIN" || true
 run_shapes_tests "Fast DDS" interop_shapes_fastdds "$FASTDDS_BIN" || true

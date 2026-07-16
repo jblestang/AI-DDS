@@ -16,6 +16,7 @@ use std::time::Duration;
 pub enum InteropVendor {
     CycloneDds,
     FastDds,
+    OpenDds,
 }
 
 impl InteropVendor {
@@ -23,6 +24,7 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "cyclonedds",
             Self::FastDds => "fastdds",
+            Self::OpenDds => "opendds",
         }
     }
 
@@ -30,6 +32,7 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "interop/scripts/build-cyclonedds-apps.sh",
             Self::FastDds => "interop/scripts/build-fastdds-apps.sh",
+            Self::OpenDds => "interop/scripts/build-opendds-apps.sh",
         }
     }
 
@@ -37,6 +40,7 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "AIDDS_INTEROP_BIN_CYCLONEDDS",
             Self::FastDds => "AIDDS_INTEROP_BIN_FASTDDS",
+            Self::OpenDds => "AIDDS_INTEROP_BIN_OPENDDS",
         }
     }
 
@@ -44,6 +48,7 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "target/interop-cyclonedds",
             Self::FastDds => "target/interop-fastdds",
+            Self::OpenDds => "target/interop-opendds",
         }
     }
 }
@@ -52,6 +57,7 @@ pub fn vendor_display_name(vendor: InteropVendor) -> &'static str {
     match vendor {
         InteropVendor::CycloneDds => "CycloneDDS",
         InteropVendor::FastDds => "Fast DDS",
+        InteropVendor::OpenDds => "OpenDDS",
     }
 }
 
@@ -60,6 +66,7 @@ pub fn vendor_base_domain(vendor: InteropVendor) -> u32 {
     match vendor {
         InteropVendor::CycloneDds => INTEROP_DOMAIN,
         InteropVendor::FastDds => 83,
+        InteropVendor::OpenDds => 93,
     }
 }
 
@@ -105,6 +112,36 @@ pub fn vendor_subscriber(vendor: InteropVendor) -> Option<PathBuf> {
     vendor_bin_dir(vendor).map(|d| d.join("interop_subscriber"))
 }
 
+pub fn opendds_config_file() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("AIDDS_OPENDDS_CONFIG") {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    for dir in vendor_bin_dir(InteropVendor::OpenDds).into_iter() {
+        let ini = dir.join("rtps.ini");
+        if ini.exists() {
+            return Some(ini);
+        }
+    }
+    None
+}
+
+fn apply_vendor_runtime(cmd: &mut Command, vendor: InteropVendor) {
+    if let Ok(ld) = std::env::var("LD_LIBRARY_PATH") {
+        cmd.env("LD_LIBRARY_PATH", ld);
+    }
+    if vendor == InteropVendor::FastDds {
+        cmd.env("AIDDS_FASTDDS_NO_PROFILE", "1");
+    }
+    if vendor == InteropVendor::OpenDds {
+        if let Some(ini) = opendds_config_file() {
+            cmd.arg("-DCPSConfigFile").arg(ini);
+        }
+    }
+}
+
 pub fn spawn_vendor_publisher(
     vendor: InteropVendor,
     domain: u32,
@@ -122,18 +159,14 @@ pub fn spawn_vendor_publisher(
         )
     })?;
     let mut cmd = Command::new(&bin);
+    apply_vendor_runtime(&mut cmd, vendor);
     cmd.arg(sample_id.to_string())
         .arg(payload)
         .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    if let Ok(ld) = std::env::var("LD_LIBRARY_PATH") {
-        cmd.env("LD_LIBRARY_PATH", ld);
-    }
-    if vendor == InteropVendor::FastDds {
-        cmd.env("AIDDS_FASTDDS_NO_PROFILE", "1");
-    }
-    cmd.env("AIDDS_INTEROP_WAIT_MATCH", "1").spawn()
+        .stderr(Stdio::null())
+        .env("AIDDS_INTEROP_WAIT_MATCH", "1")
+        .spawn()
 }
 
 pub fn spawn_vendor_subscriber(
@@ -152,12 +185,7 @@ pub fn spawn_vendor_subscriber(
         )
     })?;
     let mut cmd = Command::new(&bin);
-    if let Ok(ld) = std::env::var("LD_LIBRARY_PATH") {
-        cmd.env("LD_LIBRARY_PATH", ld);
-    }
-    if vendor == InteropVendor::FastDds {
-        cmd.env("AIDDS_FASTDDS_NO_PROFILE", "1");
-    }
+    apply_vendor_runtime(&mut cmd, vendor);
     if let Some(id) = expect_id {
         cmd.arg(id.to_string());
     }

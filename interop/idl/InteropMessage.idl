@@ -1,5 +1,7 @@
 module AiDdsInterop
 {
+  @final
+  @topic
   struct Message
   {
     unsigned long id;
