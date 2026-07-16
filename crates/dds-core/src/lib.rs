@@ -142,6 +142,16 @@ pub trait TypeSupport: Send + Sync {
         &self,
         value: &dyn core::any::Any,
     ) -> DdsResult<dds_types::instance::InstanceHandle>;
+
+    /// Return true when samples are keyless (no instance key).
+    fn is_keyless(&self) -> bool {
+        false
+    }
+
+    /// Pre-serialized XCDR2 TypeInformation for SEDP, when available.
+    fn type_information_wire(&self) -> Option<&[u8]> {
+        None
+    }
 }
 
 /// Payload wrapper for builtin topic samples (raw bytes).
@@ -402,6 +412,11 @@ impl DataWriter {
     #[must_use]
     pub const fn topic(&self) -> &Topic {
         &self.topic
+    }
+
+    #[must_use]
+    pub fn type_information_wire(&self) -> Option<&[u8]> {
+        self.type_support.type_information_wire()
     }
 
     /// Enables the DataWriter.
@@ -684,6 +699,11 @@ impl DataReader {
         &self.topic
     }
 
+    #[must_use]
+    pub fn type_information_wire(&self) -> Option<&[u8]> {
+        self.type_support.type_information_wire()
+    }
+
     /// Enables the DataReader.
     pub fn enable(&self) -> DdsResult<()> {
         self.is_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -826,11 +846,16 @@ impl Publisher {
         }
 
         let mut writers = self.writers.lock().unwrap();
+        let entity_kind = if type_support.is_keyless() {
+            EntityKind::WriterNoKey
+        } else {
+            EntityKind::WriterWithKey
+        };
         let writer_entity_id = EntityId::new([
             0x00,
             0x00,
             (writers.len() + 1) as u8,
-            EntityKind::WriterWithKey as u8,
+            entity_kind as u8,
         ]);
         let writer_guid = Guid::new(self.guid.prefix, writer_entity_id);
 
@@ -1007,11 +1032,16 @@ impl Subscriber {
         }
 
         let mut readers = self.readers.lock().unwrap();
+        let entity_kind = if type_support.is_keyless() {
+            EntityKind::ReaderNoKey
+        } else {
+            EntityKind::ReaderWithKey
+        };
         let reader_entity_id = EntityId::new([
             0x00,
             0x00,
             (readers.len() + 1) as u8,
-            EntityKind::ReaderWithKey as u8,
+            entity_kind as u8,
         ]);
         let reader_guid = Guid::new(self.guid_prefix, reader_entity_id);
 
@@ -1079,7 +1109,12 @@ fn send_durability_to_proxy(
         };
         let msg = dds_rtps::serialize_rtps_message(
             &header,
-            &[dds_rtps::Submessage::Data(data)],
+            &[
+                dds_rtps::Submessage::InfoDst(dds_rtps::InfoDst {
+                    guid_prefix: proxy.remote_reader_guid.prefix,
+                }),
+                dds_rtps::Submessage::Data(data),
+            ],
             dds_rtps::Endianness::LittleEndian,
         );
         for loc in proxy
@@ -1137,6 +1172,10 @@ impl ParticipantHooks {
         Locator::udpv4(self.advertise_ipv4(), self.user_unicast_port())
     }
 
+    fn metatraffic_unicast_locator(&self) -> Locator {
+        Locator::udpv4(self.advertise_ipv4(), self.unicast_port)
+    }
+
     fn spdp_locators(&self) -> (Vec<Locator>, Vec<Locator>, Vec<Locator>) {
         let ip = self.advertise_ipv4();
         let metatraffic_unicast = Locator::udpv4(ip, self.unicast_port);
@@ -1162,8 +1201,12 @@ impl ParticipantHooks {
             qos_reader: None,
             partition: Self::partition_names(publisher_partition),
             unicast_locators: vec![self.user_unicast_locator()],
+            metatraffic_unicast_locators: vec![self.metatraffic_unicast_locator()],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: writer
+                .type_information_wire()
+                .map(|b| b.to_vec()),
         };
         let mut disc = self.discovery.lock().unwrap();
         disc.register_local_endpoint(endpoint.clone());
@@ -1181,8 +1224,12 @@ impl ParticipantHooks {
             qos_reader: Some(reader.qos().clone()),
             partition: Self::partition_names(subscriber_partition),
             unicast_locators: vec![self.user_unicast_locator()],
+            metatraffic_unicast_locators: vec![self.metatraffic_unicast_locator()],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: reader
+                .type_information_wire()
+                .map(|b| b.to_vec()),
         };
         let mut disc = self.discovery.lock().unwrap();
         disc.register_local_endpoint(endpoint.clone());
@@ -1752,6 +1799,84 @@ impl DomainParticipant {
         Ok(())
     }
 
+    fn maybe_send_builtin_sedp_acknack(
+        hb: &dds_rtps::Heartbeat,
+        remote_prefix: dds_types::guid::GuidPrefix,
+        local_prefix: dds_types::guid::GuidPrefix,
+        reply_to: &std::net::SocketAddr,
+        sedp_received: &Arc<
+            Mutex<
+                HashMap<
+                    dds_types::guid::Guid,
+                    std::collections::HashSet<dds_types::guid::SequenceNumber>,
+                >,
+            >,
+        >,
+        sedp_acknack_count: &Arc<Mutex<HashMap<dds_types::guid::EntityId, i32>>>,
+        transport: &Arc<dds_rtps::UdpTransport>,
+    ) {
+        if hb.writer_id != dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+            && hb.writer_id != dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
+        {
+            return;
+        }
+        let local_reader_id = if hb.writer_id
+            == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+        {
+            dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER
+        } else {
+            dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_READER
+        };
+        if hb.reader_id != local_reader_id && hb.reader_id != dds_types::guid::EntityId::UNKNOWN {
+            return;
+        }
+        let remote_writer_guid = dds_types::guid::Guid::new(remote_prefix, hb.writer_id);
+        let received_set = sedp_received
+            .lock()
+            .unwrap()
+            .get(&remote_writer_guid)
+            .cloned()
+            .unwrap_or_default();
+        let mut missing = Vec::new();
+        if hb.last_sn.0 >= hb.first_sn.0 {
+            for sn_val in hb.first_sn.0..=hb.last_sn.0 {
+                let sn = dds_types::guid::SequenceNumber(sn_val);
+                if !received_set.contains(&sn) {
+                    missing.push(sn);
+                }
+            }
+        } else if !received_set.contains(&hb.first_sn) {
+            missing.push(hb.first_sn);
+        }
+        if missing.is_empty() {
+            return;
+        }
+        let mut counts = sedp_acknack_count.lock().unwrap();
+        let count = counts.entry(local_reader_id).or_insert(0);
+        *count += 1;
+        let ack_count = *count;
+        drop(counts);
+        let ack_sub = dds_rtps::Submessage::AckNack(dds_rtps::AckNack {
+            reader_id: local_reader_id,
+            writer_id: hb.writer_id,
+            reader_sn_state: missing,
+            count: ack_count,
+        });
+        let header = dds_rtps::RtpsHeader::new(local_prefix);
+        let msg = dds_rtps::serialize_rtps_message(
+            &header,
+            &[
+                dds_rtps::Submessage::InfoDst(dds_rtps::InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                ack_sub,
+            ],
+            dds_rtps::Endianness::LittleEndian,
+        );
+        let dest = dds_types::locator::Locator::from_socket_addr(*reply_to);
+        let _ = transport.send(&msg, &dest);
+    }
+
     #[must_use]
     pub fn spawn_receiver_loop(&self) -> std::thread::JoinHandle<()> {
         let registry = self.reader_registry.clone();
@@ -1765,7 +1890,6 @@ impl DomainParticipant {
         let domain_id = self.domain_id;
         let discovery = self.discovery.clone();
         let hooks = self.hooks.clone();
-        println!("[spawn_receiver_loop] Spawning receiver loop for port {}", port);
         
         struct FragmentBuffer {
             data_size: usize,
@@ -1779,6 +1903,12 @@ impl DomainParticipant {
         std::thread::spawn(move || {
             let mut reassembly_buffers: HashMap<(Guid, SequenceNumber), FragmentBuffer> = HashMap::new();
             let mut last_lease_check = std::time::Instant::now();
+            let sedp_acknack_count: Arc<Mutex<HashMap<EntityId, i32>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+            let sedp_received_shared = Arc::new(Mutex::new(HashMap::<
+                Guid,
+                std::collections::HashSet<SequenceNumber>,
+            >::new()));
 
             let recv_transport = match transport.try_clone() {
                 Ok(t) => t,
@@ -1791,15 +1921,14 @@ impl DomainParticipant {
                 eprintln!("[DomainParticipant] failed to set blocking mode on port {port}");
                 return;
             }
-            println!("[spawn_receiver_loop] Reusing transport socket on port {port}");
             let user_port = port + (USER_UNICAST_OFFSET - SPDP_UNICAST_OFFSET) as u32;
             {
                 let registry_user = registry.clone();
                 let discovery_user = discovery.clone();
-                let hooks_user = hooks.clone();
                 let security_crypto_user = security_crypto.clone();
                 let local_crypto_user = local_crypto_handle;
                 let remote_crypto_user = remote_crypto_handles.clone();
+                let user_guid_prefix = guid_prefix;
                 std::thread::spawn(move || {
                     let user_transport = match UdpTransport::bind(user_port as u16) {
                         Ok(t) => t,
@@ -1813,7 +1942,7 @@ impl DomainParticipant {
                     }
                     let mut buf = vec![0u8; UDP_MAX_PAYLOAD_SIZE];
                     loop {
-                        let (len, _from) = match user_transport.recv_from_blocking(&mut buf) {
+                        let (len, from) = match user_transport.recv_from_blocking(&mut buf) {
                             Ok(r) => r,
                             Err(_) => continue,
                         };
@@ -1821,7 +1950,6 @@ impl DomainParticipant {
                         let Ok((header, submessages)) = parse_rtps_message(data) else {
                             continue;
                         };
-                        let reg = registry_user.lock().unwrap();
                         for sub in &submessages {
                             match sub {
                                 Submessage::Data(d) => {
@@ -1862,45 +1990,84 @@ impl DomainParticipant {
                                         .unwrap()
                                         .topic_for_endpoint(&writer_guid)
                                         .map(str::to_owned);
-                                    let mut delivered = false;
-                                    if let Some(topic) = topic_name {
-                                        if let Some(reader) = reg.get(&topic) {
-                                            if reader.type_support.deserialize(&final_payload).is_ok() {
-                                                reader.push_sample_sn(
-                                                    dds_types::instance::InstanceHandle::NIL,
-                                                    final_payload.clone(),
-                                                    d.writer_sn,
-                                                    writer_guid,
-                                                );
-                                                delivered = true;
-                                            }
+                                    let candidate_readers: Vec<Arc<DataReader>> = {
+                                        let reg = registry_user.lock().unwrap();
+                                        if let Some(topic) = topic_name.as_deref() {
+                                            reg.get(topic).cloned().into_iter().collect()
+                                        } else {
+                                            reg.values().cloned().collect()
                                         }
-                                    }
-                                    if !delivered {
-                                        for (_guid, reader) in reg.iter() {
-                                            if reader.type_support.deserialize(&final_payload).is_ok() {
-                                                reader.push_sample_sn(
-                                                    dds_types::instance::InstanceHandle::NIL,
-                                                    final_payload.clone(),
-                                                    d.writer_sn,
-                                                    writer_guid,
-                                                );
-                                                break;
-                                            }
+                                    };
+                                    for reader in candidate_readers {
+                                        if reader.type_support.deserialize(&final_payload).is_ok() {
+                                            reader.push_sample_sn(
+                                                dds_types::instance::InstanceHandle::NIL,
+                                                final_payload.clone(),
+                                                d.writer_sn,
+                                                writer_guid,
+                                            );
+                                            break;
                                         }
                                     }
                                 }
                                 Submessage::Heartbeat(hb) => {
                                     let remote_writer_guid =
                                         Guid::new(header.guid_prefix, hb.writer_id);
-                                    for reader in reg.values() {
-                                        if reader
-                                            .matched_writers
-                                            .lock()
-                                            .unwrap()
-                                            .contains(&remote_writer_guid)
+                                    let readers: Vec<Arc<DataReader>> = registry_user
+                                        .lock()
+                                        .unwrap()
+                                        .values()
+                                        .cloned()
+                                        .collect();
+                                    for reader in readers {
+                                        if hb.reader_id != reader.guid.entity_id
+                                            && hb.reader_id != EntityId::UNKNOWN
+                                        {
+                                            continue;
+                                        }
+                                        if (hb.flags & dds_rtps::FLAG_LIVELINESS) != 0
+                                            || reader
+                                                .matched_writers
+                                                .lock()
+                                                .unwrap()
+                                                .contains(&remote_writer_guid)
                                         {
                                             reader.note_writer_liveliness(remote_writer_guid);
+                                        }
+                                        if reader.qos.reliability.kind
+                                            == dds_types::qos::ReliabilityKind::Reliable
+                                        {
+                                            let mut missing = Vec::new();
+                                            {
+                                                let received = reader.received_sns.lock().unwrap();
+                                                for sn_val in hb.first_sn.0..=hb.last_sn.0 {
+                                                    let sn = SequenceNumber(sn_val);
+                                                    if !received.contains(&sn) {
+                                                        missing.push(sn);
+                                                    }
+                                                }
+                                            }
+                                            let ack_sub = Submessage::AckNack(dds_rtps::AckNack {
+                                                reader_id: reader.guid.entity_id,
+                                                writer_id: hb.writer_id,
+                                                reader_sn_state: missing,
+                                                count: reader.next_acknack_count(),
+                                            });
+                                            let remote_prefix = header.guid_prefix;
+                                            let reply_header =
+                                                dds_rtps::RtpsHeader::new(user_guid_prefix);
+                                            let msg = dds_rtps::serialize_rtps_message(
+                                                &reply_header,
+                                                &[
+                                                    Submessage::InfoDst(dds_rtps::InfoDst {
+                                                        guid_prefix: remote_prefix,
+                                                    }),
+                                                    ack_sub,
+                                                ],
+                                                dds_rtps::Endianness::LittleEndian,
+                                            );
+                                            let dest = Locator::from_socket_addr(from);
+                                            let _ = user_transport.send(&msg, &dest);
                                         }
                                     }
                                 }
@@ -1916,6 +2083,10 @@ impl DomainParticipant {
             let hooks_clone = hooks.clone();
             let transport_mcast = transport.clone();
             let domain_id_mcast = domain_id;
+            let sedp_received_mcast = sedp_received_shared.clone();
+            let sedp_acknack_count_mcast = sedp_acknack_count.clone();
+            let local_prefix_mcast = guid_prefix;
+            let transport_mcast_ack = transport.clone();
             std::thread::spawn(move || {
                 let mcast_socket = match bind_multicast_socket(multicast_port) {
                     Ok(s) => s,
@@ -1929,11 +2100,12 @@ impl DomainParticipant {
                 
                 let mut buf = [0u8; UDP_MAX_PAYLOAD_SIZE];
                 loop {
-                    if let Ok((len, _)) = mcast_socket.recv_from(&mut buf) {
+                    if let Ok((len, from)) = mcast_socket.recv_from(&mut buf) {
                         let data = &buf[..len];
-                        if let Ok((_header, submessages)) = dds_rtps::parse_rtps_message(data) {
+                        if let Ok((header, submessages)) = dds_rtps::parse_rtps_message(data) {
                             for sub in submessages {
-                                if let dds_rtps::Submessage::Data(d) = sub {
+                                match sub {
+                                dds_rtps::Submessage::Data(d) => {
                                     if d.writer_id == dds_types::guid::EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER {
                                         if let Some(participant) = dds_discovery::parse_spdp_packet(&d.serialized_payload) {
                                             let remote_prefix = participant.guid_prefix;
@@ -1956,6 +2128,14 @@ impl DomainParticipant {
                                         if let Some(endpoint) =
                                             dds_discovery::parse_sedp_packet(&d.serialized_payload)
                                         {
+                                            let remote_writer =
+                                                Guid::new(header.guid_prefix, d.writer_id);
+                                            sedp_received_mcast
+                                                .lock()
+                                                .unwrap()
+                                                .entry(remote_writer)
+                                                .or_default()
+                                                .insert(d.writer_sn);
                                             discovery_clone.lock().unwrap().process_sedp_endpoint(endpoint.clone());
                                             hooks_clone.publish_builtin_endpoint(&endpoint);
                                             hooks_clone.run_matchmaking();
@@ -1971,6 +2151,19 @@ impl DomainParticipant {
                                             &dest,
                                         );
                                     }
+                                }
+                                dds_rtps::Submessage::Heartbeat(hb) => {
+                                    DomainParticipant::maybe_send_builtin_sedp_acknack(
+                                        &hb,
+                                        header.guid_prefix,
+                                        local_prefix_mcast,
+                                        &from,
+                                        &sedp_received_mcast,
+                                        &sedp_acknack_count_mcast,
+                                        &transport_mcast_ack,
+                                    );
+                                }
+                                _ => {}
                                 }
                             }
                         }
@@ -1994,31 +2187,18 @@ impl DomainParticipant {
                 }
                 let (len, from) = match recv_transport.recv_from_blocking(&mut buf) {
                     Ok(r) => r,
-                    Err(e) => {
-                        println!("[spawn_receiver_loop] recv_from failed: {:?}", e);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
                 let data = &buf[..len];
-                println!("[spawn_receiver_loop] Received UDP packet of length {} from {:?}", len, from);
 
                 // Parse RTPS message
                 let (header, submessages) = match parse_rtps_message(data) {
-                    Ok(r) => {
-                        println!("[spawn_receiver_loop] Successfully parsed RTPS message");
-                        r
-                    }
-                    Err(e) => {
-                        println!("[spawn_receiver_loop] parse_rtps_message failed: {:?}", e);
-                        continue;
-                    }
+                    Ok(r) => r,
+                    Err(_) => continue,
                 };
 
-                let reg = registry.lock().unwrap();
-                println!("[spawn_receiver_loop] Processing {} submessages. Registry size = {}", submessages.len(), reg.len());
                 for sub in &submessages {
                     if let Submessage::Data(d) = sub {
-                        println!("[spawn_receiver_loop] Found Submessage::Data. Serialized payload len = {}", d.serialized_payload.len());
                         let mut final_payload = d.serialized_payload.to_vec();
                         let sender_prefix = header.guid_prefix;
                         let opt_remote_crypto = remote_crypto_handles.lock().unwrap().get(&sender_prefix).copied();
@@ -2079,6 +2259,13 @@ impl DomainParticipant {
                         
                         if writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER || writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER {
                             if let Some(endpoint) = dds_discovery::parse_sedp_packet(&final_payload) {
+                                let remote_writer = Guid::new(header.guid_prefix, writer_id);
+                                sedp_received_shared
+                                    .lock()
+                                    .unwrap()
+                                    .entry(remote_writer)
+                                    .or_default()
+                                    .insert(d.writer_sn);
                                 discovery.lock().unwrap().process_sedp_endpoint(endpoint.clone());
                                 hooks.publish_builtin_endpoint(&endpoint);
                                 hooks.run_matchmaking();
@@ -2122,40 +2309,26 @@ impl DomainParticipant {
                             .topic_for_endpoint(&writer_guid)
                             .map(str::to_owned);
 
-                        let mut delivered = false;
-                        if let Some(topic) = topic_name {
-                            if let Some(reader) = reg.get(&topic) {
-                                if reader.type_support.deserialize(&final_payload).is_ok() {
-                                    reader.push_sample_sn(
-                                        dds_types::instance::InstanceHandle::NIL,
-                                        final_payload.clone(),
-                                        d.writer_sn,
-                                        writer_guid,
-                                    );
-                                    delivered = true;
-                                }
+                        let candidate_readers: Vec<Arc<DataReader>> = {
+                            let reg = registry.lock().unwrap();
+                            if let Some(topic) = topic_name.as_deref() {
+                                reg.get(topic).cloned().into_iter().collect()
+                            } else {
+                                reg.values().cloned().collect()
                             }
-                        }
-                        if !delivered {
-                            for (_guid, reader) in reg.iter() {
-                                let res = reader.type_support.deserialize(&final_payload);
-                                if res.is_ok() {
-                                    reader.push_sample_sn(
-                                        dds_types::instance::InstanceHandle::NIL,
-                                        final_payload.clone(),
-                                        d.writer_sn,
-                                        writer_guid,
-                                    );
-                                    delivered = true;
-                                    break;
-                                }
+                        };
+                        for reader in candidate_readers {
+                            if reader.type_support.deserialize(&final_payload).is_ok() {
+                                reader.push_sample_sn(
+                                    dds_types::instance::InstanceHandle::NIL,
+                                    final_payload.clone(),
+                                    d.writer_sn,
+                                    writer_guid,
+                                );
+                                break;
                             }
-                        }
-                        if !delivered {
-                            println!("[spawn_receiver_loop] WARNING: Failed to deliver payload to any reader!");
                         }
                     } else if let Submessage::DataFrag(df) = sub {
-                        println!("[spawn_receiver_loop] Found Submessage::DataFrag. SN: {:?}, frag: {}, size: {}, total: {}", df.writer_sn, df.fragment_starting_num, df.fragment_size, df.data_size);
                         let writer_guid = Guid::new(header.guid_prefix, df.writer_id);
                         let key = (writer_guid, df.writer_sn);
                         let frag_entry = reassembly_buffers.entry(key).or_insert_with(|| {
@@ -2189,7 +2362,6 @@ impl DomainParticipant {
                         }
 
                         if frag_entry.received_bytes >= frag_entry.data_size {
-                            println!("[spawn_receiver_loop] Reassembled fragmented payload of size {}", frag_entry.data_size);
                             let mut final_payload = frag_entry.buffer.clone();
                             reassembly_buffers.remove(&key);
 
@@ -2234,37 +2406,24 @@ impl DomainParticipant {
                                 .topic_for_endpoint(&writer_guid)
                                 .map(str::to_owned);
 
-                            let mut delivered = false;
-                            if let Some(topic) = topic_name {
-                                if let Some(reader) = reg.get(&topic) {
-                                    if reader.type_support.deserialize(&final_payload).is_ok() {
-                                        reader.push_sample_sn(
-                                            dds_types::instance::InstanceHandle::NIL,
-                                            final_payload.clone(),
-                                            df.writer_sn,
-                                            writer_guid,
-                                        );
-                                        delivered = true;
-                                    }
+                            let candidate_readers: Vec<Arc<DataReader>> = {
+                                let reg = registry.lock().unwrap();
+                                if let Some(topic) = topic_name.as_deref() {
+                                    reg.get(topic).cloned().into_iter().collect()
+                                } else {
+                                    reg.values().cloned().collect()
                                 }
-                            }
-                            if !delivered {
-                                for (_guid, reader) in reg.iter() {
-                                    let res = reader.type_support.deserialize(&final_payload);
-                                    if res.is_ok() {
-                                        reader.push_sample_sn(
-                                            dds_types::instance::InstanceHandle::NIL,
-                                            final_payload.clone(),
-                                            df.writer_sn,
-                                            writer_guid,
-                                        );
-                                        delivered = true;
-                                        break;
-                                    }
+                            };
+                            for reader in candidate_readers {
+                                if reader.type_support.deserialize(&final_payload).is_ok() {
+                                    reader.push_sample_sn(
+                                        dds_types::instance::InstanceHandle::NIL,
+                                        final_payload.clone(),
+                                        df.writer_sn,
+                                        writer_guid,
+                                    );
+                                    break;
                                 }
-                            }
-                            if !delivered {
-                                println!("[spawn_receiver_loop] WARNING: Failed to deliver reassembled payload!");
                             }
                         } else if frag_entry.received_bytes < frag_entry.data_size {
                             let missing: Vec<u32> = frag_entry
@@ -2326,9 +2485,10 @@ impl DomainParticipant {
                             }
                         }
                     } else if let Submessage::Heartbeat(hb) = sub {
-                        println!("[spawn_receiver_loop] Found Submessage::Heartbeat. Reader: {:?}, Writer: {:?}", hb.reader_id, hb.writer_id);
                         let remote_writer_guid = Guid::new(header.guid_prefix, hb.writer_id);
-                        for reader in reg.values() {
+                        let readers: Vec<Arc<DataReader>> =
+                            registry.lock().unwrap().values().cloned().collect();
+                        for reader in readers {
                             if hb.reader_id == reader.guid.entity_id || hb.reader_id == EntityId::UNKNOWN {
                                 if (hb.flags & dds_rtps::FLAG_LIVELINESS) != 0
                                     || reader
@@ -2358,22 +2518,45 @@ impl DomainParticipant {
                                         reader_sn_state: missing,
                                         count: reader.next_acknack_count(),
                                     });
-                                    let header = dds_rtps::RtpsHeader::new(guid_prefix);
-                                    let msg = dds_rtps::serialize_rtps_message(&header, &[ack_sub], dds_rtps::Endianness::LittleEndian);
+                                    let remote_prefix = header.guid_prefix;
+                                    let reply_header = dds_rtps::RtpsHeader::new(guid_prefix);
+                                    let msg = dds_rtps::serialize_rtps_message(
+                                        &reply_header,
+                                        &[
+                                            Submessage::InfoDst(dds_rtps::InfoDst {
+                                                guid_prefix: remote_prefix,
+                                            }),
+                                            ack_sub,
+                                        ],
+                                        dds_rtps::Endianness::LittleEndian,
+                                    );
                                     let dest = Locator::from_socket_addr(from);
                                     let _ = transport.send(&msg, &dest);
                                 }
                             }
                         }
+
+                        DomainParticipant::maybe_send_builtin_sedp_acknack(
+                            hb,
+                            header.guid_prefix,
+                            guid_prefix,
+                            &from,
+                            &sedp_received_shared,
+                            &sedp_acknack_count,
+                            &transport,
+                        );
                     } else if let Submessage::AckNack(ack) = sub {
-                        println!("[spawn_receiver_loop] Found Submessage::AckNack. Reader: {:?}, Writer: {:?}, SN State count: {}", ack.reader_id, ack.writer_id, ack.reader_sn_state.len());
                         let writer_guid = Guid::new(guid_prefix, ack.writer_id);
                         let w_reg = writer_registry.lock().unwrap();
                         if let Some(shared_writer) = w_reg.get(&writer_guid) {
                             let w = shared_writer.lock().unwrap();
                             for sn in &ack.reader_sn_state {
                                 if let Some(change) = w.writer_cache.get_changes().iter().find(|c| c.sequence_number == *sn) {
+                                    if let Some(proxy) = w.reader_proxies.iter().find(|p| p.remote_reader_guid.entity_id == ack.reader_id) {
                                     let subs = [
+                                        Submessage::InfoDst(dds_rtps::InfoDst {
+                                            guid_prefix: proxy.remote_reader_guid.prefix,
+                                        }),
                                         Submessage::InfoTs(dds_rtps::InfoTs { timestamp: change.source_timestamp }),
                                         Submessage::Data(dds_rtps::Data {
                                             reader_id: ack.reader_id,
@@ -2383,10 +2566,9 @@ impl DomainParticipant {
                                             serialized_payload: change.data_value.clone(),
                                         }),
                                     ];
-                                    let header = dds_rtps::RtpsHeader::new(guid_prefix);
-                                    let msg = dds_rtps::serialize_rtps_message(&header, &subs, dds_rtps::Endianness::LittleEndian);
-                                    
-                                    if let Some(proxy) = w.reader_proxies.iter().find(|p| p.remote_reader_guid.entity_id == ack.reader_id) {
+                                    let reply_header = dds_rtps::RtpsHeader::new(guid_prefix);
+                                    let msg = dds_rtps::serialize_rtps_message(&reply_header, &subs, dds_rtps::Endianness::LittleEndian);
+
                                         let locators: Vec<Locator> = proxy.unicast_locator_list.iter()
                                             .chain(proxy.multicast_locator_list.iter())
                                             .cloned()
@@ -2399,7 +2581,7 @@ impl DomainParticipant {
                             }
                         }
                     } else {
-                        println!("[spawn_receiver_loop] Submessage kind: {:?}", sub);
+                        let _ = sub;
                     }
                 }
             }

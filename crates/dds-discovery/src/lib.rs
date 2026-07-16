@@ -140,6 +140,18 @@ pub const PID_METATRAFFIC_MULTICAST_LOCATOR: u16 = 0x0033;
 /// PID for Default Multicast Locator
 pub const PID_DEFAULT_MULTICAST_LOCATOR: u16 = 0x0048;
 
+/// PID for DataRepresentation QoS (XTypes)
+pub const PID_DATA_REPRESENTATION: u16 = 0x0073;
+
+/// PID for TypeInformation (XTypes, XCDR2 blob)
+pub const PID_TYPE_INFORMATION: u16 = 0x0075;
+
+/// XCDR1 little-endian data representation id (DDS CDR LE).
+pub const DATA_REPRESENTATION_XCDR1: u16 = 0;
+
+/// XCDR2 little-endian data representation id.
+pub const DATA_REPRESENTATION_XCDR2: u16 = 2;
+
 /// RTPS Base Port number (PB)
 pub const PORT_BASE: u16 = 7400;
 
@@ -229,11 +241,15 @@ pub struct DiscoveredEndpoint {
     pub qos_reader: Option<DataReaderQos>,
     /// Partition names from SEDP (publisher/subscriber level).
     pub partition: Vec<String>,
-    /// Unicast locators advertised for this endpoint (user or metatraffic).
+    /// Unicast locators advertised for user data on this endpoint.
     pub unicast_locators: Vec<Locator>,
+    /// Metatraffic unicast locators for discovery replies (SEDP/SPDP).
+    pub metatraffic_unicast_locators: Vec<Locator>,
     /// Multicast locators advertised for this endpoint.
     pub multicast_locators: Vec<Locator>,
     pub type_info: Option<dds_xtypes::TypeInformation>,
+    /// Pre-serialized XCDR2 TypeInformation blob for SEDP (`PID_TYPE_INFORMATION`).
+    pub type_information_wire: Option<Vec<u8>>,
 }
 
 /// Discovery participant representation holding contact details.
@@ -871,8 +887,7 @@ pub fn spdp_to_plcdr(
 
     // Lease Duration (0x0002)
     let mut lease_bytes = Vec::new();
-    lease_bytes.extend_from_slice(&participant.lease_duration.seconds.to_le_bytes());
-    lease_bytes.extend_from_slice(&participant.lease_duration.nanoseconds.to_le_bytes());
+    append_rtps_duration_bytes(&mut lease_bytes, participant.lease_duration);
     parameters.push((PID_LEASE_DURATION, lease_bytes));
 
     // Unicast / multicast locators
@@ -983,8 +998,8 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
             PID_LEASE_DURATION => {
                 if param.value.len() >= 8 {
                     let seconds = i32::from_le_bytes(param.value[0..4].try_into().ok()?);
-                    let nanoseconds = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
-                    lease_duration = Duration::new(seconds, nanoseconds);
+                    let fraction = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
+                    lease_duration = Duration::from_rtps_wire(seconds, fraction);
                 }
             }
             PID_DEFAULT_UNICAST_LOCATOR | PID_UNICAST_LOCATOR => {
@@ -1034,6 +1049,12 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
     })
 }
 
+fn append_rtps_duration_bytes(bytes: &mut Vec<u8>, duration: Duration) {
+    let (seconds, fraction) = duration.to_rtps_wire();
+    bytes.extend_from_slice(&seconds.to_le_bytes());
+    bytes.extend_from_slice(&fraction.to_le_bytes());
+}
+
 fn append_reliability_qos(parameters: &mut Vec<(u16, Vec<u8>)>, qos: &dds_types::qos::Reliability) {
     let reliability_val = match qos.kind {
         dds_types::qos::ReliabilityKind::BestEffort => 1u32,
@@ -1041,8 +1062,7 @@ fn append_reliability_qos(parameters: &mut Vec<(u16, Vec<u8>)>, qos: &dds_types:
     };
     let mut rel_bytes = Vec::new();
     rel_bytes.extend_from_slice(&reliability_val.to_le_bytes());
-    rel_bytes.extend_from_slice(&qos.max_blocking_time.seconds.to_le_bytes());
-    rel_bytes.extend_from_slice(&qos.max_blocking_time.nanoseconds.to_le_bytes());
+    append_rtps_duration_bytes(&mut rel_bytes, qos.max_blocking_time);
     parameters.push((PID_RELIABILITY, rel_bytes));
 }
 
@@ -1075,9 +1095,24 @@ fn append_liveliness_qos(parameters: &mut Vec<(u16, Vec<u8>)>, liveliness: &dds_
     };
     let mut live_bytes = Vec::new();
     live_bytes.extend_from_slice(&kind_val.to_le_bytes());
-    live_bytes.extend_from_slice(&liveliness.lease_duration.seconds.to_le_bytes());
-    live_bytes.extend_from_slice(&liveliness.lease_duration.nanoseconds.to_le_bytes());
+    append_rtps_duration_bytes(&mut live_bytes, liveliness.lease_duration);
     parameters.push((PID_LIVELINESS, live_bytes));
+}
+
+fn append_data_representation_qos(parameters: &mut Vec<(u16, Vec<u8>)>) {
+    // Match CycloneDDS default: XCDR1 + XCDR2.
+    let ids = [DATA_REPRESENTATION_XCDR1, DATA_REPRESENTATION_XCDR2];
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+    for id in ids {
+        bytes.extend_from_slice(&id.to_le_bytes());
+        bytes.extend_from_slice(&[0u8, 0u8]); // align uint16 to 4 bytes
+    }
+    parameters.push((PID_DATA_REPRESENTATION, bytes));
+}
+
+fn append_type_information_param(parameters: &mut Vec<(u16, Vec<u8>)>, wire: &[u8]) {
+    parameters.push((PID_TYPE_INFORMATION, wire.to_vec()));
 }
 
 fn apply_durability_param(
@@ -1113,8 +1148,8 @@ fn apply_reliability_param(
     }
     if value.len() >= 12 {
         let seconds = i32::from_le_bytes(value[4..8].try_into().unwrap_or([0; 4]));
-        let nanoseconds = u32::from_le_bytes(value[8..12].try_into().unwrap_or([0; 4]));
-        let duration = Duration::new(seconds, nanoseconds);
+        let fraction = u32::from_le_bytes(value[8..12].try_into().unwrap_or([0; 4]));
+        let duration = Duration::from_rtps_wire(seconds, fraction);
         writer_qos.reliability.max_blocking_time = duration;
         reader_qos.reliability.max_blocking_time = duration;
     }
@@ -1160,8 +1195,8 @@ fn apply_liveliness_param(
     }
     if value.len() >= 12 {
         let seconds = i32::from_le_bytes(value[4..8].try_into().unwrap_or([0; 4]));
-        let nanoseconds = u32::from_le_bytes(value[8..12].try_into().unwrap_or([0; 4]));
-        let duration = Duration::new(seconds, nanoseconds);
+        let fraction = u32::from_le_bytes(value[8..12].try_into().unwrap_or([0; 4]));
+        let duration = Duration::from_rtps_wire(seconds, fraction);
         writer_qos.liveliness.lease_duration = duration;
         reader_qos.liveliness.lease_duration = duration;
     }
@@ -1188,6 +1223,8 @@ pub fn sedp_to_plcdr(
     for locator in &endpoint.unicast_locators {
         append_locator_param(&mut parameters, PID_UNICAST_LOCATOR, locator);
         append_locator_param(&mut parameters, PID_DEFAULT_UNICAST_LOCATOR, locator);
+    }
+    for locator in &endpoint.metatraffic_unicast_locators {
         append_locator_param(&mut parameters, PID_METATRAFFIC_UNICAST_LOCATOR, locator);
     }
     for locator in &endpoint.multicast_locators {
@@ -1214,6 +1251,11 @@ pub fn sedp_to_plcdr(
         parameters.push((PID_PARTITION, partition_bytes));
     }
 
+    append_data_representation_qos(&mut parameters);
+    if let Some(ref wire) = endpoint.type_information_wire {
+        append_type_information_param(&mut parameters, wire);
+    }
+
     Ok(serialize_rtps_plcdr(&parameters))
 }
 
@@ -1232,6 +1274,7 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
     let mut reader_qos = dds_types::qos::DataReaderQos::default();
     let mut partition = Vec::new();
     let mut unicast_locators = Vec::new();
+    let mut metatraffic_unicast_locators = Vec::new();
     let mut multicast_locators = Vec::new();
 
     for param in &plist.parameters {
@@ -1307,11 +1350,14 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                     }
                 }
             }
-            PID_UNICAST_LOCATOR
-            | PID_DEFAULT_UNICAST_LOCATOR
-            | PID_METATRAFFIC_UNICAST_LOCATOR => {
+            PID_UNICAST_LOCATOR | PID_DEFAULT_UNICAST_LOCATOR => {
                 if let Some(loc) = parse_locator_param(&param.value) {
                     unicast_locators.push(loc);
+                }
+            }
+            PID_METATRAFFIC_UNICAST_LOCATOR => {
+                if let Some(loc) = parse_locator_param(&param.value) {
+                    metatraffic_unicast_locators.push(loc);
                 }
             }
             PID_MULTICAST_LOCATOR
@@ -1345,8 +1391,10 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
         qos_reader,
         partition,
         unicast_locators,
+        metatraffic_unicast_locators,
         multicast_locators,
         type_info: None,
+        type_information_wire: None,
     })
 }
 
@@ -1417,8 +1465,10 @@ mod tests {
             qos_reader: None,
             partition: vec![],
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         };
         manager.process_sedp_endpoint(endpoint.clone());
         assert_eq!(manager.discovered_endpoints().len(), 1);
@@ -1493,8 +1543,10 @@ mod tests {
             qos_reader: None,
             partition: vec![],
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         };
         manager.process_sedp_endpoint(endpoint);
 
@@ -1610,8 +1662,10 @@ mod tests {
             qos_reader: None,
             partition: vec![],
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         };
         let bytes = sedp_to_plcdr(&endpoint, 0).unwrap();
         let decoded = parse_sedp_packet(&bytes).unwrap();
@@ -1691,11 +1745,13 @@ mod tests {
             qos_reader: None,
             partition: vec![],
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: Some(dds_xtypes::TypeInformation {
                 type_name: "MyInt".to_string(),
                 type_id: r_id.clone(),
             }),
+            type_information_wire: None,
         };
         manager.process_sedp_endpoint(endpoint);
 
@@ -1720,6 +1776,34 @@ mod tests {
     }
 
     #[test]
+    fn test_sedp_reliability_uses_rtps_duration_fraction() {
+        let mut qos = DataWriterQos::default();
+        qos.reliability.kind = dds_types::qos::ReliabilityKind::Reliable;
+        qos.reliability.max_blocking_time = Duration::from_millis(100);
+        let endpoint = DiscoveredEndpoint {
+            guid: Guid::new(GuidPrefix::new([4; 12]), EntityId::new([0, 0, 1, 0x03])),
+            topic_name: "RelTopic".into(),
+            type_name: "RelType".into(),
+            qos_writer: Some(qos),
+            qos_reader: None,
+            partition: vec![],
+            unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
+            multicast_locators: vec![],
+            type_info: None,
+            type_information_wire: None,
+        };
+        let bytes = sedp_to_plcdr(&endpoint, 0).unwrap();
+        let parsed = parse_sedp_packet(&bytes).unwrap();
+        let writer_qos = parsed.qos_writer.expect("writer qos");
+        assert_eq!(
+            writer_qos.reliability.max_blocking_time,
+            Duration::from_millis(100)
+        );
+        assert_eq!(writer_qos.reliability.kind, dds_types::qos::ReliabilityKind::Reliable);
+    }
+
+    #[test]
     fn test_sedp_partition_roundtrip() {
         let guid = Guid::new(GuidPrefix::new([3; 12]), EntityId::new([0, 0, 1, 4]));
         let mut qos_writer = DataWriterQos::default();
@@ -1732,8 +1816,10 @@ mod tests {
             qos_reader: None,
             partition: vec!["lab".to_string(), "test".to_string()],
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         };
         let bytes = sedp_to_plcdr(&endpoint, 0).unwrap();
         let parsed = parse_sedp_packet(&bytes).unwrap();

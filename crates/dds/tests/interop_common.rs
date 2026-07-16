@@ -15,6 +15,17 @@ pub const INTEROP_DOMAIN: u32 = 70;
 pub const INTEROP_TOPIC: &str = "AiDdsInteropMessage";
 pub const INTEROP_TYPE: &str = "AiDdsInterop::Message";
 
+/// XCDR2 TypeInformation for `AiDdsInterop::Message`, from Cyclone IDLC output.
+pub const INTEROP_MESSAGE_TYPE_INFORMATION: &[u8] = &[
+    0x60, 0x00, 0x00, 0x00, 0x01, 0x10, 0x00, 0x40, 0x28, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00,
+    0x14, 0x00, 0x00, 0x00, 0xf1, 0x8a, 0xdc, 0xac, 0xb5, 0x9d, 0x5f, 0xe9, 0x25, 0x41, 0x6c, 0xc0,
+    0x38, 0x92, 0x17, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x02, 0x10, 0x00, 0x40, 0x28, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00,
+    0x14, 0x00, 0x00, 0x00, 0xf2, 0x16, 0x24, 0x23, 0x8c, 0x7b, 0xbf, 0x6a, 0xf0, 0x05, 0xea, 0x3f,
+    0x86, 0xf8, 0x87, 0x00, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+];
+
 /// Interop payload matching `interop/idl/InteropMessage.idl`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteropMessage {
@@ -59,11 +70,26 @@ impl TypeSupport for InteropTypeSupport {
     }
 
     fn deserialize(&self, bytes: &[u8]) -> dds::types::return_code::DdsResult<Box<dyn Any>> {
-        let mut de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
-        if bytes.len() >= 4 {
-            let _ = EncapsulationHeader::deserialize(&mut de)
-                .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
-        }
+        let payload = if bytes.len() >= 4 {
+            let be_kind = u16::from_be_bytes([bytes[0], bytes[1]]);
+            let has_encapsulation = matches!(
+                be_kind,
+                0x0000 | 0x0001 | 0x0002 | 0x0003 | 0x0010 | 0x0011 | 0x0012 | 0x0013
+            );
+            if has_encapsulation {
+                let mut de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
+                let header = EncapsulationHeader::deserialize(&mut de)
+                    .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
+                let mut body_de = CdrDeserializer::new(&bytes[de.offset()..], header.kind.endianness());
+                let msg = InteropMessage::deserialize(&mut body_de)
+                    .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
+                return Ok(Box::new(msg));
+            }
+            bytes
+        } else {
+            bytes
+        };
+        let mut de = CdrDeserializer::new(payload, Endianness::LittleEndian);
         let msg = InteropMessage::deserialize(&mut de)
             .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
         Ok(Box::new(msg))
@@ -74,6 +100,46 @@ impl TypeSupport for InteropTypeSupport {
         _value: &dyn Any,
     ) -> dds::types::return_code::DdsResult<dds::types::instance::InstanceHandle> {
         Ok(dds::types::instance::InstanceHandle::NIL)
+    }
+
+    fn is_keyless(&self) -> bool {
+        true
+    }
+
+    fn type_information_wire(&self) -> Option<&[u8]> {
+        Some(INTEROP_MESSAGE_TYPE_INFORMATION)
+    }
+}
+
+#[cfg(test)]
+mod interop_type_tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_cyclonedds_payload_without_encapsulation_header() {
+        let ts = InteropTypeSupport;
+        let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        InteropMessage {
+            id: 9001,
+            payload: "from-cyclonedds".to_string(),
+        }
+        .serialize(&mut ser)
+        .unwrap();
+        let raw = ser.into_bytes();
+        let boxed = ts.deserialize(&raw).expect("deserialize raw CDR");
+        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
+        assert_eq!(msg.id, 9001);
+        assert_eq!(msg.payload, "from-cyclonedds");
+
+        // Wire bytes captured from CycloneDDS interop publisher (no encapsulation header).
+        let wire = [
+            0x29, 0x23, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x66, 0x72, 0x6f, 0x6d, 0x2d, 0x63,
+            0x79, 0x63, 0x6c, 0x6f, 0x6e, 0x65, 0x64, 0x64, 0x73, 0x00,
+        ];
+        let boxed = ts.deserialize(&wire).expect("deserialize cyclone wire");
+        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
+        assert_eq!(msg.id, 9001);
+        assert_eq!(msg.payload, "from-cyclonedds");
     }
 }
 
@@ -110,7 +176,11 @@ pub fn cyclonedds_subscriber() -> Option<PathBuf> {
     cyclonedds_bin_dir().map(|d| d.join("interop_subscriber"))
 }
 
-pub fn spawn_cyclonedds_publisher(sample_id: u32, payload: &str) -> std::io::Result<std::process::Child> {
+pub fn spawn_cyclonedds_publisher(
+    domain: u32,
+    sample_id: u32,
+    payload: &str,
+) -> std::io::Result<std::process::Child> {
     let bin = cyclonedds_publisher().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -120,9 +190,9 @@ pub fn spawn_cyclonedds_publisher(sample_id: u32, payload: &str) -> std::io::Res
     Command::new(bin)
         .arg(sample_id.to_string())
         .arg(payload)
-        .env("AIDDS_INTEROP_DOMAIN", INTEROP_DOMAIN.to_string())
+        .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
 }
 
@@ -140,7 +210,7 @@ pub fn spawn_cyclonedds_subscriber(expect_id: Option<u32>) -> std::io::Result<st
     cmd.env("AIDDS_INTEROP_DOMAIN", INTEROP_DOMAIN.to_string())
         .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
 }
 
@@ -155,7 +225,7 @@ pub fn wait_output(mut child: std::process::Child, timeout: Duration) -> std::io
         }
         if start.elapsed() >= timeout {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.try_wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "child process timed out",

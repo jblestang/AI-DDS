@@ -1221,6 +1221,34 @@ pub fn serialize_rtps_message(
                     buf.put_i32(hbf.count);
                 }
             }
+            Submessage::InfoSrc(info) => {
+                buf.put_u8(SubmessageKind::InfoSrc as u8);
+                buf.put_u8(flags);
+                if is_le {
+                    buf.put_u16_le(20);
+                    buf.put_u8(info.protocol_version.0);
+                    buf.put_u8(info.protocol_version.1);
+                    buf.put_slice(&info.vendor_id.0);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                } else {
+                    buf.put_u16(20);
+                    buf.put_u8(info.protocol_version.0);
+                    buf.put_u8(info.protocol_version.1);
+                    buf.put_slice(&info.vendor_id.0);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                }
+            }
+            Submessage::InfoDst(info) => {
+                buf.put_u8(SubmessageKind::InfoDst as u8);
+                buf.put_u8(flags);
+                if is_le {
+                    buf.put_u16_le(12);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                } else {
+                    buf.put_u16(12);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                }
+            }
             _ => {}
         }
     }
@@ -1359,6 +1387,9 @@ impl RtpsEngine {
 
                 let payload_bytes = bytes::Bytes::from(raw_bytes);
 
+                let info_dst = || Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                });
                 if payload_bytes.len() > max_payload {
                     let total_size = payload_bytes.len();
                     let num_frags = (total_size + max_payload - 1) / max_payload;
@@ -1379,6 +1410,7 @@ impl RtpsEngine {
                         };
 
                         let subs = [
+                            info_dst(),
                             Submessage::InfoTs(InfoTs { timestamp: change.source_timestamp }),
                             Submessage::DataFrag(df),
                         ];
@@ -1389,6 +1421,7 @@ impl RtpsEngine {
                     }
                 } else {
                     let subs = [
+                        info_dst(),
                         Submessage::InfoTs(InfoTs { timestamp: change.source_timestamp }),
                         Submessage::Data(Data {
                             reader_id,
@@ -1435,7 +1468,13 @@ impl RtpsEngine {
                 flags: FLAG_LIVELINESS,
             };
 
-            let subs = [Submessage::Heartbeat(hb)];
+            let remote_prefix = w.reader_proxies[idx].remote_reader_guid.prefix;
+            let subs = [
+                Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                Submessage::Heartbeat(hb),
+            ];
             let header = RtpsHeader::new(guid_prefix);
             let msg = serialize_rtps_message(&header, &subs, Endianness::LittleEndian);
             for locator in &locators {
@@ -2273,6 +2312,41 @@ mod tests {
             assert_eq!(parsed_ack.count, 7);
         } else {
             panic!("Expected complex AckNack");
+        }
+    }
+
+    #[test]
+    fn test_infodst_acknack_roundtrip() {
+        let our_prefix = GuidPrefix::new([0x47, 0x02, 0xb2, 0x93, 0x02, 0, 0, 0, 0, 0, 0, 0]);
+        let remote_prefix = GuidPrefix::new([0x11, 0x0a, 0xd2, 0xe8, 0x82, 0xbc, 0xf3, 0x01, 0x9e, 0x87, 0x86, 0xf1]);
+        let header = RtpsHeader::new(our_prefix);
+        let ack = AckNack {
+            reader_id: EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER,
+            writer_id: EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER,
+            reader_sn_state: vec![SequenceNumber(1)],
+            count: 1,
+        };
+        let msg = serialize_rtps_message(
+            &header,
+            &[
+                Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                Submessage::AckNack(ack.clone()),
+            ],
+            Endianness::LittleEndian,
+        );
+        let (_, parsed) = parse_rtps_message(&msg).unwrap();
+        assert_eq!(parsed.len(), 2);
+        if let Submessage::InfoDst(info) = &parsed[0] {
+            assert_eq!(info.guid_prefix, remote_prefix);
+        } else {
+            panic!("expected InfoDst");
+        }
+        if let Submessage::AckNack(parsed_ack) = &parsed[1] {
+            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber(1)]);
+        } else {
+            panic!("expected AckNack");
         }
     }
 

@@ -42,8 +42,9 @@ fn interop_cyclonedds_publishes_aidds_receives() {
     }
 
     let ts = Arc::new(InteropTypeSupport);
+    let domain = INTEROP_DOMAIN;
     let participant =
-        DomainParticipantFactory::create_participant(INTEROP_DOMAIN, DomainParticipantQos::default())
+        DomainParticipantFactory::create_participant(domain, DomainParticipantQos::default())
             .expect("participant");
     participant.register_type(INTEROP_TYPE, ts.clone()).unwrap();
     let topic = participant
@@ -57,12 +58,13 @@ fn interop_cyclonedds_publishes_aidds_receives() {
         .create_datareader(&topic, reader_qos, ts.clone())
         .unwrap();
     let _rx = participant.spawn_receiver_loop();
+    participant.run_matchmaking();
 
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(800));
 
     let sample_id = 9001u32;
     let payload = "from-cyclonedds";
-    let child = spawn_cyclonedds_publisher(sample_id, payload).expect("spawn publisher");
+    let child = spawn_cyclonedds_publisher(domain, sample_id, payload).expect("spawn publisher");
     let output = wait_output(child, Duration::from_secs(15)).expect("publisher finished");
 
     assert!(
@@ -73,7 +75,7 @@ fn interop_cyclonedds_publishes_aidds_receives() {
 
     let mut received = None;
     assert!(
-        wait_until(Duration::from_secs(12), || {
+        wait_until(Duration::from_secs(20), || {
             if let Ok(boxed) = reader.read_next() {
                 if let Some(msg) = boxed.downcast_ref::<InteropMessage>() {
                     received = Some(msg.clone());
@@ -100,16 +102,29 @@ fn interop_aidds_publishes_cyclonedds_receives() {
 
     let sample_id = 9002u32;
     let payload = "from-aidds";
-    let mut sub_child = spawn_cyclonedds_subscriber(Some(sample_id)).expect("spawn subscriber");
+    let domain = INTEROP_DOMAIN + 1;
 
     let ts = Arc::new(InteropTypeSupport);
     let participant =
-        DomainParticipantFactory::create_participant(INTEROP_DOMAIN + 1, DomainParticipantQos::default())
+        DomainParticipantFactory::create_participant(domain, DomainParticipantQos::default())
             .expect("participant");
     participant.register_type(INTEROP_TYPE, ts.clone()).unwrap();
     let topic = participant
         .create_topic(INTEROP_TOPIC, INTEROP_TYPE, TopicQos::default())
         .unwrap();
+    let _rx = participant.spawn_receiver_loop();
+
+    let bin = interop_common::cyclonedds_subscriber().unwrap();
+    let sub_child = std::process::Command::new(bin)
+        .arg(sample_id.to_string())
+        .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
+        .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn subscriber");
+
+    std::thread::sleep(Duration::from_millis(400));
 
     let publisher = participant.create_publisher(PublisherQos::default()).unwrap();
     let mut writer_qos = DataWriterQos::default();
@@ -117,20 +132,7 @@ fn interop_aidds_publishes_cyclonedds_receives() {
     let writer = publisher
         .create_datawriter(&topic, writer_qos, ts.clone())
         .unwrap();
-    let _rx = participant.spawn_receiver_loop();
-
-    // CycloneDDS subscriber uses INTEROP_DOMAIN from env; override for this test
-    sub_child.kill().ok();
-    let _ = sub_child.wait();
-    let bin = interop_common::cyclonedds_subscriber().unwrap();
-    sub_child = std::process::Command::new(bin)
-        .arg(sample_id.to_string())
-        .env("AIDDS_INTEROP_DOMAIN", (INTEROP_DOMAIN + 1).to_string())
-        .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("respawn subscriber");
+    participant.run_matchmaking();
 
     std::thread::sleep(Duration::from_millis(800));
 
@@ -157,42 +159,41 @@ fn interop_bidirectional_discovery_matchmaking() {
         return;
     }
 
-    // AI-DDS reader; inject CycloneDDS writer via discovery after capturing its SPDP would be ideal.
-    // This test verifies our stack can match when CycloneDDS reader is running and we publish.
     let sample_id = 9003u32;
     let payload = "discovery-interop";
-    let mut sub_child = spawn_cyclonedds_subscriber(Some(sample_id)).expect("spawn subscriber");
+    let domain = INTEROP_DOMAIN + 2;
 
     let ts = Arc::new(InteropTypeSupport);
     let participant =
-        DomainParticipantFactory::create_participant(INTEROP_DOMAIN + 2, DomainParticipantQos::default())
+        DomainParticipantFactory::create_participant(domain, DomainParticipantQos::default())
             .expect("participant");
     participant.register_type(INTEROP_TYPE, ts.clone()).unwrap();
     let topic = participant
         .create_topic(INTEROP_TOPIC, INTEROP_TYPE, TopicQos::default())
         .unwrap();
+    let _rx = participant.spawn_receiver_loop();
+
+    let bin = interop_common::cyclonedds_subscriber().unwrap();
+    let sub_child = std::process::Command::new(bin)
+        .arg(sample_id.to_string())
+        .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
+        .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn subscriber");
+
+    std::thread::sleep(Duration::from_millis(400));
 
     let publisher = participant.create_publisher(PublisherQos::default()).unwrap();
     let mut writer_qos = DataWriterQos::default();
     writer_qos.reliability.kind = ReliabilityKind::Reliable;
     let writer = publisher
-        .create_datawriter(&topic, writer_qos.clone(), ts.clone())
+        .create_datawriter(&topic, writer_qos, ts.clone())
         .unwrap();
-    let _rx = participant.spawn_receiver_loop();
+    participant.run_matchmaking();
 
-    sub_child.kill().ok();
-    let _ = sub_child.wait();
-    let bin = interop_common::cyclonedds_subscriber().unwrap();
-    sub_child = std::process::Command::new(bin)
-        .arg(sample_id.to_string())
-        .env("AIDDS_INTEROP_DOMAIN", (INTEROP_DOMAIN + 2).to_string())
-        .env("AIDDS_INTEROP_TIMEOUT_MS", "15000")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("respawn subscriber");
-
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(Duration::from_millis(800));
 
     writer
         .write(&InteropMessage {
@@ -201,22 +202,12 @@ fn interop_bidirectional_discovery_matchmaking() {
         })
         .unwrap();
 
-    let output = wait_output(sub_child, Duration::from_secs(18)).expect("subscriber finished");
+    let output = wait_output(sub_child, Duration::from_secs(15)).expect("subscriber finished");
     assert!(output_contains_interop_receive(&output, sample_id, payload));
 
-    // Verify monitor snapshot sees our writer endpoint
     let snap = participant.monitor_snapshot();
     assert!(
         snap.endpoints.iter().any(|e| e.topic_name == INTEROP_TOPIC && e.is_writer),
         "Monitor snapshot should list local interop writer"
     );
-
-    let _ = DiscoveryWire {
-        topic: INTEROP_TOPIC.to_string(),
-        type_name: INTEROP_TYPE.to_string(),
-        partition: vec![],
-        type_info: None,
-        writer_qos: Some(writer_qos),
-        reader_qos: None,
-    };
 }

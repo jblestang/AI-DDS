@@ -107,6 +107,29 @@ impl Duration {
         Some(time::Duration::new(self.seconds as u64, self.nanoseconds))
     }
 
+    /// Convert to RTPS `Duration_t` wire form: `(seconds, fraction)`.
+    ///
+    /// The fraction field uses the RTPS convention where 2^32 fractions equal one second.
+    #[must_use]
+    pub fn to_rtps_wire(&self) -> (i32, u32) {
+        if self.is_infinite() {
+            return (i32::MAX, u32::MAX);
+        }
+        let fraction = ((self.nanoseconds as u64) * (1u64 << 32) / NANOS_PER_SEC as u64) as u32;
+        (self.seconds, fraction)
+    }
+
+    /// Create from RTPS `Duration_t` wire form: `(seconds, fraction)`.
+    #[must_use]
+    pub fn from_rtps_wire(seconds: i32, fraction: u32) -> Self {
+        if seconds == i32::MAX && fraction == u32::MAX {
+            return Self::INFINITE;
+        }
+        let nanoseconds =
+            ((fraction as u64) * NANOS_PER_SEC as u64 + (1u64 << 31)) / (1u64 << 32);
+        Self::new(seconds, nanoseconds as u32)
+    }
+
     /// Create from a `std::time::Duration`.
     ///
     /// Returns `INFINITE` if the std duration exceeds i32::MAX seconds.
@@ -383,6 +406,24 @@ mod tests {
     #[should_panic(expected = "nanoseconds must be")]
     fn duration_invalid_nanos_panics() {
         let _ = Duration::new(0, 1_000_000_000);
+    }
+
+    #[test]
+    fn duration_rtps_wire_roundtrip() {
+        let d = Duration::from_millis(100);
+        let (secs, frac) = d.to_rtps_wire();
+        assert_eq!(secs, 0);
+        assert_eq!(frac, 429_496_729);
+        let back = Duration::from_rtps_wire(secs, frac);
+        assert_eq!(back, d);
+    }
+
+    #[test]
+    fn duration_rtps_wire_infinite() {
+        let (secs, frac) = Duration::INFINITE.to_rtps_wire();
+        assert_eq!(secs, i32::MAX);
+        assert_eq!(frac, u32::MAX);
+        assert!(Duration::from_rtps_wire(secs, frac).is_infinite());
     }
 
     #[test]

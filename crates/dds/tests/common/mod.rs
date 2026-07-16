@@ -304,8 +304,10 @@ pub fn wire_bidirectional_discovery(
             qos_reader: None,
             partition: wire.partition.clone(),
             unicast_locators: vec![pub_locator],
+            metatraffic_unicast_locators: vec![pub_locator],
             multicast_locators: vec![],
             type_info: wire.type_info.clone(),
+            type_information_wire: None,
         },
     );
 
@@ -321,8 +323,10 @@ pub fn wire_bidirectional_discovery(
             qos_reader: wire.reader_qos.clone(),
             partition: wire.partition.clone(),
             unicast_locators: vec![sub_locator],
+            metatraffic_unicast_locators: vec![sub_locator],
             multicast_locators: vec![],
             type_info: wire.type_info.clone(),
+            type_information_wire: None,
         },
     );
 
@@ -350,8 +354,10 @@ pub fn wire_pub_to_sub_reader(
             qos_reader: wire.reader_qos.clone(),
             partition: wire.partition.clone(),
             unicast_locators: vec![sub_locator],
+            metatraffic_unicast_locators: vec![sub_locator],
             multicast_locators: vec![],
             type_info: wire.type_info.clone(),
+            type_information_wire: None,
         },
     );
     pub_participant.run_matchmaking();
@@ -377,8 +383,10 @@ pub fn wire_sub_from_pub_writer(
             qos_reader: None,
             partition: wire.partition.clone(),
             unicast_locators: vec![pub_locator],
+            metatraffic_unicast_locators: vec![pub_locator],
             multicast_locators: vec![],
             type_info: wire.type_info.clone(),
+            type_information_wire: None,
         },
     );
     sub_participant.run_matchmaking();

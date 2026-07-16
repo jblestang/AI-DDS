@@ -384,6 +384,11 @@ impl<'a> CdrDeserializer<'a> {
         self.offset
     }
 
+    /// Override payload endianness after reading an encapsulation header.
+    pub fn set_endianness(&mut self, endianness: Endianness) {
+        self.endianness = endianness;
+    }
+
     /// Get the remaining unread bytes in the buffer.
     #[must_use]
     pub const fn remaining(&self) -> usize {
@@ -665,17 +670,25 @@ impl EncapsulationHeader {
 
     /// Write this encapsulation header to the serializer.
     pub fn serialize(&self, serializer: &mut CdrSerializer) {
-        let val = self.kind as u16;
-        // The encapsulation kind is always serialized in the endianness that matches the header itself,
-        // or as specified by the standard. But we align it to 2.
-        serializer.serialize_u16(val);
+        serializer.align(2);
+        // The encapsulation identifier is always big-endian on the wire (DDS CDR §10.2).
+        serializer.buf.put_u16(self.kind as u16);
         serializer.serialize_u8(self.options[0]);
         serializer.serialize_u8(self.options[1]);
     }
 
     /// Read encapsulation header from raw byte stream.
     pub fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
-        let kind_val = deserializer.deserialize_u16()?;
+        deserializer.align(2)?;
+        if deserializer.offset + 2 > deserializer.buf.len() {
+            return Err(CdrError::RemainingBytesMismatch {
+                expected: 2,
+                found: deserializer.remaining(),
+            });
+        }
+        let slice = &deserializer.buf[deserializer.offset..deserializer.offset + 2];
+        let kind_val = byteorder::BigEndian::read_u16(slice);
+        deserializer.offset += 2;
         let kind = match kind_val {
             0x0000 => EncapsulationKind::CdrBe,
             0x0001 => EncapsulationKind::CdrLe,
@@ -693,6 +706,7 @@ impl EncapsulationHeader {
         };
         let o0 = deserializer.deserialize_u8()?;
         let o1 = deserializer.deserialize_u8()?;
+        deserializer.set_endianness(kind.endianness());
         Ok(Self {
             kind,
             options: [o0, o1],
@@ -1156,6 +1170,7 @@ mod tests {
         let header = EncapsulationHeader::new(EncapsulationKind::CdrLe);
         let mut serializer = CdrSerializer::new(Endianness::LittleEndian);
         header.serialize(&mut serializer);
+        assert_eq!(serializer.bytes(), &[0x00, 0x01, 0x00, 0x00]);
 
         let mut deserializer = CdrDeserializer::new(serializer.bytes(), Endianness::LittleEndian);
         let parsed = EncapsulationHeader::deserialize(&mut deserializer).unwrap();
