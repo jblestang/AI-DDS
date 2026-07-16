@@ -50,8 +50,8 @@ impl CdrDeserialize for InteropMessage {
     }
 }
 
-/// TypeSupport for CycloneDDS interop: CDR LE with encapsulation header on the wire
-/// (RTPS serialized_payload), matching CycloneDDS user samples.
+/// TypeSupport for CycloneDDS interop: plain CDR with encapsulation header on the wire
+/// (`CdrLe` or `CdrBe` in RTPS serialized_payload), matching CycloneDDS user samples.
 pub struct InteropTypeSupport;
 
 impl TypeSupport for InteropTypeSupport {
@@ -74,6 +74,12 @@ impl TypeSupport for InteropTypeSupport {
         let mut de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
         let header = EncapsulationHeader::deserialize(&mut de)
             .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
+        if !matches!(header.kind, EncapsulationKind::CdrLe | EncapsulationKind::CdrBe) {
+            return Err(dds::types::return_code::DdsError::Error(format!(
+                "unsupported encapsulation kind for interop: {:?}",
+                header.kind
+            )));
+        }
         let mut body_de =
             CdrDeserializer::new(&bytes[de.offset()..], header.kind.endianness());
         let msg = InteropMessage::deserialize(&mut body_de)
@@ -112,7 +118,24 @@ mod interop_type_tests {
         }
         .serialize(&mut ser)
         .unwrap();
-        let boxed = ts.deserialize(ser.bytes()).expect("deserialize cyclone wire");
+        let boxed = ts.deserialize(ser.bytes()).expect("deserialize CdrLe wire");
+        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
+        assert_eq!(msg.id, 9001);
+        assert_eq!(msg.payload, "from-cyclonedds");
+    }
+
+    #[test]
+    fn deserialize_cyclonedds_cdr_be_encapsulated_payload() {
+        let ts = InteropTypeSupport;
+        let mut ser = CdrSerializer::new(Endianness::BigEndian);
+        EncapsulationHeader::new(EncapsulationKind::CdrBe).serialize(&mut ser);
+        InteropMessage {
+            id: 9001,
+            payload: "from-cyclonedds".to_string(),
+        }
+        .serialize(&mut ser)
+        .unwrap();
+        let boxed = ts.deserialize(ser.bytes()).expect("deserialize CdrBe wire");
         let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
         assert_eq!(msg.id, 9001);
         assert_eq!(msg.payload, "from-cyclonedds");
@@ -122,6 +145,20 @@ mod interop_type_tests {
     fn deserialize_rejects_plain_cdr_without_encapsulation_header() {
         let ts = InteropTypeSupport;
         let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        InteropMessage {
+            id: 9001,
+            payload: "from-cyclonedds".to_string(),
+        }
+        .serialize(&mut ser)
+        .unwrap();
+        assert!(ts.deserialize(ser.bytes()).is_err());
+    }
+
+    #[test]
+    fn deserialize_rejects_plcdr_encapsulation() {
+        let ts = InteropTypeSupport;
+        let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        EncapsulationHeader::new(EncapsulationKind::PlCdrLe).serialize(&mut ser);
         InteropMessage {
             id: 9001,
             payload: "from-cyclonedds".to_string(),
