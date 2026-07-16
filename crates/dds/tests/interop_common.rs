@@ -50,7 +50,8 @@ impl CdrDeserialize for InteropMessage {
     }
 }
 
-/// TypeSupport using standard CDR encapsulation (`CdrLe`) for wire compatibility.
+/// TypeSupport for CycloneDDS interop: CDR LE with encapsulation header on the wire
+/// (RTPS serialized_payload), matching CycloneDDS user samples.
 pub struct InteropTypeSupport;
 
 impl TypeSupport for InteropTypeSupport {
@@ -70,27 +71,12 @@ impl TypeSupport for InteropTypeSupport {
     }
 
     fn deserialize(&self, bytes: &[u8]) -> dds::types::return_code::DdsResult<Box<dyn Any>> {
-        let payload = if bytes.len() >= 4 {
-            let be_kind = u16::from_be_bytes([bytes[0], bytes[1]]);
-            let has_encapsulation = matches!(
-                be_kind,
-                0x0000 | 0x0001 | 0x0002 | 0x0003 | 0x0010 | 0x0011 | 0x0012 | 0x0013
-            );
-            if has_encapsulation {
-                let mut de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
-                let header = EncapsulationHeader::deserialize(&mut de)
-                    .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
-                let mut body_de = CdrDeserializer::new(&bytes[de.offset()..], header.kind.endianness());
-                let msg = InteropMessage::deserialize(&mut body_de)
-                    .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
-                return Ok(Box::new(msg));
-            }
-            bytes
-        } else {
-            bytes
-        };
-        let mut de = CdrDeserializer::new(payload, Endianness::LittleEndian);
-        let msg = InteropMessage::deserialize(&mut de)
+        let mut de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
+        let header = EncapsulationHeader::deserialize(&mut de)
+            .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
+        let mut body_de =
+            CdrDeserializer::new(&bytes[de.offset()..], header.kind.endianness());
+        let msg = InteropMessage::deserialize(&mut body_de)
             .map_err(|e| dds::types::return_code::DdsError::Error(e.to_string()))?;
         Ok(Box::new(msg))
     }
@@ -116,7 +102,24 @@ mod interop_type_tests {
     use super::*;
 
     #[test]
-    fn deserialize_cyclonedds_payload_without_encapsulation_header() {
+    fn deserialize_cyclonedds_cdr_le_encapsulated_payload() {
+        let ts = InteropTypeSupport;
+        let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        EncapsulationHeader::new(EncapsulationKind::CdrLe).serialize(&mut ser);
+        InteropMessage {
+            id: 9001,
+            payload: "from-cyclonedds".to_string(),
+        }
+        .serialize(&mut ser)
+        .unwrap();
+        let boxed = ts.deserialize(ser.bytes()).expect("deserialize cyclone wire");
+        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
+        assert_eq!(msg.id, 9001);
+        assert_eq!(msg.payload, "from-cyclonedds");
+    }
+
+    #[test]
+    fn deserialize_rejects_plain_cdr_without_encapsulation_header() {
         let ts = InteropTypeSupport;
         let mut ser = CdrSerializer::new(Endianness::LittleEndian);
         InteropMessage {
@@ -125,21 +128,7 @@ mod interop_type_tests {
         }
         .serialize(&mut ser)
         .unwrap();
-        let raw = ser.into_bytes();
-        let boxed = ts.deserialize(&raw).expect("deserialize raw CDR");
-        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
-        assert_eq!(msg.id, 9001);
-        assert_eq!(msg.payload, "from-cyclonedds");
-
-        // Wire bytes captured from CycloneDDS interop publisher (no encapsulation header).
-        let wire = [
-            0x29, 0x23, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x66, 0x72, 0x6f, 0x6d, 0x2d, 0x63,
-            0x79, 0x63, 0x6c, 0x6f, 0x6e, 0x65, 0x64, 0x64, 0x73, 0x00,
-        ];
-        let boxed = ts.deserialize(&wire).expect("deserialize cyclone wire");
-        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
-        assert_eq!(msg.id, 9001);
-        assert_eq!(msg.payload, "from-cyclonedds");
+        assert!(ts.deserialize(ser.bytes()).is_err());
     }
 }
 
