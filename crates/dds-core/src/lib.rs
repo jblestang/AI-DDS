@@ -1463,6 +1463,8 @@ impl DomainParticipant {
             let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16 + SPDP_MULTICAST_OFFSET;
             let discovery_clone = discovery.clone();
             let hooks_clone = hooks.clone();
+            let transport_mcast = transport.clone();
+            let domain_id_mcast = domain_id;
             std::thread::spawn(move || {
                 let mcast_socket = match bind_multicast_socket(multicast_port) {
                     Ok(s) => s,
@@ -1486,6 +1488,16 @@ impl DomainParticipant {
                                             discovery_clone.lock().unwrap().process_spdp_packet(participant);
                                             hooks_clone.run_matchmaking();
                                         }
+                                    } else if d.writer_id
+                                        == dds_types::guid::EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER
+                                    {
+                                        let dest = dds_discovery::metatraffic_multicast_locator(domain_id_mcast);
+                                        discovery_clone.lock().unwrap().process_type_lookup_request(
+                                            &transport_mcast,
+                                            domain_id_mcast,
+                                            &d.serialized_payload,
+                                            &dest,
+                                        );
                                     }
                                 }
                             }
@@ -1573,6 +1585,22 @@ impl DomainParticipant {
                                 discovery.lock().unwrap().process_sedp_endpoint(endpoint.clone());
                                 hooks.publish_builtin_endpoint(&endpoint);
                                 hooks.run_matchmaking();
+                            }
+                            continue;
+                        }
+
+                        if writer_id == dds_types::guid::EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER {
+                            if let std::net::SocketAddr::V4(v4) = from {
+                                let reply_dest = dds_types::locator::Locator::udpv4(
+                                    *v4.ip(),
+                                    u32::from(v4.port()),
+                                );
+                                discovery.lock().unwrap().process_type_lookup_request(
+                                    &transport,
+                                    domain_id,
+                                    &final_payload,
+                                    &reply_dest,
+                                );
                             }
                             continue;
                         }

@@ -67,13 +67,13 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 ---
 
 ## 6–9. Supporting Crates
-* **`dds-xtypes`**, **`dds-idl`/`dds-idlc`**, **`dds-security`**: **COMPLETE** (Phase 2–3)
+* **`dds-xtypes`**: **COMPLETE** — TypeLookup service (§7.6.3.3), `getTypes` / `getTypeDependencies`, XCDR2 wire
+* **`dds-idl`/`dds-idlc`**: **COMPLETE** — `@appendable` / `@mutable` XCDR2 struct codegen
+* **`dds-security`**: **COMPLETE** (Phase 2–3)
 * **`dds-monitor`**: **COMPLETE** — live `MonitorApp::from_discovery_snapshot()` integration
 
 ---
 
 ### Explicitly out of scope
 * SharedMemory locators
-* Wire TypeLookup metatraffic service (local DB lookup implemented)
-* `dds-idlc` XCDR2 appendable/mutable struct codegen (runtime XCDR2 helpers complete)
 

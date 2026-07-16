@@ -63,7 +63,7 @@
     reason = "IDL compiler CLI tool requires IO operations, print debugging, standard returns, and CLI arguments."
 )]
 
-use dds_idl::{parse_idl, AstNode, EnumDef, IdlType, PrimitiveType, StructDef, UnionDef, BitmaskDef, ConstDef};
+use dds_idl::{parse_idl, AstNode, EnumDef, Extensibility, IdlType, PrimitiveType, StructDef, UnionDef, BitmaskDef, ConstDef};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -224,6 +224,15 @@ fn generate_member_deserialize_statement(name: &str, idl_type: &IdlType) -> Stri
 /// Generates complete Rust source code representing the parsed IDL structs.
 #[must_use] 
 pub fn generate_rust_struct(struct_def: &StructDef) -> String {
+    match struct_def.extensibility {
+        Extensibility::Final => generate_final_struct(struct_def),
+        Extensibility::Appendable | Extensibility::Mutable => {
+            generate_xcdr2_struct(struct_def)
+        }
+    }
+}
+
+fn generate_final_struct(struct_def: &StructDef) -> String {
     let struct_name = &struct_def.name;
 
     // Build struct fields
@@ -337,6 +346,182 @@ impl dds_core::TypeSupport for {struct_name}TypeSupport {{
     }}
 }}
 "#
+    )
+}
+
+fn generate_xcdr2_member_serialize(member_index: u32, prefix: &str, name: &str, idl_type: &IdlType) -> String {
+    let inner_ser = generate_member_serialize(prefix, name, idl_type);
+    format!(
+        r#"        {{
+            let mut __tmp = dds_cdr::CdrSerializer::new(serializer.endianness());
+{inner_ser}
+            let __bytes = __tmp.into_bytes();
+            serializer.serialize_emheader({member_index}, __bytes.len() as u32);
+            serializer.append_bytes(&__bytes);
+        }}
+"#
+    )
+}
+
+fn generate_xcdr2_deserialize_arm(member_index: u32, name: &str, idl_type: &IdlType, mutable: bool) -> String {
+    let deser = generate_member_deserialize_statement(name, idl_type);
+    if mutable {
+        format!(
+            "                {member_index} => {{\n                    {deser}\n                }}\n"
+        )
+    } else {
+        format!(
+            "                {member_index} if {name}.is_none() => {{\n                    {deser}\n                }}\n"
+        )
+    }
+}
+
+fn generate_xcdr2_struct(struct_def: &StructDef) -> String {
+    let struct_name = &struct_def.name;
+    let mutable = struct_def.extensibility == Extensibility::Mutable;
+
+    let mut fields = String::new();
+    for member in &struct_def.members {
+        fields.push_str(&format!(
+            "    pub {}: {},\n",
+            member.name,
+            idl_type_to_rust(&member.field_type)
+        ));
+    }
+
+    let mut ser_members = String::new();
+    for (idx, member) in struct_def.members.iter().enumerate() {
+        ser_members.push_str(&generate_xcdr2_member_serialize(
+            (idx + 1) as u32,
+            "self.",
+            &member.name,
+            &member.field_type,
+        ));
+    }
+
+    let mut opt_vars = String::new();
+    let mut match_arms = String::new();
+    let mut final_fields = String::new();
+    for (idx, member) in struct_def.members.iter().enumerate() {
+        opt_vars.push_str(&format!("        let mut {} = None;\n", member.name));
+        match_arms.push_str(&generate_xcdr2_deserialize_arm(
+            (idx + 1) as u32,
+            &member.name,
+            &member.field_type,
+            mutable,
+        ));
+        final_fields.push_str(&format!(
+            "            {}: {}.ok_or_else(|| dds_cdr::CdrError::InvalidHeader(\"missing member {}\".into()))?,\n",
+            member.name, member.name, member.name
+        ));
+    }
+
+    let has_key = struct_def
+        .members
+        .iter()
+        .any(|m| m.annotations.iter().any(|a| a.name == "key"));
+    let get_key_body = if has_key {
+        let mut key_ser = String::new();
+        for m in &struct_def.members {
+            if m.annotations.iter().any(|a| a.name == "key") {
+                key_ser.push_str(&generate_member_serialize("val.", &m.name, &m.field_type));
+                key_ser.push('\n');
+            }
+        }
+        format!(
+            r#"        if let Some(val) = value.downcast_ref::<{struct_name}>() {{
+            let mut serializer = dds_cdr::CdrSerializer::new(dds_cdr::Endianness::LittleEndian);
+{key_ser}
+            Ok(dds_types::instance::InstanceHandle::new(&serializer.into_bytes()))
+        }} else {{
+            Err(dds_types::return_code::DdsError::BadParameter("cast to {struct_name} failed".into()))
+        }}"#
+        )
+    } else {
+        "        Ok(dds_types::instance::InstanceHandle::NIL)".to_owned()
+    };
+
+    format!(
+        r#"// Generated automatically by dds-idlc. Do not edit manually (XCDR2 {ext_kind}).
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct {struct_name} {{
+{fields}}}
+
+impl {struct_name} {{
+    fn xcdr2_serialize_body(&self, serializer: &mut dds_cdr::CdrSerializer) -> dds_cdr::CdrResult<()> {{
+        let dheader_offset = serializer.write_dheader_placeholder();
+{ser_members}        serializer.patch_dheader(dheader_offset);
+        Ok(())
+    }}
+
+    fn xcdr2_deserialize_body(deserializer: &mut dds_cdr::CdrDeserializer) -> dds_cdr::CdrResult<Self> {{
+        let _dlen = deserializer.deserialize_dheader()?;
+{opt_vars}        while deserializer.remaining() > 0 {{
+            let (member_id, length) = deserializer.deserialize_emheader()?;
+            let member_start = deserializer.offset();
+            match member_id {{
+{match_arms}                _ => deserializer.skip(length as usize)?,
+            }}
+            let consumed = deserializer.offset() - member_start;
+            if consumed < length as usize {{
+                deserializer.skip(length as usize - consumed)?;
+            }}
+        }}
+        Ok(Self {{
+{final_fields}        }})
+    }}
+}}
+
+impl dds_cdr::CdrSerialize for {struct_name} {{
+    fn serialize(&self, serializer: &mut dds_cdr::CdrSerializer) -> dds_cdr::CdrResult<()> {{
+        self.xcdr2_serialize_body(serializer)
+    }}
+}}
+
+impl dds_cdr::CdrDeserialize for {struct_name} {{
+    fn deserialize(deserializer: &mut dds_cdr::CdrDeserializer) -> dds_cdr::CdrResult<Self> {{
+        Self::xcdr2_deserialize_body(deserializer)
+    }}
+}}
+
+pub struct {struct_name}TypeSupport;
+
+impl dds_core::TypeSupport for {struct_name}TypeSupport {{
+    fn get_type_name(&self) -> &str {{
+        "{struct_name}"
+    }}
+
+    fn serialize(&self, value: &dyn std::any::Any) -> dds_types::return_code::DdsResult<Vec<u8>> {{
+        if let Some(val) = value.downcast_ref::<{struct_name}>() {{
+            let mut ser = dds_cdr::CdrSerializer::new(dds_cdr::Endianness::LittleEndian);
+            dds_cdr::EncapsulationHeader::new(dds_cdr::EncapsulationKind::DxtCdr2Le).serialize(&mut ser);
+            val.serialize(&mut ser).map_err(|e| dds_types::return_code::DdsError::Error(e.to_string()))?;
+            Ok(ser.into_bytes().to_vec())
+        }} else {{
+            Err(dds_types::return_code::DdsError::BadParameter("cast to {struct_name} failed".into()))
+        }}
+    }}
+
+    fn deserialize(&self, bytes: &[u8]) -> dds_types::return_code::DdsResult<Box<dyn std::any::Any>> {{
+        let mut offset = 0;
+        if bytes.len() >= 4 {{
+            let kind = u16::from_le_bytes([bytes[0], bytes[1]]);
+            if matches!(kind, 0x0010 | 0x0011) {{
+                offset = 4;
+            }}
+        }}
+        let val: {struct_name} = dds_cdr::deserialize_from_slice(&bytes[offset..], dds_cdr::Endianness::LittleEndian)
+            .map_err(|e| dds_types::return_code::DdsError::Error(e.to_string()))?;
+        Ok(Box::new(val))
+    }}
+
+    fn get_key_hash(&self, value: &dyn std::any::Any) -> dds_types::return_code::DdsResult<dds_types::instance::InstanceHandle> {{
+{get_key_body}
+    }}
+}}
+"#,
+        ext_kind = if mutable { "mutable" } else { "appendable" },
     )
 }
 
@@ -540,6 +725,7 @@ mod tests {
                 },
             ],
             annotations: vec![],
+            extensibility: Extensibility::Final,
         };
 
         let code = generate_rust_struct(&s);
@@ -562,6 +748,7 @@ mod tests {
                     annotations: vec![],
                 }],
                 annotations: vec![],
+                extensibility: Extensibility::Final,
             })],
         });
 
@@ -594,6 +781,7 @@ mod tests {
                 },
             ],
             annotations: vec![],
+            extensibility: Extensibility::Final,
         };
 
         let code = generate_rust_struct(&s);
@@ -601,5 +789,41 @@ mod tests {
         assert!(code.contains("pub dict: std::collections::HashMap<String, i32>,"));
         assert!(code.contains("let mut arr_vec = Vec::with_capacity(5);"));
         assert!(code.contains("let dict_len = deserializer.deserialize_u32()?;"));
+    }
+
+    #[test]
+    fn test_generate_xcdr2_appendable_and_mutable() {
+        let appendable = StructDef {
+            name: "AppendablePoint".to_string(),
+            members: vec![dds_idl::StructMember {
+                name: "x".to_string(),
+                field_type: IdlType::Primitive(PrimitiveType::Int32),
+                annotations: vec![],
+            }],
+            annotations: vec![dds_idl::Annotation {
+                name: "appendable".to_string(),
+            }],
+            extensibility: Extensibility::Appendable,
+        };
+        let appendable_code = generate_rust_struct(&appendable);
+        assert!(appendable_code.contains("XCDR2 appendable"));
+        assert!(appendable_code.contains("write_dheader_placeholder"));
+        assert!(appendable_code.contains("DxtCdr2Le"));
+
+        let mutable = StructDef {
+            name: "MutablePoint".to_string(),
+            members: vec![dds_idl::StructMember {
+                name: "y".to_string(),
+                field_type: IdlType::Primitive(PrimitiveType::Int32),
+                annotations: vec![],
+            }],
+            annotations: vec![dds_idl::Annotation {
+                name: "mutable".to_string(),
+            }],
+            extensibility: Extensibility::Mutable,
+        };
+        let mutable_code = generate_rust_struct(&mutable);
+        assert!(mutable_code.contains("XCDR2 mutable"));
+        assert!(mutable_code.contains("deserialize_emheader"));
     }
 }

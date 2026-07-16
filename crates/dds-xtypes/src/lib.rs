@@ -13,7 +13,18 @@ use sha2::{Digest as _, Sha256};
 use std::collections::HashMap;
 
 pub mod dynamic;
+pub mod hashid;
+pub mod type_lookup;
 pub use dynamic::{DynamicData, DynamicType};
+pub use hashid::hashid;
+pub use type_lookup::{
+    handle_get_type_dependencies, handle_get_types, make_get_types_request, serve_type_lookup_request,
+    type_lookup_instance_name, RequestHeader, SampleIdentity, TypeIdentifierPair,
+    TypeIdentifierTypeObjectPair, TypeIdentifierWithDependencies, TypeIdentifierWithSize,
+    TypeLookupCall, TypeLookupGetTypeDependenciesIn, TypeLookupGetTypeDependenciesOut,
+    TypeLookupGetTypeDependenciesResult, TypeLookupGetTypesIn, TypeLookupGetTypesOut,
+    TypeLookupGetTypesResult, TypeLookupReply, TypeLookupRequest, TypeLookupReturn,
+};
 
 /// OMG `XTypes` §7.2.2 Extensibility Kinds
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
