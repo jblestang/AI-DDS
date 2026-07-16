@@ -1406,6 +1406,31 @@ impl DomainParticipant {
         self.hooks.run_matchmaking();
     }
 
+    /// Send a TypeLookup request to a remote TypeLookup service provider.
+    pub fn send_type_lookup_request(
+        &self,
+        request: &dds_xtypes::TypeLookupRequest,
+        destination: &Locator,
+    ) -> Result<(), String> {
+        self.discovery.lock().unwrap().send_type_lookup_request(
+            &self.hooks.transport,
+            request,
+            destination,
+        )
+    }
+
+    /// Retrieve TypeLookup replies received on the builtin reply endpoint.
+    #[must_use]
+    pub fn poll_type_lookup_replies(&self) -> Vec<dds_xtypes::TypeLookupReply> {
+        self.discovery.lock().unwrap().drain_type_lookup_replies()
+    }
+
+    /// Export a discovery monitor snapshot for tooling/tests.
+    #[must_use]
+    pub fn monitor_snapshot(&self) -> dds_discovery::MonitorSnapshot {
+        self.discovery.lock().unwrap().monitor_snapshot()
+    }
+
     /// Create builtin DCPS topic readers (`DCPSPublication`, `DCPSSubscription`, `DCPSParticipant`).
     pub fn enable_builtin_topics(&self) -> DdsResult<()> {
         let ts = Arc::new(BuiltinBytesTypeSupport);
@@ -1450,15 +1475,18 @@ impl DomainParticipant {
             let mut reassembly_buffers: HashMap<(Guid, SequenceNumber), FragmentBuffer> = HashMap::new();
             let mut last_lease_check = std::time::Instant::now();
 
-            // Blocking socket for the receive loop
-            let socket = match std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:{port}")) {
-                Ok(s) => s,
+            let recv_transport = match transport.try_clone() {
+                Ok(t) => t,
                 Err(e) => {
-                    eprintln!("[DomainParticipant] recv bind failed on port {port}: {e}");
+                    eprintln!("[DomainParticipant] transport clone failed on port {port}: {e}");
                     return;
                 }
             };
-            println!("[spawn_receiver_loop] Bound receiver socket to {}", socket.local_addr().unwrap());
+            if recv_transport.set_blocking(true).is_err() {
+                eprintln!("[DomainParticipant] failed to set blocking mode on port {port}");
+                return;
+            }
+            println!("[spawn_receiver_loop] Reusing transport socket on port {port}");
             // Start an additional thread for the SPDP Multicast Port
             let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16 + SPDP_MULTICAST_OFFSET;
             let discovery_clone = discovery.clone();
@@ -1516,7 +1544,7 @@ impl DomainParticipant {
                     }
                     last_lease_check = std::time::Instant::now();
                 }
-                let (len, from) = match socket.recv_from(&mut buf) {
+                let (len, from) = match recv_transport.recv_from_blocking(&mut buf) {
                     Ok(r) => r,
                     Err(e) => {
                         println!("[spawn_receiver_loop] recv_from failed: {:?}", e);
@@ -1601,6 +1629,15 @@ impl DomainParticipant {
                                     &final_payload,
                                     &reply_dest,
                                 );
+                            }
+                            continue;
+                        }
+
+                        if writer_id == dds_types::guid::EntityId::BUILTIN_TYPE_LOOKUP_REPLY_DATA_WRITER {
+                            if let Ok(reply) =
+                                dds_xtypes::TypeLookupReply::from_wire_bytes(&final_payload)
+                            {
+                                discovery.lock().unwrap().push_type_lookup_reply(reply);
                             }
                             continue;
                         }
@@ -1945,9 +1982,8 @@ impl DomainParticipantFactory {
             ));
         }
 
-        // Bind send socket on ephemeral port
-        let transport = UdpTransport::bind(0)
-            .map_err(|e| DdsError::Error(format!("UDP bind failed: {e}")))?;
+        let transport = UdpTransport::bind(unicast_port as u16)
+            .map_err(|e| DdsError::Error(format!("UDP bind failed on port {unicast_port}: {e}")))?;
         let transport = Arc::new(transport);
 
         Ok(DomainParticipant::new(

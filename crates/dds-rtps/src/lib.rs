@@ -1767,6 +1767,38 @@ impl UdpTransport {
         Ok(())
     }
 
+    /// Clone the underlying socket (for a dedicated blocking receive thread).
+    pub fn try_clone(&self) -> RtpsResult<Self> {
+        Ok(Self {
+            socket: self
+                .socket
+                .try_clone()
+                .map_err(|e| RtpsError::TransportError(format!("socket clone failed: {e}")))?,
+        })
+    }
+
+    /// Configure blocking mode on this transport socket.
+    pub fn set_blocking(&self, blocking: bool) -> RtpsResult<()> {
+        self.socket
+            .set_nonblocking(!blocking)
+            .map_err(|e| RtpsError::TransportError(format!("set_blocking failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Local UDP port this transport is bound to.
+    #[must_use]
+    pub fn local_port(&self) -> RtpsResult<u16> {
+        self.socket
+            .local_addr()
+            .map(|a| a.port())
+            .map_err(|e| RtpsError::TransportError(format!("local_addr failed: {e}")))
+    }
+
+    /// Blocking `recv_from` for dedicated receive threads.
+    pub fn recv_from_blocking(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        self.socket.recv_from(buf)
+    }
+
     /// Try to receive a packet from the network.
     ///
     /// Returns Ok(None) if no data is currently available (non-blocking).

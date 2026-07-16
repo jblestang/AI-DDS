@@ -226,6 +226,8 @@ pub struct DiscoveryManager {
     type_object_db: HashMap<dds_xtypes::TypeIdentifier, dds_xtypes::TypeObject>,
     /// Sequence number for TypeLookup reply samples.
     type_lookup_reply_sn: dds_types::guid::SequenceNumber,
+    /// Replies received on the TypeLookup reply builtin endpoint.
+    type_lookup_replies: Vec<dds_xtypes::TypeLookupReply>,
 }
 
 impl DiscoveryManager {
@@ -239,6 +241,7 @@ impl DiscoveryManager {
             builtin_mappings: HashMap::new(),
             type_object_db: HashMap::new(),
             type_lookup_reply_sn: dds_types::guid::SequenceNumber(1),
+            type_lookup_replies: Vec::new(),
         }
     }
 
@@ -494,6 +497,17 @@ impl DiscoveryManager {
             participants,
             endpoints,
         }
+    }
+
+    /// Store a TypeLookup reply received from the wire.
+    pub fn push_type_lookup_reply(&mut self, reply: dds_xtypes::TypeLookupReply) {
+        self.type_lookup_replies.push(reply);
+    }
+
+    /// Drain all pending TypeLookup replies (client-side inbox).
+    #[must_use]
+    pub fn drain_type_lookup_replies(&mut self) -> Vec<dds_xtypes::TypeLookupReply> {
+        std::mem::take(&mut self.type_lookup_replies)
     }
 
     /// Register a complete TypeObject for wire TypeLookup responses.
