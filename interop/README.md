@@ -41,6 +41,7 @@ export CYCLONEDDS_PREFIX=/tmp/cyclonedds-install
 # Build Fast-CDR + Fast-DDS + Fast-DDS-Gen, install to a prefix, then:
 export FASTDDS_PREFIX=/tmp/fastdds-install
 export FASTDDSGEN=/path/to/fastddsgen   # optional if on PATH
+# Uses g++ by default (see build-fastdds-apps.sh)
 ./interop/scripts/build-fastdds-apps.sh
 cargo test -p dds --test interop_fastdds -- --ignored --nocapture --test-threads=1
 ```

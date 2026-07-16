@@ -5,6 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="${AIDDS_INTEROP_BUILD_DIR:-$ROOT/target/interop-fastdds}"
 FASTDDS_PREFIX="${FASTDDS_PREFIX:-${FASTDDS_ROOT:-}}"
 
+# Default `c++` is often Clang, which may not find libstdc++ without extra -L flags.
+export CC="${CC:-gcc}"
+export CXX="${CXX:-g++}"
+
 if [[ -z "$FASTDDS_PREFIX" ]]; then
   echo "FASTDDS_PREFIX is not set. Build and install Fast DDS first." >&2
   echo "Example:" >&2
@@ -21,6 +25,8 @@ CMAKE_ARGS=(
   -B "$BUILD_DIR"
   -DCMAKE_PREFIX_PATH="$FASTDDS_PREFIX"
   -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_C_COMPILER="$CC"
+  -DCMAKE_CXX_COMPILER="$CXX"
 )
 
 if [[ -n "${FASTDDSGEN:-}" ]]; then
