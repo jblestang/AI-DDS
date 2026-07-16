@@ -9,7 +9,7 @@ cargo test -p dds --test interop_wire
 
 if [[ -n "${AIDDS_INTEROP_BIN:-}" ]] && [[ -x "${AIDDS_INTEROP_BIN}/interop_publisher" ]]; then
   echo "==> Live CycloneDDS interop tests"
-  cargo test -p dds --test interop_cyclonedds -- --ignored --nocapture
+  cargo test -p dds --test interop_cyclonedds -- --ignored --nocapture --test-threads=1
 else
   echo "==> Skipping live interop (set AIDDS_INTEROP_BIN to enable)"
 fi

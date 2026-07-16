@@ -10,10 +10,10 @@
 mod common;
 mod interop_common;
 
-use common::{wait_until, DiscoveryWire};
+use common::wait_until;
 use interop_common::{
     cyclonedds_available, output_contains_interop_receive, spawn_cyclonedds_publisher,
-    spawn_cyclonedds_subscriber, wait_output, InteropMessage, InteropTypeSupport, INTEROP_DOMAIN,
+    wait_output, InteropMessage, InteropTypeSupport, INTEROP_DOMAIN,
     INTEROP_TOPIC, INTEROP_TYPE,
 };
 use dds::core::DomainParticipantFactory;

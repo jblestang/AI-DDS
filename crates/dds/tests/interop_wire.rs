@@ -72,10 +72,10 @@ fn interop_wire_parse_cyclonedds_data_fixture() {
         "DATA payload should not be empty"
     );
 
-    // User samples use CdrLe encapsulation; discovery metatraffic may be PL-CDR instead.
+    // User samples use CdrLe encapsulation (kind id 0x0001, big-endian on wire).
     let payload = &data.serialized_payload;
-    let is_cdr_le = payload.len() >= 2 && payload[0..2] == [0x01, 0x00];
-    let is_plcdr = payload.len() >= 2 && payload[0..2] == [0x02, 0x00] || payload[0..2] == [0x00, 0x03];
+    let is_cdr_le = payload.len() >= 2 && payload[0..2] == [0x00, 0x01];
+    let is_plcdr = payload.len() >= 2 && payload[0..2] == [0x00, 0x02] || payload[0..2] == [0x00, 0x03];
     assert!(
         is_cdr_le || is_plcdr || dds_discovery::parse_spdp_packet(payload).is_some(),
         "Payload should be CDR/PL-CDR encapsulated or valid SPDP parameter list"
@@ -100,7 +100,8 @@ use interop_common::{InteropMessage, InteropTypeSupport};
 
     let plain = serialize_to_bytes(&sample, Endianness::LittleEndian).unwrap();
     assert!(wire.len() > plain.len());
-    assert_eq!(&wire[0..2], &[0x01, 0x00]); // CdrLe
+    // Encapsulation kind is always big-endian on the wire (DDS CDR §10.2).
+    assert_eq!(&wire[0..2], &[0x00, 0x01]); // CdrLe
 
     let mut header = dds::cdr::CdrSerializer::new(Endianness::LittleEndian);
     EncapsulationHeader::new(EncapsulationKind::CdrLe).serialize(&mut header);

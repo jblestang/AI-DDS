@@ -82,7 +82,7 @@ Rust tests use `InteropTypeSupport` with **CdrLe encapsulation** for user data.
 | Parse CycloneDDS RTPS framing | Pass |
 | Emit standard PL-CDR SPDP/SEDP | Implemented |
 | Multicast SEDP receive | Implemented |
-| Live discovery + data with CycloneDDS | In progress (live tests `#[ignore]`) |
+| Live discovery + data with CycloneDDS | Pass (live tests `#[ignore]`, run via `run-interop.sh`) |
 | CdrLe user-data encapsulation | Pass |
 
 ## Peer applications
