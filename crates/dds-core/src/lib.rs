@@ -1517,6 +1517,18 @@ impl DomainParticipant {
                                             hooks_clone.run_matchmaking();
                                         }
                                     } else if d.writer_id
+                                        == dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
+                                        || d.writer_id
+                                            == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+                                    {
+                                        if let Some(endpoint) =
+                                            dds_discovery::parse_sedp_packet(&d.serialized_payload)
+                                        {
+                                            discovery_clone.lock().unwrap().process_sedp_endpoint(endpoint.clone());
+                                            hooks_clone.publish_builtin_endpoint(&endpoint);
+                                            hooks_clone.run_matchmaking();
+                                        }
+                                    } else if d.writer_id
                                         == dds_types::guid::EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER
                                     {
                                         let dest = dds_discovery::metatraffic_multicast_locator(domain_id_mcast);
