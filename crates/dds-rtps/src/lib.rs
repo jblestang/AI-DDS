@@ -221,7 +221,8 @@ impl RtpsHeader {
     #[must_use]
     pub const fn new(guid_prefix: GuidPrefix) -> Self {
         Self {
-            version: (2, 5),
+            // RTPS 2.1 wire header matches CycloneDDS/FastDDS discovery interop (see interop fixtures).
+            version: (2, 1),
             vendor_id: VendorId::THIS_IMPLEMENTATION,
             guid_prefix,
         }

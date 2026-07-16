@@ -187,6 +187,10 @@ fn test_reverse_matchmaking_subscription_matched() {
                 std::net::Ipv4Addr::LOCALHOST,
                 7400,
             )],
+            metatraffic_unicast_locators: vec![dds::types::locator::Locator::udpv4(
+                std::net::Ipv4Addr::LOCALHOST,
+                7400,
+            )],
             multicast_locators: vec![],
             lease_duration: dds::types::time::Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -198,6 +202,8 @@ fn test_reverse_matchmaking_subscription_matched() {
             qos_writer: Some(DataWriterQos::default()),
             qos_reader: None,
             partition: vec![],
+            unicast_locators: vec![],
+            multicast_locators: vec![],
             type_info: None,
         });
     }

@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn skip_if_no_cyclonedds() {
+    std::env::set_var("AIDDS_USE_CYCLONE_SPDP_TEMPLATE", "1");
     if !cyclonedds_available() {
         eprintln!(
             "SKIP: CycloneDDS interop binaries not found. \

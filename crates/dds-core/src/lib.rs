@@ -1113,13 +1113,36 @@ struct ParticipantHooks {
 }
 
 impl ParticipantHooks {
-    fn spdp_locators(&self) -> (Vec<Locator>, Vec<Locator>) {
-        let unicast = Locator::udpv4(
-            std::net::Ipv4Addr::LOCALHOST,
-            self.unicast_port,
-        );
+    fn advertise_ipv4(&self) -> std::net::Ipv4Addr {
+        if let Ok(ip) = std::env::var("AIDDS_INTEROP_LOCATOR_IP") {
+            if let Ok(parsed) = ip.parse() {
+                return parsed;
+            }
+        }
+        if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if sock.connect("8.8.8.8:80").is_ok() {
+                if let Ok(std::net::SocketAddr::V4(v4)) = sock.local_addr() {
+                    return *v4.ip();
+                }
+            }
+        }
+        std::net::Ipv4Addr::LOCALHOST
+    }
+
+    fn user_unicast_port(&self) -> u32 {
+        self.unicast_port + (USER_UNICAST_OFFSET - SPDP_UNICAST_OFFSET) as u32
+    }
+
+    fn user_unicast_locator(&self) -> Locator {
+        Locator::udpv4(self.advertise_ipv4(), self.user_unicast_port())
+    }
+
+    fn spdp_locators(&self) -> (Vec<Locator>, Vec<Locator>, Vec<Locator>) {
+        let ip = self.advertise_ipv4();
+        let metatraffic_unicast = Locator::udpv4(ip, self.unicast_port);
+        let user_unicast = Locator::udpv4(ip, self.user_unicast_port());
         let multicast = dds_discovery::metatraffic_multicast_locator(self.domain_id);
-        (vec![unicast], vec![multicast])
+        (vec![user_unicast], vec![metatraffic_unicast], vec![multicast])
     }
 
     fn partition_names(partition: &dds_types::qos::Partition) -> Vec<String> {
@@ -1138,6 +1161,8 @@ impl ParticipantHooks {
             qos_writer: Some(writer.qos().clone()),
             qos_reader: None,
             partition: Self::partition_names(publisher_partition),
+            unicast_locators: vec![self.user_unicast_locator()],
+            multicast_locators: vec![],
             type_info: None,
         };
         let mut disc = self.discovery.lock().unwrap();
@@ -1155,6 +1180,8 @@ impl ParticipantHooks {
             qos_writer: None,
             qos_reader: Some(reader.qos().clone()),
             partition: Self::partition_names(subscriber_partition),
+            unicast_locators: vec![self.user_unicast_locator()],
+            multicast_locators: vec![],
             type_info: None,
         };
         let mut disc = self.discovery.lock().unwrap();
@@ -1198,7 +1225,12 @@ impl ParticipantHooks {
             else {
                 continue;
             };
-            let Some(participant_locator) = remote_participant.unicast_locators.first().copied() else {
+            let remote_locators = if !remote_ep.unicast_locators.is_empty() {
+                remote_ep.unicast_locators.clone()
+            } else {
+                remote_participant.unicast_locators.clone()
+            };
+            let Some(participant_locator) = remote_locators.first().copied() else {
                 continue;
             };
 
@@ -1468,21 +1500,23 @@ impl DomainParticipant {
         });
 
         if qos.entity_factory.autoenable_created_entities {
-            let (unicast_locs, multicast_locs) = hooks.spdp_locators();
+            let (default_unicast, metatraffic_unicast, multicast) = hooks.spdp_locators();
             {
                 let disc = discovery.lock().unwrap();
                 let _ = disc.announce_local_participant(
                     &transport,
                     domain_id,
-                    &unicast_locs,
-                    &multicast_locs,
+                    &default_unicast,
+                    &metatraffic_unicast,
+                    &multicast,
                 );
                 disc.spawn_spdp_announcer(
                     std::time::Duration::from_secs(1),
                     transport.clone(),
                     domain_id,
-                    unicast_locs,
-                    multicast_locs,
+                    default_unicast,
+                    metatraffic_unicast,
+                    multicast,
                     None,
                 );
             }
@@ -1535,21 +1569,23 @@ impl DomainParticipant {
     pub fn enable(&self) -> DdsResult<()> {
         let was_enabled = self.is_enabled.swap(true, std::sync::atomic::Ordering::SeqCst);
         if !was_enabled {
-            let (unicast_locs, multicast_locs) = self.hooks.spdp_locators();
+            let (default_unicast, metatraffic_unicast, multicast) = self.hooks.spdp_locators();
             let discovery = self.discovery.lock().unwrap();
             discovery.spawn_spdp_announcer(
                 std::time::Duration::from_secs(1),
                 self.transport.clone(),
                 self.domain_id,
-                unicast_locs.clone(),
-                multicast_locs,
+                default_unicast.clone(),
+                metatraffic_unicast.clone(),
+                multicast.clone(),
                 None,
             );
             let _ = discovery.announce_local_participant(
                 &self.transport,
                 self.domain_id,
-                &unicast_locs,
-                &[],
+                &default_unicast,
+                &metatraffic_unicast,
+                &multicast,
             );
             dds_discovery::DiscoveryManager::spawn_sedp_announcer(
                 self.discovery.clone(),
@@ -1756,6 +1792,124 @@ impl DomainParticipant {
                 return;
             }
             println!("[spawn_receiver_loop] Reusing transport socket on port {port}");
+            let user_port = port + (USER_UNICAST_OFFSET - SPDP_UNICAST_OFFSET) as u32;
+            {
+                let registry_user = registry.clone();
+                let discovery_user = discovery.clone();
+                let hooks_user = hooks.clone();
+                let security_crypto_user = security_crypto.clone();
+                let local_crypto_user = local_crypto_handle;
+                let remote_crypto_user = remote_crypto_handles.clone();
+                std::thread::spawn(move || {
+                    let user_transport = match UdpTransport::bind(user_port as u16) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            eprintln!("[spawn_receiver_loop] user port bind failed on {user_port}: {e}");
+                            return;
+                        }
+                    };
+                    if user_transport.set_blocking(true).is_err() {
+                        return;
+                    }
+                    let mut buf = vec![0u8; UDP_MAX_PAYLOAD_SIZE];
+                    loop {
+                        let (len, _from) = match user_transport.recv_from_blocking(&mut buf) {
+                            Ok(r) => r,
+                            Err(_) => continue,
+                        };
+                        let data = &buf[..len];
+                        let Ok((header, submessages)) = parse_rtps_message(data) else {
+                            continue;
+                        };
+                        let reg = registry_user.lock().unwrap();
+                        for sub in &submessages {
+                            match sub {
+                                Submessage::Data(d) => {
+                                    if dds_discovery::DiscoveryManager::is_builtin_endpoint(&d.writer_id) {
+                                        continue;
+                                    }
+                                    let mut final_payload = d.serialized_payload.to_vec();
+                                    let sender_prefix = header.guid_prefix;
+                                    if let Some(remote_crypto_handle) =
+                                        remote_crypto_user.lock().unwrap().get(&sender_prefix).copied()
+                                    {
+                                        if final_payload.len() >= 44 {
+                                            let mut iv = [0_u8; 12];
+                                            iv.copy_from_slice(&final_payload[0..12]);
+                                            let mut session_id = [0_u8; 16];
+                                            session_id.copy_from_slice(&final_payload[12..28]);
+                                            let tag_start = final_payload.len() - 16;
+                                            let mut mac_tag = [0_u8; 16];
+                                            mac_tag.copy_from_slice(&final_payload[tag_start..]);
+                                            let ciphertext = &final_payload[28..tag_start];
+                                            if let Ok(dec_bytes) = security_crypto_user.decrypt_payload(
+                                                ciphertext,
+                                                &dds_security::CryptoHeader {
+                                                    initialization_vector: iv,
+                                                    session_id,
+                                                },
+                                                &dds_security::CryptoFooter { mac_tag },
+                                                &local_crypto_user,
+                                                &remote_crypto_handle,
+                                            ) {
+                                                final_payload = dec_bytes;
+                                            }
+                                        }
+                                    }
+                                    let writer_guid = Guid::new(header.guid_prefix, d.writer_id);
+                                    let topic_name = discovery_user
+                                        .lock()
+                                        .unwrap()
+                                        .topic_for_endpoint(&writer_guid)
+                                        .map(str::to_owned);
+                                    let mut delivered = false;
+                                    if let Some(topic) = topic_name {
+                                        if let Some(reader) = reg.get(&topic) {
+                                            if reader.type_support.deserialize(&final_payload).is_ok() {
+                                                reader.push_sample_sn(
+                                                    dds_types::instance::InstanceHandle::NIL,
+                                                    final_payload.clone(),
+                                                    d.writer_sn,
+                                                    writer_guid,
+                                                );
+                                                delivered = true;
+                                            }
+                                        }
+                                    }
+                                    if !delivered {
+                                        for (_guid, reader) in reg.iter() {
+                                            if reader.type_support.deserialize(&final_payload).is_ok() {
+                                                reader.push_sample_sn(
+                                                    dds_types::instance::InstanceHandle::NIL,
+                                                    final_payload.clone(),
+                                                    d.writer_sn,
+                                                    writer_guid,
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                Submessage::Heartbeat(hb) => {
+                                    let remote_writer_guid =
+                                        Guid::new(header.guid_prefix, hb.writer_id);
+                                    for reader in reg.values() {
+                                        if reader
+                                            .matched_writers
+                                            .lock()
+                                            .unwrap()
+                                            .contains(&remote_writer_guid)
+                                        {
+                                            reader.note_writer_liveliness(remote_writer_guid);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                });
+            }
             // Start an additional thread for the SPDP Multicast Port
             let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16 + SPDP_MULTICAST_OFFSET;
             let discovery_clone = discovery.clone();
@@ -1782,7 +1936,16 @@ impl DomainParticipant {
                                 if let dds_rtps::Submessage::Data(d) = sub {
                                     if d.writer_id == dds_types::guid::EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER {
                                         if let Some(participant) = dds_discovery::parse_spdp_packet(&d.serialized_payload) {
-                                            discovery_clone.lock().unwrap().process_spdp_packet(participant);
+                                            let remote_prefix = participant.guid_prefix;
+                                            {
+                                                let mut disc = discovery_clone.lock().unwrap();
+                                                disc.process_spdp_packet(participant);
+                                                disc.announce_local_endpoints_to_participant(
+                                                    &transport_mcast,
+                                                    domain_id_mcast,
+                                                    remote_prefix,
+                                                );
+                                            }
                                             hooks_clone.run_matchmaking();
                                         }
                                     } else if d.writer_id
@@ -1899,7 +2062,16 @@ impl DomainParticipant {
                             if let Some(participant) =
                                 dds_discovery::parse_spdp_packet(&final_payload)
                             {
-                                discovery.lock().unwrap().process_spdp_packet(participant);
+                                let remote_prefix = participant.guid_prefix;
+                                {
+                                    let mut disc = discovery.lock().unwrap();
+                                    disc.process_spdp_packet(participant);
+                                    disc.announce_local_endpoints_to_participant(
+                                        &transport,
+                                        domain_id,
+                                        remote_prefix,
+                                    );
+                                }
                                 hooks.run_matchmaking();
                             }
                             continue;

@@ -260,6 +260,7 @@ pub fn inject_remote_participant_with_lease(
     disc.process_spdp_packet(dds::discovery::DiscoveredParticipant {
         guid_prefix: remote_prefix,
         unicast_locators: vec![remote_unicast],
+        metatraffic_unicast_locators: vec![remote_unicast],
         multicast_locators: vec![],
         lease_duration,
         last_contact: std::time::Instant::now(),
@@ -302,6 +303,8 @@ pub fn wire_bidirectional_discovery(
             qos_writer: wire.writer_qos.clone(),
             qos_reader: None,
             partition: wire.partition.clone(),
+            unicast_locators: vec![pub_locator],
+            multicast_locators: vec![],
             type_info: wire.type_info.clone(),
         },
     );
@@ -317,6 +320,8 @@ pub fn wire_bidirectional_discovery(
             qos_writer: None,
             qos_reader: wire.reader_qos.clone(),
             partition: wire.partition.clone(),
+            unicast_locators: vec![sub_locator],
+            multicast_locators: vec![],
             type_info: wire.type_info.clone(),
         },
     );
@@ -344,6 +349,8 @@ pub fn wire_pub_to_sub_reader(
             qos_writer: None,
             qos_reader: wire.reader_qos.clone(),
             partition: wire.partition.clone(),
+            unicast_locators: vec![sub_locator],
+            multicast_locators: vec![],
             type_info: wire.type_info.clone(),
         },
     );
@@ -369,6 +376,8 @@ pub fn wire_sub_from_pub_writer(
             qos_writer: wire.writer_qos.clone(),
             qos_reader: None,
             partition: wire.partition.clone(),
+            unicast_locators: vec![pub_locator],
+            multicast_locators: vec![],
             type_info: wire.type_info.clone(),
         },
     );

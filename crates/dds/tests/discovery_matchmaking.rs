@@ -117,6 +117,7 @@ fn test_discovery_driven_matchmaking() {
         disc.process_spdp_packet(dds_discovery::DiscoveredParticipant {
             guid_prefix: participant_sub.guid_prefix(),
             unicast_locators: vec![reader_locator],
+            metatraffic_unicast_locators: vec![reader_locator],
             multicast_locators: vec![],
             lease_duration: dds::types::time::Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -128,6 +129,8 @@ fn test_discovery_driven_matchmaking() {
             qos_writer: None,
             qos_reader: Some(DataReaderQos::default()),
             partition: vec![],
+            unicast_locators: vec![reader_locator],
+            multicast_locators: vec![],
             type_info: None,
         });
     }
@@ -198,6 +201,7 @@ fn test_incompatible_qos_blocks_matchmaking() {
         disc.process_spdp_packet(dds_discovery::DiscoveredParticipant {
             guid_prefix: participant_sub.guid_prefix(),
             unicast_locators: vec![reader_locator],
+            metatraffic_unicast_locators: vec![reader_locator],
             multicast_locators: vec![],
             lease_duration: dds::types::time::Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -209,6 +213,8 @@ fn test_incompatible_qos_blocks_matchmaking() {
             qos_writer: None,
             qos_reader: Some(reader.qos().clone()),
             partition: vec![],
+            unicast_locators: vec![reader_locator],
+            multicast_locators: vec![],
             type_info: None,
         });
     }

@@ -428,6 +428,7 @@ mod tests {
         manager.process_spdp_packet(dds_discovery::DiscoveredParticipant {
             guid_prefix: remote,
             unicast_locators: vec![Locator::udpv4(std::net::Ipv4Addr::LOCALHOST, 7400)],
+            metatraffic_unicast_locators: vec![Locator::udpv4(std::net::Ipv4Addr::LOCALHOST, 7400)],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(30),
             last_contact: std::time::Instant::now(),
@@ -439,6 +440,8 @@ mod tests {
             qos_writer: Some(dds_types::qos::DataWriterQos::default()),
             qos_reader: None,
             partition: vec![],
+            unicast_locators: vec![],
+            multicast_locators: vec![],
             type_info: None,
         });
         let snapshot: MonitorSnapshot = manager.monitor_snapshot();

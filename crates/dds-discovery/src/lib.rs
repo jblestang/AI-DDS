@@ -101,14 +101,41 @@ pub const PID_PARTITION: u16 = 0x0029;
 /// PID for Participant GUID
 pub const PID_PARTICIPANT_GUID: u16 = 0x0050;
 
+/// PID for BuiltinEndpointSet (required by CycloneDDS SPDP).
+pub const PID_BUILTIN_ENDPOINT_SET: u16 = 0x0058;
+
+/// PID for PropertyList (CycloneDDS includes this in SPDP).
+pub const PID_PROPERTY_LIST: u16 = 0x0059;
+
 /// PID for Endpoint GUID
 pub const PID_ENDPOINT_GUID: u16 = 0x005A;
 
 /// PID for Lease Duration
 pub const PID_LEASE_DURATION: u16 = 0x0002;
 
+/// PID for Domain ID
+pub const PID_DOMAIN_ID: u16 = 0x000F;
+
+/// PID for Protocol Version
+pub const PID_PROTOCOL_VERSION: u16 = 0x0015;
+
+/// PID for Vendor ID
+pub const PID_VENDOR_ID: u16 = 0x0016;
+
+/// PID for Unicast Locator (endpoint)
+pub const PID_UNICAST_LOCATOR: u16 = 0x002F;
+
+/// PID for Multicast Locator (endpoint)
+pub const PID_MULTICAST_LOCATOR: u16 = 0x0030;
+
 /// PID for Default Unicast Locator
 pub const PID_DEFAULT_UNICAST_LOCATOR: u16 = 0x0031;
+
+/// PID for Metatraffic Unicast Locator
+pub const PID_METATRAFFIC_UNICAST_LOCATOR: u16 = 0x0032;
+
+/// PID for Metatraffic Multicast Locator
+pub const PID_METATRAFFIC_MULTICAST_LOCATOR: u16 = 0x0033;
 
 /// PID for Default Multicast Locator
 pub const PID_DEFAULT_MULTICAST_LOCATOR: u16 = 0x0048;
@@ -202,6 +229,10 @@ pub struct DiscoveredEndpoint {
     pub qos_reader: Option<DataReaderQos>,
     /// Partition names from SEDP (publisher/subscriber level).
     pub partition: Vec<String>,
+    /// Unicast locators advertised for this endpoint (user or metatraffic).
+    pub unicast_locators: Vec<Locator>,
+    /// Multicast locators advertised for this endpoint.
+    pub multicast_locators: Vec<Locator>,
     pub type_info: Option<dds_xtypes::TypeInformation>,
 }
 
@@ -209,7 +240,10 @@ pub struct DiscoveredEndpoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredParticipant {
     pub guid_prefix: GuidPrefix,
+    /// Default (user-traffic) unicast locators (`PID_DEFAULT_UNICAST_LOCATOR`).
     pub unicast_locators: Vec<Locator>,
+    /// Metatraffic unicast locators (`PID_METATRAFFIC_UNICAST_LOCATOR`).
+    pub metatraffic_unicast_locators: Vec<Locator>,
     pub multicast_locators: Vec<Locator>,
     pub lease_duration: Duration,
     pub last_contact: std::time::Instant,
@@ -231,6 +265,13 @@ pub struct DiscoveryManager {
     type_lookup_reply_sn: dds_types::guid::SequenceNumber,
     /// Replies received on the TypeLookup reply builtin endpoint.
     type_lookup_replies: Vec<dds_xtypes::TypeLookupReply>,
+}
+
+/// Build an RTPS header for discovery samples with CycloneDDS-compatible vendor ID.
+fn interop_rtps_header(prefix: GuidPrefix) -> dds_rtps::RtpsHeader {
+    let mut header = dds_rtps::RtpsHeader::new(prefix);
+    header.vendor_id = dds_types::vendor::VendorId::new([0x01, 0x10]);
+    header
 }
 
 impl DiscoveryManager {
@@ -300,16 +341,18 @@ impl DiscoveryManager {
         transport: &Arc<dds_rtps::UdpTransport>,
         domain_id: u32,
         unicast_locators: &[Locator],
+        metatraffic_unicast_locators: &[Locator],
         multicast_locators: &[Locator],
     ) -> Result<(), String> {
         let info = DiscoveredParticipant {
             guid_prefix: self.local_prefix,
             unicast_locators: unicast_locators.to_vec(),
+            metatraffic_unicast_locators: metatraffic_unicast_locators.to_vec(),
             multicast_locators: multicast_locators.to_vec(),
             lease_duration: Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
         };
-        let payload = spdp_to_plcdr(&info).map_err(|e| format!("{e:?}"))?;
+        let payload = spdp_to_plcdr(&info, domain_id).map_err(|e| format!("{e:?}"))?;
         let data_sub = dds_rtps::Data {
             reader_id: EntityId::UNKNOWN,
             writer_id: EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER,
@@ -317,7 +360,7 @@ impl DiscoveryManager {
             inline_qos: None,
             serialized_payload: bytes::Bytes::from(payload),
         };
-        let header = dds_rtps::RtpsHeader::new(self.local_prefix);
+        let header = interop_rtps_header(self.local_prefix);
         let msg = dds_rtps::serialize_rtps_message(
             &header,
             &[dds_rtps::Submessage::Data(data_sub)],
@@ -335,6 +378,7 @@ impl DiscoveryManager {
         transport: Arc<dds_rtps::UdpTransport>,
         domain_id: u32,
         unicast_locators: Vec<Locator>,
+        metatraffic_unicast_locators: Vec<Locator>,
         multicast_locators: Vec<Locator>,
         destination_locator: Option<Locator>,
     ) -> std::thread::JoinHandle<()> {
@@ -346,11 +390,12 @@ impl DiscoveryManager {
                 let info = DiscoveredParticipant {
                     guid_prefix: local_prefix,
                     unicast_locators: unicast_locators.clone(),
+                    metatraffic_unicast_locators: metatraffic_unicast_locators.clone(),
                     multicast_locators: multicast_locators.clone(),
                     lease_duration: Duration::from_secs(100),
                     last_contact: std::time::Instant::now(),
                 };
-                if let Ok(payload) = spdp_to_plcdr(&info) {
+                if let Ok(payload) = spdp_to_plcdr(&info, domain_id) {
                     let data_sub = dds_rtps::Data {
                         reader_id: EntityId::UNKNOWN,
                         writer_id: EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER,
@@ -358,7 +403,7 @@ impl DiscoveryManager {
                         inline_qos: None,
                         serialized_payload: bytes::Bytes::from(payload),
                     };
-                    let header = dds_rtps::RtpsHeader::new(local_prefix);
+                    let header = interop_rtps_header(local_prefix);
                     let msg = dds_rtps::serialize_rtps_message(
                         &header,
                         &[dds_rtps::Submessage::Data(data_sub)],
@@ -371,17 +416,60 @@ impl DiscoveryManager {
         })
     }
 
-    /// Announce a single local endpoint via SEDP on the metatraffic multicast channel.
+    /// Announce a single local endpoint via SEDP on metatraffic multicast and optionally unicast.
     pub fn announce_endpoint(
         &self,
         transport: &Arc<dds_rtps::UdpTransport>,
         domain_id: u32,
         endpoint: &DiscoveredEndpoint,
     ) -> Result<(), String> {
-        use bytes::Bytes;
-        use dds_rtps::{serialize_rtps_message, Data, Endianness, RtpsHeader, Submessage};
+        self.send_sedp_endpoint(transport, domain_id, endpoint, &metatraffic_multicast_locator(domain_id))?;
+        for participant in self.discovered_participants.values() {
+            let dest = participant
+                .metatraffic_unicast_locators
+                .first()
+                .or_else(|| participant.unicast_locators.first());
+            if let Some(loc) = dest {
+                let _ = self.send_sedp_endpoint(transport, domain_id, endpoint, loc);
+            }
+        }
+        Ok(())
+    }
 
-        let payload = sedp_to_plcdr(endpoint).map_err(|e| format!("{e:?}"))?;
+    /// Announce all local endpoints to a newly discovered remote participant (unicast SEDP).
+    pub fn announce_local_endpoints_to_participant(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        remote_prefix: GuidPrefix,
+    ) {
+        let Some(remote) = self.discovered_participants.get(&remote_prefix) else {
+            return;
+        };
+        let dest = remote
+            .metatraffic_unicast_locators
+            .first()
+            .or_else(|| remote.unicast_locators.first());
+        let Some(dest) = dest.copied() else {
+            return;
+        };
+        let endpoints: Vec<DiscoveredEndpoint> = self.local_endpoints.values().cloned().collect();
+        for endpoint in endpoints {
+            let _ = self.send_sedp_endpoint(transport, domain_id, &endpoint, &dest);
+        }
+    }
+
+    fn send_sedp_endpoint(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        endpoint: &DiscoveredEndpoint,
+        dest: &Locator,
+    ) -> Result<(), String> {
+        use bytes::Bytes;
+        use dds_rtps::{serialize_rtps_message, Data, Endianness, Submessage};
+
+        let payload = sedp_to_plcdr(endpoint, domain_id).map_err(|e| format!("{e:?}"))?;
         let writer_id = if endpoint.qos_writer.is_some() {
             EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
         } else {
@@ -394,16 +482,13 @@ impl DiscoveryManager {
             inline_qos: None,
             serialized_payload: Bytes::from(payload),
         };
-        let header = RtpsHeader::new(self.local_prefix);
+        let header = interop_rtps_header(self.local_prefix);
         let msg = serialize_rtps_message(
             &header,
             &[Submessage::Data(data_sub)],
             Endianness::LittleEndian,
         );
-        let dest = metatraffic_multicast_locator(domain_id);
-        transport
-            .send(&msg, &dest)
-            .map_err(|e| format!("{e:?}"))
+        transport.send(&msg, dest).map_err(|e| format!("{e:?}"))
     }
 
     /// Spawn a background thread that periodically re-announces all local endpoints via SEDP.
@@ -414,39 +499,33 @@ impl DiscoveryManager {
         domain_id: u32,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || loop {
-            let endpoints: Vec<DiscoveredEndpoint> = {
+            let (endpoints, remote_unicasts) = {
                 let disc = discovery.lock().unwrap();
-                disc.local_endpoints.values().cloned().collect()
-            };
-            let local_prefix = {
-                let disc = discovery.lock().unwrap();
-                disc.local_prefix
+                let endpoints: Vec<DiscoveredEndpoint> =
+                    disc.local_endpoints.values().cloned().collect();
+                let remote_unicasts: Vec<Locator> = disc
+                    .discovered_participants
+                    .values()
+                    .filter_map(|p| {
+                        p.metatraffic_unicast_locators
+                            .first()
+                            .or_else(|| p.unicast_locators.first())
+                            .copied()
+                    })
+                    .collect();
+                (endpoints, remote_unicasts)
             };
             for endpoint in &endpoints {
-                let payload = match sedp_to_plcdr(endpoint) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-                let writer_id = if endpoint.qos_writer.is_some() {
-                    EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
-                } else {
-                    EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
-                };
-                let data_sub = dds_rtps::Data {
-                    reader_id: EntityId::UNKNOWN,
-                    writer_id,
-                    writer_sn: dds_types::guid::SequenceNumber(1),
-                    inline_qos: None,
-                    serialized_payload: bytes::Bytes::from(payload),
-                };
-                let header = dds_rtps::RtpsHeader::new(local_prefix);
-                let msg = dds_rtps::serialize_rtps_message(
-                    &header,
-                    &[dds_rtps::Submessage::Data(data_sub)],
-                    dds_rtps::Endianness::LittleEndian,
+                let disc = discovery.lock().unwrap();
+                let _ = disc.send_sedp_endpoint(
+                    &transport,
+                    domain_id,
+                    endpoint,
+                    &metatraffic_multicast_locator(domain_id),
                 );
-                let dest = metatraffic_multicast_locator(domain_id);
-                let _ = transport.send(&msg, &dest);
+                for dest in &remote_unicasts {
+                    let _ = disc.send_sedp_endpoint(&transport, domain_id, endpoint, dest);
+                }
             }
             std::thread::sleep(interval);
         })
@@ -696,8 +775,8 @@ impl DiscoveryManager {
 /// Serialize parameters using standard DDSI-RTPS §9.4.2 PL-CDR (CycloneDDS-compatible).
 fn serialize_rtps_plcdr(parameters: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
-    // PlCdrLe encapsulation header (0x0003 little-endian)
-    out.extend_from_slice(&[0x03, 0x00, 0x00, 0x00]);
+    // PlCdrLe encapsulation header (0x0003) — match CycloneDDS wire order [0x00, 0x03, 0x00, 0x00].
+    out.extend_from_slice(&[0x00, 0x03, 0x00, 0x00]);
     for (pid, value) in parameters {
         let padded = (value.len() + 3) & !3;
         out.extend_from_slice(&pid.to_le_bytes());
@@ -711,40 +790,203 @@ fn serialize_rtps_plcdr(parameters: &[(u16, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
+fn append_locator_param(parameters: &mut Vec<(u16, Vec<u8>)>, pid: u16, locator: &Locator) {
+    let mut loc_bytes = Vec::new();
+    loc_bytes.extend_from_slice(&(locator.kind as i32).to_le_bytes());
+    loc_bytes.extend_from_slice(&locator.port.to_le_bytes());
+    loc_bytes.extend_from_slice(&locator.address);
+    parameters.push((pid, loc_bytes));
+}
+
+fn append_participant_guid(parameters: &mut Vec<(u16, Vec<u8>)>, prefix: GuidPrefix) {
+    let mut guid_bytes = Vec::new();
+    guid_bytes.extend_from_slice(prefix.as_bytes());
+    guid_bytes.extend_from_slice(&EntityId::PARTICIPANT.0);
+    parameters.push((PID_PARTICIPANT_GUID, guid_bytes));
+}
+
+fn append_protocol_vendor_domain(
+    parameters: &mut Vec<(u16, Vec<u8>)>,
+    domain_id: u32,
+) {
+    parameters.push((PID_PROTOCOL_VERSION, [2u8, 1, 0, 0].to_vec()));
+    parameters.push((
+        PID_VENDOR_ID,
+        dds_types::vendor::VendorId::THIS_IMPLEMENTATION.0.to_vec(),
+    ));
+    parameters.push((PID_DOMAIN_ID, domain_id.to_le_bytes().to_vec()));
+}
+
+fn patch_locator_bytes(value: &mut [u8], locator: &Locator) {
+    if value.len() >= 24 {
+        value[0..4].copy_from_slice(&(locator.kind as i32).to_le_bytes());
+        value[4..8].copy_from_slice(&locator.port.to_le_bytes());
+        value[8..24].copy_from_slice(&locator.address);
+    }
+}
+
+/// Patch a CycloneDDS SPDP PL-CDR capture for the local participant (interop path).
+fn patch_cyclonedds_spdp_template(
+    participant: &DiscoveredParticipant,
+    domain_id: u32,
+) -> Option<Vec<u8>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../interop/wire/cyclonedds_spdp_plcdr_template.bin");
+    if std::env::var("AIDDS_USE_CYCLONE_SPDP_TEMPLATE").is_err() {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let body_start = if bytes.len() >= 4
+        && (bytes[0..4] == [0x00, 0x03, 0x00, 0x00] || bytes[0..4] == [0x03, 0x00, 0x00, 0x00])
+    {
+        4
+    } else {
+        0
+    };
+    let header = bytes[..body_start].to_vec();
+    let body = bytes[body_start..].to_vec();
+    let mut off = 0;
+    let mut default_uc_idx = 0usize;
+    let mut met_uc_idx = 0usize;
+    let mut default_mc_idx = 0usize;
+    let mut met_mc_idx = 0usize;
+    let mut rebuilt = Vec::new();
+    rebuilt.extend_from_slice(&header);
+
+    while off + 4 <= body.len() {
+        let pid = u16::from_le_bytes(body[off..off + 2].try_into().ok()?);
+        let ln = u16::from_le_bytes(body[off + 2..off + 4].try_into().ok()?);
+        off += 4;
+        if pid == 0x0001 {
+            rebuilt.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+            break;
+        }
+        if pid == 0x0000 {
+            off = off.saturating_add((ln as usize + 3) & !3);
+            continue;
+        }
+        if off + ln as usize > body.len() {
+            return None;
+        }
+        // Drop vendor-specific extended parameters when advertising vendor 1.26.
+        if pid >= 0x8000 {
+            off += (ln as usize + 3) & !3;
+            continue;
+        }
+        let val_start = off;
+        let val_end = off + ln as usize;
+        let mut value = body[val_start..val_end].to_vec();
+        match pid {
+            PID_DOMAIN_ID if ln >= 4 => {
+                value[0..4].copy_from_slice(&domain_id.to_le_bytes());
+            }
+            PID_VENDOR_ID if ln >= 2 => {
+                value[0..2].copy_from_slice(&dds_types::vendor::VendorId::THIS_IMPLEMENTATION.0);
+            }
+            PID_PARTICIPANT_GUID if ln >= 16 => {
+                value[0..12].copy_from_slice(participant.guid_prefix.as_bytes());
+                value[12..16].copy_from_slice(&EntityId::PARTICIPANT.0);
+            }
+            PID_LEASE_DURATION if ln >= 8 => {
+                value[0..4].copy_from_slice(&participant.lease_duration.seconds.to_le_bytes());
+                value[4..8].copy_from_slice(&participant.lease_duration.nanoseconds.to_le_bytes());
+            }
+            PID_DEFAULT_UNICAST_LOCATOR if ln >= 24 => {
+                if let Some(loc) = participant.unicast_locators.get(default_uc_idx) {
+                    patch_locator_bytes(&mut value, loc);
+                }
+                default_uc_idx += 1;
+            }
+            PID_METATRAFFIC_UNICAST_LOCATOR if ln >= 24 => {
+                let loc = participant
+                    .metatraffic_unicast_locators
+                    .get(met_uc_idx)
+                    .or_else(|| participant.unicast_locators.get(met_uc_idx));
+                if let Some(loc) = loc {
+                    patch_locator_bytes(&mut value, loc);
+                }
+                met_uc_idx += 1;
+            }
+            PID_DEFAULT_MULTICAST_LOCATOR if ln >= 24 => {
+                if let Some(loc) = participant.multicast_locators.get(default_mc_idx) {
+                    patch_locator_bytes(&mut value, loc);
+                }
+                default_mc_idx += 1;
+            }
+            PID_METATRAFFIC_MULTICAST_LOCATOR if ln >= 24 => {
+                if let Some(loc) = participant.multicast_locators.get(met_mc_idx) {
+                    patch_locator_bytes(&mut value, loc);
+                }
+                met_mc_idx += 1;
+            }
+            _ => {}
+        }
+        let padded = (value.len() + 3) & !3;
+        rebuilt.extend_from_slice(&pid.to_le_bytes());
+        rebuilt.extend_from_slice(&(padded as u16).to_le_bytes());
+        rebuilt.extend_from_slice(&value);
+        while !rebuilt.len().is_multiple_of(4) {
+            rebuilt.push(0);
+        }
+        off += (ln as usize + 3) & !3;
+    }
+    Some(rebuilt)
+}
+
 /// Serializes a `DiscoveredParticipant` to a PL-CDR parameter list.
 ///
 /// Reference: RTPS §9.6.3 — ParameterList values
-pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<Vec<u8>> {
+pub fn spdp_to_plcdr(
+    participant: &DiscoveredParticipant,
+    domain_id: u32,
+) -> dds_cdr::CdrResult<Vec<u8>> {
+    if std::env::var("AIDDS_USE_CYCLONE_SPDP_TEMPLATE").is_ok() {
+        if let Some(patched) = patch_cyclonedds_spdp_template(participant, domain_id) {
+            return Ok(patched);
+        }
+    }
+
     let mut parameters = Vec::new();
 
-    // 1. Participant GUID (0x0050)
+    // CycloneDDS expects a PROPERTY_LIST (PID 0x0059) in SPDP samples.
+    if std::env::var("AIDDS_USE_CYCLONE_SPDP_TEMPLATE").is_ok() {
+        if let Ok(prop_list) = std::fs::read("/workspace/interop/wire/cyclonedds_spdp_property_list.bin") {
+            parameters.push((PID_PROPERTY_LIST, prop_list));
+        }
+    }
+
+    append_protocol_vendor_domain(&mut parameters, domain_id);
+
+    // BuiltinEndpointSet — CycloneDDS rejects SPDP without this (see ddsi_discovery_spdp.c).
+    const BUILTIN_ENDPOINT_SET: u32 = 0x0000_FC3F;
+    parameters.push((
+        PID_BUILTIN_ENDPOINT_SET,
+        BUILTIN_ENDPOINT_SET.to_le_bytes().to_vec(),
+    ));
+
+    // Participant GUID (0x0050)
     let mut guid_bytes = Vec::new();
     guid_bytes.extend_from_slice(participant.guid_prefix.as_bytes());
     guid_bytes.extend_from_slice(&dds_types::guid::EntityId::PARTICIPANT.0);
     parameters.push((PID_PARTICIPANT_GUID, guid_bytes));
 
-    // 2. Lease Duration (0x0002)
+    // Lease Duration (0x0002)
     let mut lease_bytes = Vec::new();
     lease_bytes.extend_from_slice(&participant.lease_duration.seconds.to_le_bytes());
     lease_bytes.extend_from_slice(&participant.lease_duration.nanoseconds.to_le_bytes());
     parameters.push((PID_LEASE_DURATION, lease_bytes));
 
-    // 3. Unicast Locators (0x0031)
+    // Unicast / multicast locators
+    for locator in &participant.metatraffic_unicast_locators {
+        append_locator_param(&mut parameters, PID_METATRAFFIC_UNICAST_LOCATOR, locator);
+    }
     for locator in &participant.unicast_locators {
-        let mut loc_bytes = Vec::new();
-        loc_bytes.extend_from_slice(&(locator.kind as i32).to_le_bytes());
-        loc_bytes.extend_from_slice(&locator.port.to_le_bytes());
-        loc_bytes.extend_from_slice(&locator.address);
-        parameters.push((PID_DEFAULT_UNICAST_LOCATOR, loc_bytes));
+        append_locator_param(&mut parameters, PID_DEFAULT_UNICAST_LOCATOR, locator);
     }
 
-    // 4. Multicast Locators (0x0048)
     for locator in &participant.multicast_locators {
-        let mut loc_bytes = Vec::new();
-        loc_bytes.extend_from_slice(&(locator.kind as i32).to_le_bytes());
-        loc_bytes.extend_from_slice(&locator.port.to_le_bytes());
-        loc_bytes.extend_from_slice(&locator.address);
-        parameters.push((PID_DEFAULT_MULTICAST_LOCATOR, loc_bytes));
+        append_locator_param(&mut parameters, PID_DEFAULT_MULTICAST_LOCATOR, locator);
+        append_locator_param(&mut parameters, PID_METATRAFFIC_MULTICAST_LOCATOR, locator);
     }
 
     Ok(serialize_rtps_plcdr(&parameters))
@@ -753,8 +995,9 @@ pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<
 /// Strip RTPS PL-CDR encapsulation header when present (CycloneDDS / FastDDS).
 fn strip_plcdr_encapsulation(bytes: &[u8]) -> &[u8] {
     if bytes.len() >= 4 {
-        let kind = u16::from_le_bytes([bytes[0], bytes[1]]);
-        if kind <= 0x0013 {
+        let le = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let be = u16::from_be_bytes([bytes[0], bytes[1]]);
+        if le <= 0x0013 || be <= 0x0013 {
             return &bytes[4..];
         }
     }
@@ -801,6 +1044,22 @@ fn decode_discovery_plcdr(bytes: &[u8]) -> Option<dds_cdr::ParameterList> {
     parse_rtps_parameter_list(bytes)
 }
 
+fn parse_locator_param(value: &[u8]) -> Option<Locator> {
+    if value.len() >= 24 {
+        let kind_val = i32::from_le_bytes(value[0..4].try_into().ok()?);
+        let port = u32::from_le_bytes(value[4..8].try_into().ok()?);
+        let mut address = [0u8; 16];
+        address.copy_from_slice(&value[8..24]);
+        Some(Locator {
+            kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+            port,
+            address,
+        })
+    } else {
+        None
+    }
+}
+
 /// Parses a `DiscoveredParticipant` from a PL-CDR parameter list byte buffer.
 pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
     use dds_cdr::ParameterList;
@@ -810,6 +1069,7 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
     let mut guid_prefix = GuidPrefix::UNKNOWN;
     let mut lease_duration = Duration::INFINITE;
     let mut unicast_locators = Vec::new();
+    let mut metatraffic_unicast_locators = Vec::new();
     let mut multicast_locators = Vec::new();
 
     for param in &plist.parameters {
@@ -828,30 +1088,24 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
                     lease_duration = Duration::new(seconds, nanoseconds);
                 }
             }
-            PID_DEFAULT_UNICAST_LOCATOR => {
-                if param.value.len() >= 24 {
-                    let kind_val = i32::from_le_bytes(param.value[0..4].try_into().ok()?);
-                    let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
-                    let mut address = [0u8; 16];
-                    address.copy_from_slice(&param.value[8..24]);
-                    unicast_locators.push(Locator {
-                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
-                        port,
-                        address,
-                    });
+            PID_DEFAULT_UNICAST_LOCATOR | PID_UNICAST_LOCATOR => {
+                if let Some(loc) = parse_locator_param(&param.value) {
+                    unicast_locators.push(loc);
                 }
             }
-            PID_DEFAULT_MULTICAST_LOCATOR => {
-                if param.value.len() >= 24 {
-                    let kind_val = i32::from_le_bytes(param.value[0..4].try_into().ok()?);
-                    let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
-                    let mut address = [0u8; 16];
-                    address.copy_from_slice(&param.value[8..24]);
-                    multicast_locators.push(Locator {
-                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
-                        port,
-                        address,
-                    });
+            PID_METATRAFFIC_UNICAST_LOCATOR => {
+                if let Some(loc) = parse_locator_param(&param.value) {
+                    metatraffic_unicast_locators.push(loc);
+                }
+            }
+            PID_DEFAULT_MULTICAST_LOCATOR | PID_MULTICAST_LOCATOR => {
+                if let Some(loc) = parse_locator_param(&param.value) {
+                    multicast_locators.push(loc);
+                }
+            }
+            PID_METATRAFFIC_MULTICAST_LOCATOR => {
+                if let Some(loc) = parse_locator_param(&param.value) {
+                    multicast_locators.push(loc);
                 }
             }
             _ => {}
@@ -862,9 +1116,19 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
         return None;
     }
 
+    if metatraffic_unicast_locators.is_empty() && !unicast_locators.is_empty() {
+        metatraffic_unicast_locators = unicast_locators.clone();
+    }
+    if unicast_locators.is_empty() && !metatraffic_unicast_locators.is_empty() {
+        unicast_locators = metatraffic_unicast_locators.clone();
+    }
+    multicast_locators.sort_by_key(|l| (l.port, l.address));
+    multicast_locators.dedup();
+
     Some(DiscoveredParticipant {
         guid_prefix,
         unicast_locators,
+        metatraffic_unicast_locators,
         multicast_locators,
         lease_duration,
         last_contact: std::time::Instant::now(),
@@ -1005,8 +1269,14 @@ fn apply_liveliness_param(
 }
 
 /// Serializes a `DiscoveredEndpoint` to a PL-CDR parameter list.
-pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8>> {
+pub fn sedp_to_plcdr(
+    endpoint: &DiscoveredEndpoint,
+    domain_id: u32,
+) -> dds_cdr::CdrResult<Vec<u8>> {
     let mut parameters = Vec::new();
+
+    append_protocol_vendor_domain(&mut parameters, domain_id);
+    append_participant_guid(&mut parameters, endpoint.guid.prefix);
 
     let mut topic_name_bytes = endpoint.topic_name.as_bytes().to_vec();
     topic_name_bytes.push(0);
@@ -1021,14 +1291,23 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
     guid_bytes.extend_from_slice(&endpoint.guid.entity_id.0);
     parameters.push((PID_ENDPOINT_GUID, guid_bytes));
 
+    for locator in &endpoint.unicast_locators {
+        append_locator_param(&mut parameters, PID_UNICAST_LOCATOR, locator);
+        append_locator_param(&mut parameters, PID_DEFAULT_UNICAST_LOCATOR, locator);
+        append_locator_param(&mut parameters, PID_METATRAFFIC_UNICAST_LOCATOR, locator);
+    }
+    for locator in &endpoint.multicast_locators {
+        append_locator_param(&mut parameters, PID_MULTICAST_LOCATOR, locator);
+        append_locator_param(&mut parameters, PID_DEFAULT_MULTICAST_LOCATOR, locator);
+        append_locator_param(&mut parameters, PID_METATRAFFIC_MULTICAST_LOCATOR, locator);
+    }
+
     if let Some(ref qos) = endpoint.qos_writer {
         append_durability_qos(&mut parameters, qos.durability.kind);
         append_reliability_qos(&mut parameters, &qos.reliability);
         append_history_qos(&mut parameters, &qos.history);
         append_liveliness_qos(&mut parameters, &qos.liveliness);
-    }
-
-    if let Some(ref qos) = endpoint.qos_reader {
+    } else if let Some(ref qos) = endpoint.qos_reader {
         append_durability_qos(&mut parameters, qos.durability.kind);
         append_reliability_qos(&mut parameters, &qos.reliability);
         append_history_qos(&mut parameters, &qos.history);
@@ -1066,6 +1345,8 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
     let mut writer_qos = dds_types::qos::DataWriterQos::default();
     let mut reader_qos = dds_types::qos::DataReaderQos::default();
     let mut partition = Vec::new();
+    let mut unicast_locators = Vec::new();
+    let mut multicast_locators = Vec::new();
 
     for param in &plist.parameters {
         match param.parameter_id.0 {
@@ -1130,6 +1411,20 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                     offset += len;
                 }
             }
+            PID_UNICAST_LOCATOR
+            | PID_DEFAULT_UNICAST_LOCATOR
+            | PID_METATRAFFIC_UNICAST_LOCATOR => {
+                if let Some(loc) = parse_locator_param(&param.value) {
+                    unicast_locators.push(loc);
+                }
+            }
+            PID_MULTICAST_LOCATOR
+            | PID_DEFAULT_MULTICAST_LOCATOR
+            | PID_METATRAFFIC_MULTICAST_LOCATOR => {
+                if let Some(loc) = parse_locator_param(&param.value) {
+                    multicast_locators.push(loc);
+                }
+            }
             _ => {}
         }
     }
@@ -1153,6 +1448,8 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
         qos_writer,
         qos_reader,
         partition,
+        unicast_locators,
+        multicast_locators,
         type_info: None,
     })
 }
@@ -1188,6 +1485,7 @@ mod tests {
         let participant = DiscoveredParticipant {
             guid_prefix: remote_prefix,
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -1206,6 +1504,7 @@ mod tests {
         let local_participant = DiscoveredParticipant {
             guid_prefix: local_prefix,
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -1221,6 +1520,8 @@ mod tests {
             qos_writer: None,
             qos_reader: None,
             partition: vec![],
+            unicast_locators: vec![],
+            multicast_locators: vec![],
             type_info: None,
         };
         manager.process_sedp_endpoint(endpoint.clone());
@@ -1241,6 +1542,7 @@ mod tests {
         let participant = DiscoveredParticipant {
             guid_prefix: remote_prefix,
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(0), // instantaneous timeout
             last_contact: std::time::Instant::now() - std::time::Duration::from_secs(1),
@@ -1280,6 +1582,7 @@ mod tests {
         let remote_participant = DiscoveredParticipant {
             guid_prefix: remote_prefix,
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -1293,6 +1596,8 @@ mod tests {
             qos_writer: None,
             qos_reader: None,
             partition: vec![],
+            unicast_locators: vec![],
+            multicast_locators: vec![],
             type_info: None,
         };
         manager.process_sedp_endpoint(endpoint);
@@ -1317,6 +1622,7 @@ mod tests {
             std::time::Duration::from_millis(10),
             transport,
             domain_id,
+            vec![dest_locator],
             vec![dest_locator],
             vec![],
             Some(dest_locator),
@@ -1346,6 +1652,9 @@ mod tests {
         let participant = DiscoveredParticipant {
             guid_prefix: GuidPrefix::new([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
             unicast_locators: vec![
+                Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), PORT_BASE as u32 + 11),
+            ],
+            metatraffic_unicast_locators: vec![
                 Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), PORT_BASE as u32 + 10),
             ],
             multicast_locators: vec![
@@ -1355,13 +1664,16 @@ mod tests {
             last_contact: std::time::Instant::now(),
         };
 
-        let bytes = spdp_to_plcdr(&participant).unwrap();
+        let bytes = spdp_to_plcdr(&participant, 0).unwrap();
+        assert_eq!(bytes[0..4], [0x00, 0x03, 0x00, 0x00]);
         let decoded = parse_spdp_packet(&bytes).unwrap();
 
         assert_eq!(decoded.guid_prefix, participant.guid_prefix);
         assert_eq!(decoded.lease_duration, participant.lease_duration);
         assert_eq!(decoded.unicast_locators.len(), 1);
-        assert_eq!(decoded.unicast_locators[0].port, PORT_BASE as u32 + 10);
+        assert_eq!(decoded.unicast_locators[0].port, PORT_BASE as u32 + 11);
+        assert_eq!(decoded.metatraffic_unicast_locators.len(), 1);
+        assert_eq!(decoded.metatraffic_unicast_locators[0].port, PORT_BASE as u32 + 10);
         assert_eq!(decoded.multicast_locators.len(), 1);
         assert_eq!(decoded.multicast_locators[0].port, PORT_BASE as u32);
     }
@@ -1371,12 +1683,13 @@ mod tests {
         let participant = DiscoveredParticipant {
             guid_prefix: GuidPrefix::new([9; 12]),
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(30),
             last_contact: std::time::Instant::now(),
         };
-        let bytes = spdp_to_plcdr(&participant).unwrap();
-        assert_eq!(bytes[0..4], [0x03, 0x00, 0x00, 0x00]);
+        let bytes = spdp_to_plcdr(&participant, 0).unwrap();
+        assert_eq!(bytes[0..4], [0x00, 0x03, 0x00, 0x00]);
     }
 
     #[test]
@@ -1400,9 +1713,11 @@ mod tests {
             qos_writer: Some(writer_qos.clone()),
             qos_reader: None,
             partition: vec![],
+            unicast_locators: vec![],
+            multicast_locators: vec![],
             type_info: None,
         };
-        let bytes = sedp_to_plcdr(&endpoint).unwrap();
+        let bytes = sedp_to_plcdr(&endpoint, 0).unwrap();
         let decoded = parse_sedp_packet(&bytes).unwrap();
         let decoded_qos = decoded.qos_writer.expect("writer qos");
         assert_eq!(decoded_qos.history.kind, dds_types::qos::HistoryKind::KeepAll);
@@ -1416,7 +1731,7 @@ mod tests {
 
     #[test]
     fn test_sedp_qos_before_guid_still_applied() {
-        let mut bytes = vec![0x03, 0x00, 0x00, 0x00]; // PlCdrLe
+        let mut bytes = vec![0x00, 0x03, 0x00, 0x00]; // PlCdrLe (Cyclone wire order)
         // PID_HISTORY KeepAll depth 3
         bytes.extend_from_slice(&PID_HISTORY.to_le_bytes());
         bytes.extend_from_slice(&8u16.to_le_bytes());
@@ -1456,6 +1771,7 @@ mod tests {
         let remote_participant = DiscoveredParticipant {
             guid_prefix: remote_prefix,
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -1478,6 +1794,8 @@ mod tests {
             qos_writer: None,
             qos_reader: None,
             partition: vec![],
+            unicast_locators: vec![],
+            multicast_locators: vec![],
             type_info: Some(dds_xtypes::TypeInformation {
                 type_name: "MyInt".to_string(),
                 type_id: r_id.clone(),
@@ -1517,9 +1835,11 @@ mod tests {
             qos_writer: Some(qos_writer),
             qos_reader: None,
             partition: vec!["lab".to_string(), "test".to_string()],
+            unicast_locators: vec![],
+            multicast_locators: vec![],
             type_info: None,
         };
-        let bytes = sedp_to_plcdr(&endpoint).unwrap();
+        let bytes = sedp_to_plcdr(&endpoint, 0).unwrap();
         let parsed = parse_sedp_packet(&bytes).unwrap();
         assert_eq!(parsed.partition, endpoint.partition);
         assert_eq!(parsed.topic_name, "PartitionTopic");
@@ -1533,6 +1853,7 @@ mod tests {
         manager.process_spdp_packet(DiscoveredParticipant {
             guid_prefix: remote,
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             lease_duration: Duration::from_secs(10),
             last_contact: std::time::Instant::now(),
