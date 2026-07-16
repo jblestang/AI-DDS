@@ -1,0 +1,8 @@
+module AiDdsInterop
+{
+  struct Message
+  {
+    unsigned long id;
+    string payload;
+  };
+};

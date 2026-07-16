@@ -48,6 +48,9 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | RTPS §8.5.2 | SEDP partition QoS | `[x]` | PID 0x0029 encode/decode |
 | DCPS §2.2.5 | Builtin DCPS publication | `[x]` | `publish_builtin_endpoint()` + `enable_builtin_topics()` |
 | Internal | Monitor snapshot API | `[x]` | `DiscoveryManager::monitor_snapshot()` |
+| Interop | CycloneDDS wire fixture compliance | `[x]` | `interop/wire/` + `interop_wire` tests |
+| Interop | Standard PL-CDR SPDP/SEDP parse/emit | `[x]` | CycloneDDS-compatible discovery wire |
+| Interop | Live CycloneDDS pub/sub | `[~]` | `interop_cyclonedds` tests (optional, `#[ignore]`) |
 
 ---
 

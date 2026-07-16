@@ -675,25 +675,41 @@ impl DiscoveryManager {
     }
 }
 
+/// Serialize parameters using standard DDSI-RTPS §9.4.2 PL-CDR (CycloneDDS-compatible).
+fn serialize_rtps_plcdr(parameters: &[(u16, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    // PlCdrLe encapsulation header
+    out.extend_from_slice(&[0x00, 0x03, 0x00, 0x00]);
+    for (pid, value) in parameters {
+        let padded = (value.len() + 3) & !3;
+        out.extend_from_slice(&pid.to_le_bytes());
+        out.extend_from_slice(&(padded as u16).to_le_bytes());
+        out.extend_from_slice(value);
+        while !out.len().is_multiple_of(4) {
+            out.push(0);
+        }
+    }
+    out.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+    out
+}
+
 /// Serializes a `DiscoveredParticipant` to a PL-CDR parameter list.
 ///
 /// Reference: RTPS §9.6.3 — ParameterList values
 pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<Vec<u8>> {
-    use dds_cdr::{ParameterList, ParameterId, serialize_to_bytes, Endianness};
-
-    let mut plist = ParameterList::new();
+    let mut parameters = Vec::new();
 
     // 1. Participant GUID (0x0050)
     let mut guid_bytes = Vec::new();
     guid_bytes.extend_from_slice(participant.guid_prefix.as_bytes());
     guid_bytes.extend_from_slice(&dds_types::guid::EntityId::PARTICIPANT.0);
-    plist.add(ParameterId(PID_PARTICIPANT_GUID), guid_bytes);
+    parameters.push((PID_PARTICIPANT_GUID, guid_bytes));
 
     // 2. Lease Duration (0x0002)
     let mut lease_bytes = Vec::new();
     lease_bytes.extend_from_slice(&participant.lease_duration.seconds.to_le_bytes());
     lease_bytes.extend_from_slice(&participant.lease_duration.nanoseconds.to_le_bytes());
-    plist.add(ParameterId(PID_LEASE_DURATION), lease_bytes);
+    parameters.push((PID_LEASE_DURATION, lease_bytes));
 
     // 3. Unicast Locators (0x0031)
     for locator in &participant.unicast_locators {
@@ -701,7 +717,7 @@ pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<
         loc_bytes.extend_from_slice(&(locator.kind as i32).to_le_bytes());
         loc_bytes.extend_from_slice(&locator.port.to_le_bytes());
         loc_bytes.extend_from_slice(&locator.address);
-        plist.add(ParameterId(PID_DEFAULT_UNICAST_LOCATOR), loc_bytes);
+        parameters.push((PID_DEFAULT_UNICAST_LOCATOR, loc_bytes));
     }
 
     // 4. Multicast Locators (0x0048)
@@ -710,18 +726,75 @@ pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<
         loc_bytes.extend_from_slice(&(locator.kind as i32).to_le_bytes());
         loc_bytes.extend_from_slice(&locator.port.to_le_bytes());
         loc_bytes.extend_from_slice(&locator.address);
-        plist.add(ParameterId(PID_DEFAULT_MULTICAST_LOCATOR), loc_bytes);
+        parameters.push((PID_DEFAULT_MULTICAST_LOCATOR, loc_bytes));
     }
 
-    let serialized = serialize_to_bytes(&plist, Endianness::LittleEndian)?;
-    Ok(serialized.to_vec())
+    Ok(serialize_rtps_plcdr(&parameters))
+}
+
+/// Strip RTPS PL-CDR encapsulation header when present (CycloneDDS / FastDDS).
+fn strip_plcdr_encapsulation(bytes: &[u8]) -> &[u8] {
+    if bytes.len() >= 4 {
+        let kind = u16::from_le_bytes([bytes[0], bytes[1]]);
+        if kind <= 0x0013 {
+            return &bytes[4..];
+        }
+    }
+    bytes
+}
+
+/// Parse DDSI-RTPS §9.4.2 parameter list wire format from external implementations.
+fn parse_rtps_parameter_list(bytes: &[u8]) -> Option<dds_cdr::ParameterList> {
+    use dds_cdr::{ParameterId, ParameterList};
+
+    let body = strip_plcdr_encapsulation(bytes);
+    let mut offset = 0;
+    let mut plist = ParameterList::new();
+
+    while offset + 4 <= body.len() {
+        let pid = u16::from_le_bytes(body[offset..offset + 2].try_into().ok()?);
+        let length = u16::from_le_bytes(body[offset + 2..offset + 4].try_into().ok()?) as usize;
+        offset += 4;
+
+        if pid == 0x0001 {
+            break;
+        }
+        if pid == 0x0000 {
+            let padded = (length + 3) & !3;
+            offset = offset.saturating_add(padded);
+            continue;
+        }
+        if offset + length > body.len() {
+            return None;
+        }
+        let value = body[offset..offset + length].to_vec();
+        plist.add(ParameterId(pid), value);
+        offset += (length + 3) & !3;
+    }
+
+    if plist.parameters.is_empty() {
+        None
+    } else {
+        Some(plist)
+    }
+}
+
+fn decode_discovery_plcdr(bytes: &[u8]) -> Option<dds_cdr::ParameterList> {
+    use dds_cdr::{deserialize_from_slice, Endianness, ParameterList};
+
+    if let Ok(plist) = deserialize_from_slice::<ParameterList>(bytes, Endianness::LittleEndian) {
+        if !plist.parameters.is_empty() {
+            return Some(plist);
+        }
+    }
+    parse_rtps_parameter_list(bytes)
 }
 
 /// Parses a `DiscoveredParticipant` from a PL-CDR parameter list byte buffer.
 pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
-    use dds_cdr::{ParameterList, deserialize_from_slice, Endianness};
+    use dds_cdr::ParameterList;
 
-    let plist: ParameterList = deserialize_from_slice(bytes, Endianness::LittleEndian).ok()?;
+    let plist: ParameterList = decode_discovery_plcdr(bytes)?;
 
     let mut guid_prefix = GuidPrefix::UNKNOWN;
     let mut lease_duration = Duration::INFINITE;
@@ -789,40 +862,20 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
 
 /// Serializes a `DiscoveredEndpoint` to a PL-CDR parameter list.
 pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8>> {
-    use dds_cdr::{ParameterList, ParameterId, Parameter, serialize_to_bytes, Endianness};
-    let mut plist = ParameterList::new();
+    let mut parameters = Vec::new();
 
-    // PID_TOPIC_NAME (0x0005)
     let mut topic_name_bytes = endpoint.topic_name.as_bytes().to_vec();
-    topic_name_bytes.push(0); // null terminator
-    // Padding to 4 bytes
-    while topic_name_bytes.len() % 4 != 0 {
-        topic_name_bytes.push(0);
-    }
-    plist.parameters.push(Parameter {
-        parameter_id: ParameterId(PID_TOPIC_NAME),
-        value: topic_name_bytes,
-    });
+    topic_name_bytes.push(0);
+    parameters.push((PID_TOPIC_NAME, topic_name_bytes));
 
-    // PID_TYPE_NAME (0x0007)
     let mut type_name_bytes = endpoint.type_name.as_bytes().to_vec();
     type_name_bytes.push(0);
-    while type_name_bytes.len() % 4 != 0 {
-        type_name_bytes.push(0);
-    }
-    plist.parameters.push(Parameter {
-        parameter_id: ParameterId(PID_TYPE_NAME),
-        value: type_name_bytes,
-    });
+    parameters.push((PID_TYPE_NAME, type_name_bytes));
 
-    // PID_ENDPOINT_GUID (0x005A)
     let mut guid_bytes = Vec::with_capacity(16);
     guid_bytes.extend_from_slice(&endpoint.guid.prefix.0);
     guid_bytes.extend_from_slice(&endpoint.guid.entity_id.0);
-    plist.parameters.push(Parameter {
-        parameter_id: ParameterId(PID_ENDPOINT_GUID),
-        value: guid_bytes,
-    });
+    parameters.push((PID_ENDPOINT_GUID, guid_bytes));
 
     if let Some(ref qos) = endpoint.qos_writer {
         let durability_val = match qos.durability.kind {
@@ -831,18 +884,12 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
             dds_types::qos::DurabilityKind::Transient => 2,
             dds_types::qos::DurabilityKind::Persistent => 3,
         };
-        plist.parameters.push(Parameter {
-            parameter_id: ParameterId(PID_DURABILITY),
-            value: durability_val.to_le_bytes().to_vec(),
-        });
+        parameters.push((PID_DURABILITY, durability_val.to_le_bytes().to_vec()));
         let reliability_val = match qos.reliability.kind {
             dds_types::qos::ReliabilityKind::BestEffort => 1u32,
             dds_types::qos::ReliabilityKind::Reliable => 2,
         };
-        plist.parameters.push(Parameter {
-            parameter_id: ParameterId(PID_RELIABILITY),
-            value: reliability_val.to_le_bytes().to_vec(),
-        });
+        parameters.push((PID_RELIABILITY, reliability_val.to_le_bytes().to_vec()));
     }
 
     if let Some(ref qos) = endpoint.qos_reader {
@@ -852,18 +899,12 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
             dds_types::qos::DurabilityKind::Transient => 2,
             dds_types::qos::DurabilityKind::Persistent => 3,
         };
-        plist.parameters.push(Parameter {
-            parameter_id: ParameterId(PID_DURABILITY),
-            value: durability_val.to_le_bytes().to_vec(),
-        });
+        parameters.push((PID_DURABILITY, durability_val.to_le_bytes().to_vec()));
         let reliability_val = match qos.reliability.kind {
             dds_types::qos::ReliabilityKind::BestEffort => 1u32,
             dds_types::qos::ReliabilityKind::Reliable => 2,
         };
-        plist.parameters.push(Parameter {
-            parameter_id: ParameterId(PID_RELIABILITY),
-            value: reliability_val.to_le_bytes().to_vec(),
-        });
+        parameters.push((PID_RELIABILITY, reliability_val.to_le_bytes().to_vec()));
     }
 
     if !endpoint.partition.is_empty() {
@@ -871,25 +912,22 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
         for name in &endpoint.partition {
             let mut name_bytes = name.as_bytes().to_vec();
             name_bytes.push(0);
-            while name_bytes.len() % 4 != 0 {
+            while !name_bytes.len().is_multiple_of(4) {
                 name_bytes.push(0);
             }
             partition_bytes.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
             partition_bytes.extend_from_slice(&name_bytes);
         }
-        plist.parameters.push(Parameter {
-            parameter_id: ParameterId(PID_PARTITION),
-            value: partition_bytes,
-        });
+        parameters.push((PID_PARTITION, partition_bytes));
     }
 
-    serialize_to_bytes(&plist, Endianness::LittleEndian).map(|b| b.to_vec())
+    Ok(serialize_rtps_plcdr(&parameters))
 }
 
 /// Parses an SEDP PL-CDR parameter list into a `DiscoveredEndpoint`.
 pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
-    use dds_cdr::{ParameterList, deserialize_from_slice, Endianness};
-    let plist: ParameterList = deserialize_from_slice(bytes, Endianness::LittleEndian).ok()?;
+    use dds_cdr::ParameterList;
+    let plist: ParameterList = decode_discovery_plcdr(bytes)?;
 
     let mut guid = dds_types::guid::Guid::new(
         GuidPrefix::new([0; 12]),
