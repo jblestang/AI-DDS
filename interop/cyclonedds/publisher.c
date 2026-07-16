@@ -75,7 +75,7 @@ int main(int argc, char **argv)
   if (rc != DDS_RETCODE_OK)
     DDS_FATAL("dds_write: %s\n", dds_strretcode(-rc));
 
-  dds_sleepfor(DDS_MSECS(500));
+  dds_sleepfor(DDS_MSECS(2000));
   rc = dds_delete(participant);
   if (rc != DDS_RETCODE_OK)
     DDS_FATAL("dds_delete: %s\n", dds_strretcode(-rc));

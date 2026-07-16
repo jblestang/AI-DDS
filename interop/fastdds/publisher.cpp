@@ -11,17 +11,19 @@
 #include <fastdds/dds/publisher/qos/DataWriterQos.hpp>
 #include <fastdds/dds/topic/Topic.hpp>
 #include <fastdds/dds/topic/TypeSupport.hpp>
+#include <fastrtps/types/TypesBase.h>
 
-#include "InteropMessagePubSubTypes.hpp"
+#include "InteropMessagePubSubTypes.h"
 
 using namespace eprosima::fastdds::dds;
+using eprosima::fastrtps::types::ReturnCode_t;
 
 static int interop_domain_id()
 {
     const char *env = std::getenv("AIDDS_INTEROP_DOMAIN");
     if (env != nullptr && env[0] != '\0')
         return std::atoi(env);
-    return 80;
+    return 83;
 }
 
 static int interop_wait_match()
@@ -32,8 +34,19 @@ static int interop_wait_match()
     return 1;
 }
 
+static void configure_fastdds_udp_profile()
+{
+    if (std::getenv("AIDDS_FASTDDS_NO_PROFILE") != nullptr)
+        return;
+    if (std::getenv("FASTRTPS_DEFAULT_PROFILES_FILE") == nullptr)
+    {
+        setenv("FASTRTPS_DEFAULT_PROFILES_FILE", AIDDS_FASTDDS_INTEROP_PROFILE, 0);
+    }
+}
+
 int main(int argc, char **argv)
 {
+    configure_fastdds_udp_profile();
     unsigned long sample_id = 4242;
     const char *payload = "fastdds-to-aidds";
     int domain_id = interop_domain_id();
@@ -51,8 +64,8 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    TypeSupport type(new AiDdsInterop_MessagePubSubType());
-    if (type.register_type(participant) != RETCODE_OK)
+    TypeSupport type(new AiDdsInterop::MessagePubSubType());
+    if (type.register_type(participant) != ReturnCode_t::RETCODE_OK)
     {
         std::fprintf(stderr, "register_type failed\n");
         return EXIT_FAILURE;
@@ -87,7 +100,7 @@ int main(int argc, char **argv)
         PublicationMatchedStatus status{};
         while (status.current_count == 0)
         {
-            if (writer->get_publication_matched_status(status) != RETCODE_OK)
+            if (writer->get_publication_matched_status(status) != ReturnCode_t::RETCODE_OK)
             {
                 std::fprintf(stderr, "get_publication_matched_status failed\n");
                 return EXIT_FAILURE;
@@ -96,7 +109,7 @@ int main(int argc, char **argv)
         }
     }
 
-    AiDdsInterop_Message msg;
+    AiDdsInterop::Message msg;
     msg.id(static_cast<uint32_t>(sample_id));
     msg.payload(std::string(payload));
 
@@ -104,13 +117,14 @@ int main(int argc, char **argv)
         "INTEROP_PUBLISH id=%lu payload=%s domain=%d\n", sample_id, payload, domain_id);
     std::fflush(stdout);
 
-    if (writer->write(&msg) != RETCODE_OK)
+    const auto write_rc = writer->write(&msg);
+    if (write_rc != ReturnCode_t::RETCODE_OK)
     {
-        std::fprintf(stderr, "write failed\n");
+        std::fprintf(stderr, "write failed (ReturnCode=%d)\n", static_cast<int>(write_rc));
         return EXIT_FAILURE;
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

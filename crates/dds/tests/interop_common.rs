@@ -65,8 +65,8 @@ pub fn vendor_display_name(vendor: InteropVendor) -> &'static str {
 pub fn vendor_base_domain(vendor: InteropVendor) -> u32 {
     match vendor {
         InteropVendor::CycloneDds => INTEROP_DOMAIN,
-        InteropVendor::FastDds => 80,
-        InteropVendor::OpenSplice => 90,
+        InteropVendor::FastDds => 83,
+        InteropVendor::OpenSplice => 93,
     }
 }
 
@@ -128,13 +128,19 @@ pub fn spawn_vendor_publisher(
             ),
         )
     })?;
-    Command::new(bin)
-        .arg(sample_id.to_string())
+    let mut cmd = Command::new(&bin);
+    cmd.arg(sample_id.to_string())
         .arg(payload)
         .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    if let Ok(ld) = std::env::var("LD_LIBRARY_PATH") {
+        cmd.env("LD_LIBRARY_PATH", ld);
+    }
+    if vendor == InteropVendor::FastDds {
+        cmd.env("AIDDS_FASTDDS_NO_PROFILE", "1");
+    }
+    cmd.env("AIDDS_INTEROP_WAIT_MATCH", "1").spawn()
 }
 
 pub fn spawn_vendor_subscriber(
@@ -152,7 +158,13 @@ pub fn spawn_vendor_subscriber(
             ),
         )
     })?;
-    let mut cmd = Command::new(bin);
+    let mut cmd = Command::new(&bin);
+    if let Ok(ld) = std::env::var("LD_LIBRARY_PATH") {
+        cmd.env("LD_LIBRARY_PATH", ld);
+    }
+    if vendor == InteropVendor::FastDds {
+        cmd.env("AIDDS_FASTDDS_NO_PROFILE", "1");
+    }
     if let Some(id) = expect_id {
         cmd.arg(id.to_string());
     }
@@ -166,7 +178,7 @@ pub fn spawn_vendor_subscriber(
 #[path = "interop_vendor.rs"]
 pub mod interop_vendor;
 
-pub const INTEROP_DOMAIN: u32 = 70;
+pub const INTEROP_DOMAIN: u32 = 73;
 pub const INTEROP_TOPIC: &str = "AiDdsInteropMessage";
 pub const INTEROP_TYPE: &str = "AiDdsInterop::Message";
 

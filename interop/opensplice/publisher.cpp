@@ -12,7 +12,7 @@ static int interop_domain_id()
     const char *env = std::getenv("AIDDS_INTEROP_DOMAIN");
     if (env != nullptr && env[0] != '\0')
         return std::atoi(env);
-    return 90;
+    return 93;
 }
 
 static int interop_wait_match()

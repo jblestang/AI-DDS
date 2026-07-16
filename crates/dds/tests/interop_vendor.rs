@@ -65,7 +65,7 @@ pub fn vendor_publishes_aidds_receives(vendor: InteropVendor) {
     let payload = format!("from-{}", vendor.slug());
     let child =
         spawn_vendor_publisher(vendor, domain, sample_id, &payload).expect("spawn publisher");
-    let output = wait_output(child, Duration::from_secs(15)).expect("publisher finished");
+    let output = wait_output(child, Duration::from_secs(25)).expect("publisher finished");
 
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("INTEROP_PUBLISH"),
@@ -76,7 +76,8 @@ pub fn vendor_publishes_aidds_receives(vendor: InteropVendor) {
 
     let mut received = None;
     assert!(
-        wait_until(Duration::from_secs(20), || {
+        wait_until(Duration::from_secs(10), || {
+            participant.run_matchmaking();
             if let Ok(boxed) = reader.read_next() {
                 if let Some(msg) = boxed.downcast_ref::<InteropMessage>() {
                     received = Some(msg.clone());
@@ -135,7 +136,9 @@ pub fn aidds_publishes_vendor_receives(vendor: InteropVendor) {
         })
         .unwrap();
 
-    let output = wait_output(sub_child, Duration::from_secs(15)).expect("subscriber finished");
+    participant.run_matchmaking();
+
+    let output = wait_output(sub_child, Duration::from_secs(20)).expect("subscriber finished");
     assert!(
         output_contains_interop_receive(&output, sample_id, &payload),
         "{} subscriber stdout: {}\nstderr: {}",
@@ -186,7 +189,9 @@ pub fn bidirectional_discovery_matchmaking(vendor: InteropVendor) {
         })
         .unwrap();
 
-    let output = wait_output(sub_child, Duration::from_secs(15)).expect("subscriber finished");
+    participant.run_matchmaking();
+
+    let output = wait_output(sub_child, Duration::from_secs(20)).expect("subscriber finished");
     assert!(output_contains_interop_receive(&output, sample_id, &payload));
 
     let snap = participant.monitor_snapshot();

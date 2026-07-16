@@ -12,17 +12,36 @@
 #include <fastdds/dds/subscriber/qos/DataReaderQos.hpp>
 #include <fastdds/dds/topic/Topic.hpp>
 #include <fastdds/dds/topic/TypeSupport.hpp>
+#include <fastdds/dds/subscriber/DataReaderListener.hpp>
+#include <fastrtps/types/TypesBase.h>
 
-#include "InteropMessagePubSubTypes.hpp"
+#include "InteropMessagePubSubTypes.h"
 
 using namespace eprosima::fastdds::dds;
+using eprosima::fastrtps::types::ReturnCode_t;
+
+class InteropReaderListener : public DataReaderListener
+{
+public:
+    void on_subscription_matched(
+            DataReader *,
+            const SubscriptionMatchedStatus &info) override
+    {
+        std::printf(
+            "INTEROP_SUBSCRIPTION_MATCHED current=%u total=%u change=%d\n",
+            info.current_count, info.total_count, info.current_count_change);
+        std::fflush(stdout);
+    }
+};
+
+static InteropReaderListener g_reader_listener;
 
 static int interop_domain_id()
 {
     const char *env = std::getenv("AIDDS_INTEROP_DOMAIN");
     if (env != nullptr && env[0] != '\0')
         return std::atoi(env);
-    return 80;
+    return 83;
 }
 
 static int interop_timeout_ms()
@@ -33,8 +52,19 @@ static int interop_timeout_ms()
     return 8000;
 }
 
+static void configure_fastdds_udp_profile()
+{
+    if (std::getenv("AIDDS_FASTDDS_NO_PROFILE") != nullptr)
+        return;
+    if (std::getenv("FASTRTPS_DEFAULT_PROFILES_FILE") == nullptr)
+    {
+        setenv("FASTRTPS_DEFAULT_PROFILES_FILE", AIDDS_FASTDDS_INTEROP_PROFILE, 0);
+    }
+}
+
 int main(int argc, char **argv)
 {
+    configure_fastdds_udp_profile();
     int domain_id = interop_domain_id();
     int timeout_ms = interop_timeout_ms();
     int elapsed = 0;
@@ -55,8 +85,8 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    TypeSupport type(new AiDdsInterop_MessagePubSubType());
-    if (type.register_type(participant) != RETCODE_OK)
+    TypeSupport type(new AiDdsInterop::MessagePubSubType());
+    if (type.register_type(participant) != ReturnCode_t::RETCODE_OK)
     {
         std::fprintf(stderr, "register_type failed\n");
         return EXIT_FAILURE;
@@ -79,19 +109,19 @@ int main(int argc, char **argv)
 
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
-    DataReader *reader = subscriber->create_datareader(topic, rqos);
+    DataReader *reader = subscriber->create_datareader(topic, rqos, &g_reader_listener);
     if (reader == nullptr)
     {
         std::fprintf(stderr, "create_datareader failed\n");
         return EXIT_FAILURE;
     }
 
-    AiDdsInterop_Message msg;
+    AiDdsInterop::Message msg;
     SampleInfo info;
 
     while (elapsed < timeout_ms)
     {
-        if (reader->take_next_sample(&msg, &info) == RETCODE_OK && info.valid_data)
+        if (reader->take_next_sample(&msg, &info) == ReturnCode_t::RETCODE_OK && info.valid_data)
         {
             if (have_expect_id && msg.id() != expect_id)
             {
