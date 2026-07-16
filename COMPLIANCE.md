@@ -51,7 +51,7 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | Interop | CycloneDDS wire fixture compliance | `[x]` | `interop/wire/` + `interop_wire` tests |
 | Interop | Standard PL-CDR SPDP/SEDP parse/emit | `[x]` | CycloneDDS-compatible discovery wire |
 | Interop | Live CycloneDDS pub/sub | `[x]` | `interop_cyclonedds` tests (optional, `#[ignore]`) |
-| Interop | Live Fast DDS / OpenSplice harness | `[x]` | `interop_fastdds`, `interop_opensplice` (optional, `#[ignore]`) |
+| Interop | Live Fast DDS pub/sub | `[x]` | `interop_fastdds` (optional, `#[ignore]`) |
 
 ---
 

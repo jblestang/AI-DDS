@@ -4,19 +4,28 @@ This directory contains tools for testing **AI-DDS** against external DDS implem
 
 All vendors share `interop/idl/InteropMessage.idl` and the same machine-parseable stdout protocol (`INTEROP_PUBLISH` / `INTEROP_RECEIVE`).
 
-## Vendors
+## Vendors under test
 
-| Vendor | Peer apps | Default domain base | Build script |
-|--------|-----------|---------------------|--------------|
-| [CycloneDDS](https://github.com/eclipse-cyclonedds/cyclonedds) | C (`interop/cyclonedds/`) | 70 | `build-cyclonedds-apps.sh` |
-| [Fast DDS](https://github.com/eProsima/Fast-DDS) | C++ (`interop/fastdds/`) | 80 | `build-fastdds-apps.sh` |
-| [OpenSplice](https://www.zettascale.tech/opensplice) / Vortex | C++ isocpp2 (`interop/opensplice/`) | 90 | `build-opensplice-apps.sh` |
+| Vendor | Project | Peer apps | Default domain base | Build script |
+|--------|---------|-----------|---------------------|--------------|
+| **CycloneDDS** | [Eclipse Cyclone DDS](https://github.com/eclipse-cyclonedds/cyclonedds) (Eclipse IoT) | C (`interop/cyclonedds/`) | 73 | `build-cyclonedds-apps.sh` |
+| **Fast DDS** | [eProsima Fast DDS](https://github.com/eProsima/Fast-DDS) | C++ (`interop/fastdds/`) | 83 | `build-fastdds-apps.sh` |
 
 Each vendor runs the same three live tests (domains `base`, `base+1`, `base+2`):
 
 1. Vendor publishes → AI-DDS receives
 2. AI-DDS publishes → vendor receives
 3. Bidirectional discovery + monitor snapshot
+
+### Other DDS stacks (not in this harness)
+
+| Stack | Notes |
+|-------|--------|
+| **Eclipse CycloneDDS** | Already covered above — this *is* the main Eclipse open-source DDS implementation. |
+| **RTI Connext DDS** | Commercial; would need an RTI Connext install and licensed peer apps. Not automated here. |
+| **OpenSplice / Vortex** | Removed from the repo — requires a proprietary `OSPL_HOME` install that CI cannot provision. |
+
+Adding RTI or another vendor later means a new `interop/<vendor>/` peer app pair plus a thin `interop_<vendor>.rs` test crate, same pattern as Cyclone/Fast DDS.
 
 ## Quick start (CycloneDDS)
 
@@ -38,21 +47,14 @@ export CYCLONEDDS_PREFIX=/tmp/cyclonedds-install
 ## Fast DDS setup
 
 ```bash
-# Build Fast-CDR + Fast-DDS + Fast-DDS-Gen, install to a prefix, then:
+# One-shot SDK install (optional helper):
+./interop/scripts/build-fastdds.sh
+
+# Build peer apps:
 export FASTDDS_PREFIX=/tmp/fastdds-install
-export FASTDDSGEN=/path/to/fastddsgen   # optional if on PATH
-# Uses g++ by default (see build-fastdds-apps.sh)
+export FASTDDSGEN=/tmp/fastdds-gen2/scripts/fastddsgen   # if not on PATH
 ./interop/scripts/build-fastdds-apps.sh
 cargo test -p dds --test interop_fastdds -- --ignored --nocapture --test-threads=1
-```
-
-## OpenSplice setup
-
-```bash
-export OSPL_HOME=/opt/VortexOpenSplice/HDE/x86_64.linux
-source "$OSPL_HOME/release.com"
-./interop/scripts/build-opensplice-apps.sh
-cargo test -p dds --test interop_opensplice -- --ignored --nocapture --test-threads=1
 ```
 
 ## Test tiers
@@ -63,7 +65,6 @@ cargo test -p dds --test interop_opensplice -- --ignored --nocapture --test-thre
 | CDR encapsulation | (included in `interop_wire`) | No |
 | Live CycloneDDS | `cargo test -p dds --test interop_cyclonedds -- --ignored --test-threads=1` | Cyclone build |
 | Live Fast DDS | `cargo test -p dds --test interop_fastdds -- --ignored --test-threads=1` | Fast DDS build |
-| Live OpenSplice | `cargo test -p dds --test interop_opensplice -- --ignored --test-threads=1` | OpenSplice install |
 
 Run all available vendors:
 
@@ -104,10 +105,8 @@ Rust tests use `InteropTypeSupport` with **CdrLe encapsulation** for outbound us
 | `CYCLONEDDS_PREFIX` | CycloneDDS install prefix |
 | `FASTDDS_PREFIX` | Fast DDS install prefix (`CMAKE_PREFIX_PATH`) |
 | `FASTDDSGEN` | Path to `fastddsgen` (optional if on `PATH`) |
-| `OSPL_HOME` | OpenSplice / Vortex install root |
 | `AIDDS_INTEROP_BIN_CYCLONEDDS` | Built Cyclone peer app directory |
 | `AIDDS_INTEROP_BIN_FASTDDS` | Built Fast DDS peer app directory |
-| `AIDDS_INTEROP_BIN_OPENSPLICE` | Built OpenSplice peer app directory |
 | `AIDDS_INTEROP_BIN` | Legacy alias for Cyclone peer app directory |
 | `AIDDS_INTEROP_DOMAIN` | DDS domain id for peer apps (per-run) |
 | `AIDDS_INTEROP_WAIT_MATCH` | Publisher waits for reader (`1` default) |
@@ -117,7 +116,6 @@ Default build output directories:
 
 - `target/interop-cyclonedds/`
 - `target/interop-fastdds/`
-- `target/interop-opensplice/`
 
 ## Compliance status
 
@@ -126,8 +124,7 @@ Default build output directories:
 | Parse CycloneDDS SPDP (PL-CDR) | Pass |
 | Parse CycloneDDS RTPS framing | Pass |
 | Live CycloneDDS pub/sub | Pass (`interop_cyclonedds`, `#[ignore]`) |
-| Live Fast DDS pub/sub | Harness ready (`interop_fastdds`, `#[ignore]`) |
-| Live OpenSplice pub/sub | Harness ready (`interop_opensplice`, `#[ignore]`) |
+| Live Fast DDS pub/sub | Pass (`interop_fastdds`, `#[ignore]`) |
 | CdrLe/CdrBe user-data encapsulation | Pass |
 
 ## Peer applications

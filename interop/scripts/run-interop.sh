@@ -34,10 +34,8 @@ run_vendor_tests() {
 # Legacy AIDDS_INTEROP_BIN still maps to CycloneDDS when set.
 CYCLONE_BIN="${AIDDS_INTEROP_BIN_CYCLONEDDS:-${AIDDS_INTEROP_BIN:-$ROOT/target/interop-cyclonedds}}"
 FASTDDS_BIN="${AIDDS_INTEROP_BIN_FASTDDS:-$ROOT/target/interop-fastdds}"
-OPENSPLICE_BIN="${AIDDS_INTEROP_BIN_OPENSPLICE:-$ROOT/target/interop-opensplice}"
 
 run_vendor_tests "CycloneDDS" interop_cyclonedds "$CYCLONE_BIN" || true
 run_vendor_tests "Fast DDS" interop_fastdds "$FASTDDS_BIN" || true
-run_vendor_tests "OpenSplice" interop_opensplice "$OPENSPLICE_BIN" || true
 
 echo "==> Done"

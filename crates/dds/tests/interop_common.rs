@@ -16,7 +16,6 @@ use std::time::Duration;
 pub enum InteropVendor {
     CycloneDds,
     FastDds,
-    OpenSplice,
 }
 
 impl InteropVendor {
@@ -24,7 +23,6 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "cyclonedds",
             Self::FastDds => "fastdds",
-            Self::OpenSplice => "opensplice",
         }
     }
 
@@ -32,7 +30,6 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "interop/scripts/build-cyclonedds-apps.sh",
             Self::FastDds => "interop/scripts/build-fastdds-apps.sh",
-            Self::OpenSplice => "interop/scripts/build-opensplice-apps.sh",
         }
     }
 
@@ -40,7 +37,6 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "AIDDS_INTEROP_BIN_CYCLONEDDS",
             Self::FastDds => "AIDDS_INTEROP_BIN_FASTDDS",
-            Self::OpenSplice => "AIDDS_INTEROP_BIN_OPENSPLICE",
         }
     }
 
@@ -48,7 +44,6 @@ impl InteropVendor {
         match self {
             Self::CycloneDds => "target/interop-cyclonedds",
             Self::FastDds => "target/interop-fastdds",
-            Self::OpenSplice => "target/interop-opensplice",
         }
     }
 }
@@ -57,7 +52,6 @@ pub fn vendor_display_name(vendor: InteropVendor) -> &'static str {
     match vendor {
         InteropVendor::CycloneDds => "CycloneDDS",
         InteropVendor::FastDds => "Fast DDS",
-        InteropVendor::OpenSplice => "OpenSplice",
     }
 }
 
@@ -66,7 +60,6 @@ pub fn vendor_base_domain(vendor: InteropVendor) -> u32 {
     match vendor {
         InteropVendor::CycloneDds => INTEROP_DOMAIN,
         InteropVendor::FastDds => 83,
-        InteropVendor::OpenSplice => 93,
     }
 }
 
