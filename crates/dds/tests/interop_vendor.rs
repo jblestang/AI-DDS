@@ -115,10 +115,6 @@ pub fn aidds_publishes_vendor_receives(vendor: InteropVendor) {
         .unwrap();
     let _rx = participant.spawn_receiver_loop();
 
-    let sub_child = spawn_vendor_subscriber(vendor, domain, Some(sample_id)).expect("spawn subscriber");
-
-    std::thread::sleep(Duration::from_millis(400));
-
     let publisher = participant.create_publisher(PublisherQos::default()).unwrap();
     let mut writer_qos = DataWriterQos::default();
     writer_qos.reliability.kind = ReliabilityKind::Reliable;
@@ -127,7 +123,24 @@ pub fn aidds_publishes_vendor_receives(vendor: InteropVendor) {
         .unwrap();
     participant.run_matchmaking();
 
-    std::thread::sleep(Duration::from_millis(800));
+    // Start vendor subscriber after local writer exists so late-joining SEDP from the
+    // vendor includes its DataReader while our participant is already discoverable.
+    let sub_child = spawn_vendor_subscriber(vendor, domain, Some(sample_id)).expect("spawn subscriber");
+
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            participant.run_matchmaking();
+            participant
+                .monitor_snapshot()
+                .endpoints
+                .iter()
+                .any(|e| e.topic_name == INTEROP_TOPIC && !e.is_writer)
+        }),
+        "AI-DDS should discover remote {} DataReader via SEDP before writing",
+        vendor_display_name(vendor)
+    );
+
+    std::thread::sleep(Duration::from_millis(400));
 
     writer
         .write(&InteropMessage {
@@ -168,10 +181,6 @@ pub fn bidirectional_discovery_matchmaking(vendor: InteropVendor) {
         .unwrap();
     let _rx = participant.spawn_receiver_loop();
 
-    let sub_child = spawn_vendor_subscriber(vendor, domain, Some(sample_id)).expect("spawn subscriber");
-
-    std::thread::sleep(Duration::from_millis(400));
-
     let publisher = participant.create_publisher(PublisherQos::default()).unwrap();
     let mut writer_qos = DataWriterQos::default();
     writer_qos.reliability.kind = ReliabilityKind::Reliable;
@@ -180,7 +189,22 @@ pub fn bidirectional_discovery_matchmaking(vendor: InteropVendor) {
         .unwrap();
     participant.run_matchmaking();
 
-    std::thread::sleep(Duration::from_millis(800));
+    let sub_child = spawn_vendor_subscriber(vendor, domain, Some(sample_id)).expect("spawn subscriber");
+
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            participant.run_matchmaking();
+            participant
+                .monitor_snapshot()
+                .endpoints
+                .iter()
+                .any(|e| e.topic_name == INTEROP_TOPIC && !e.is_writer)
+        }),
+        "AI-DDS should discover remote {} DataReader via SEDP before writing",
+        vendor_display_name(vendor)
+    );
+
+    std::thread::sleep(Duration::from_millis(400));
 
     writer
         .write(&InteropMessage {

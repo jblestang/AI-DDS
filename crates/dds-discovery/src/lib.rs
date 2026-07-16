@@ -344,6 +344,92 @@ impl DiscoveryManager {
             .push(endpoint.guid);
     }
 
+    /// Keep only usable UDP unicast locators (FastDDS may include INVALID placeholders).
+    #[must_use]
+    pub fn filter_valid_unicast_locators(locators: &[Locator]) -> Vec<Locator> {
+        locators
+            .iter()
+            .copied()
+            .filter(|loc| {
+                loc.kind == dds_types::locator::LocatorKind::UdpV4
+                    && loc.port != 0
+                    && loc.to_ipv4().is_some()
+            })
+            .collect()
+    }
+
+    /// Pick the best locator for sending user/metatraffic data to a remote endpoint.
+    #[must_use]
+    pub fn select_unicast_locator(candidates: &[Locator]) -> Option<Locator> {
+        let valid = Self::filter_valid_unicast_locators(candidates);
+        valid
+            .iter()
+            .find(|loc| loc.to_ipv4().is_some_and(|ip| !ip.is_loopback()))
+            .or_else(|| valid.first())
+            .copied()
+    }
+
+    /// FastDDS often advertises 127.0.0.1 in SEDP while sending from a real interface.
+    pub fn remap_loopback_locators(endpoint: &mut DiscoveredEndpoint, source: std::net::Ipv4Addr) {
+        if source.is_loopback() {
+            return;
+        }
+        for locators in [
+            &mut endpoint.unicast_locators,
+            &mut endpoint.metatraffic_unicast_locators,
+            &mut endpoint.multicast_locators,
+        ] {
+            for loc in locators.iter_mut() {
+                if loc.kind == dds_types::locator::LocatorKind::UdpV4
+                    && loc.to_ipv4().is_some_and(|ip| ip.is_loopback())
+                {
+                    *loc = Locator::udpv4(source, loc.port);
+                }
+            }
+        }
+    }
+
+    /// Ask a remote participant to (re)send built-in SEDP samples (late-joiner recovery).
+    pub fn request_remote_sedp(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        remote_prefix: GuidPrefix,
+        dest: &Locator,
+    ) {
+        use dds_rtps::{serialize_rtps_message, AckNack, Endianness, InfoDst, RtpsHeader, Submessage};
+
+        let header = RtpsHeader::new(self.local_prefix);
+        let pairs = [
+            (
+                EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER,
+                EntityId::SEDP_BUILTIN_PUBLICATIONS_READER,
+            ),
+            (
+                EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER,
+                EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER,
+            ),
+        ];
+        for (writer_id, reader_id) in pairs {
+            let ack = AckNack {
+                reader_id,
+                writer_id,
+                reader_sn_state: vec![dds_types::guid::SequenceNumber(1)],
+                count: 1,
+            };
+            let msg = serialize_rtps_message(
+                &header,
+                &[
+                    Submessage::InfoDst(InfoDst {
+                        guid_prefix: remote_prefix,
+                    }),
+                    Submessage::AckNack(ack),
+                ],
+                Endianness::LittleEndian,
+            );
+            let _ = transport.send(&msg, dest);
+        }
+    }
+
     /// Announce the local participant via SPDP on metatraffic multicast.
     pub fn announce_local_participant(
         &self,
@@ -434,12 +520,10 @@ impl DiscoveryManager {
     ) -> Result<(), String> {
         self.send_sedp_endpoint(transport, domain_id, endpoint, &metatraffic_multicast_locator(domain_id))?;
         for participant in self.discovered_participants.values() {
-            let dest = participant
-                .metatraffic_unicast_locators
-                .first()
-                .or_else(|| participant.unicast_locators.first());
+            let dest = DiscoveryManager::select_unicast_locator(&participant.metatraffic_unicast_locators)
+                .or_else(|| DiscoveryManager::select_unicast_locator(&participant.unicast_locators));
             if let Some(loc) = dest {
-                let _ = self.send_sedp_endpoint(transport, domain_id, endpoint, loc);
+                let _ = self.send_sedp_endpoint(transport, domain_id, endpoint, &loc);
             }
         }
         Ok(())
@@ -455,13 +539,12 @@ impl DiscoveryManager {
         let Some(remote) = self.discovered_participants.get(&remote_prefix) else {
             return;
         };
-        let dest = remote
-            .metatraffic_unicast_locators
-            .first()
-            .or_else(|| remote.unicast_locators.first());
-        let Some(dest) = dest.copied() else {
+        let dest = DiscoveryManager::select_unicast_locator(&remote.metatraffic_unicast_locators)
+            .or_else(|| DiscoveryManager::select_unicast_locator(&remote.unicast_locators));
+        let Some(dest) = dest else {
             return;
         };
+        self.request_remote_sedp(transport, remote_prefix, &dest);
         let endpoints: Vec<DiscoveredEndpoint> = self.local_endpoints.values().cloned().collect();
         for endpoint in endpoints {
             let _ = self.send_sedp_endpoint(transport, domain_id, &endpoint, &dest);
@@ -1030,6 +1113,11 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
         return None;
     }
 
+    unicast_locators = DiscoveryManager::filter_valid_unicast_locators(&unicast_locators);
+    metatraffic_unicast_locators =
+        DiscoveryManager::filter_valid_unicast_locators(&metatraffic_unicast_locators);
+    multicast_locators = DiscoveryManager::filter_valid_unicast_locators(&multicast_locators);
+
     if metatraffic_unicast_locators.is_empty() && !unicast_locators.is_empty() {
         metatraffic_unicast_locators = unicast_locators.clone();
     }
@@ -1383,6 +1471,11 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
         (None, None)
     };
 
+    let unicast_locators = DiscoveryManager::filter_valid_unicast_locators(&unicast_locators);
+    let metatraffic_unicast_locators =
+        DiscoveryManager::filter_valid_unicast_locators(&metatraffic_unicast_locators);
+    let multicast_locators = DiscoveryManager::filter_valid_unicast_locators(&multicast_locators);
+
     Some(DiscoveredEndpoint {
         guid,
         topic_name,
@@ -1710,6 +1803,20 @@ mod tests {
         let qos = decoded.qos_reader.expect("reader qos");
         assert_eq!(qos.history.kind, dds_types::qos::HistoryKind::KeepAll);
         assert_eq!(qos.history.depth, 3);
+    }
+
+    #[test]
+    fn test_parse_fastdds_interop_sedp_capture() {
+        let path = std::path::Path::new("/tmp/fastdds_sedp_sub.bin");
+        if !path.exists() {
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read capture");
+        let decoded = parse_sedp_packet(&bytes).expect("parse FastDDS SEDP");
+        assert_eq!(decoded.topic_name, "AiDdsInteropMessage");
+        assert_eq!(decoded.type_name, "AiDdsInterop::Message");
+        assert!(decoded.qos_reader.is_some());
+        assert!(is_reader_entity(&decoded.guid.entity_id));
     }
 
     #[test]

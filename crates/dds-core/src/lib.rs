@@ -1273,11 +1273,17 @@ impl ParticipantHooks {
                 continue;
             };
             let remote_locators = if !remote_ep.unicast_locators.is_empty() {
-                remote_ep.unicast_locators.clone()
+                dds_discovery::DiscoveryManager::filter_valid_unicast_locators(
+                    &remote_ep.unicast_locators,
+                )
             } else {
-                remote_participant.unicast_locators.clone()
+                dds_discovery::DiscoveryManager::filter_valid_unicast_locators(
+                    &remote_participant.unicast_locators,
+                )
             };
-            let Some(participant_locator) = remote_locators.first().copied() else {
+            let Some(participant_locator) =
+                dds_discovery::DiscoveryManager::select_unicast_locator(&remote_locators)
+            else {
                 continue;
             };
 
@@ -1484,6 +1490,44 @@ impl ParticipantHooks {
 // ──────────────────────────────────────────────────────────────────────────────
 // DomainParticipant (DCPS §2.2.2.2.1)
 // ──────────────────────────────────────────────────────────────────────────────
+
+fn ingest_remote_sedp_endpoint(
+    discovery: &Arc<Mutex<dds_discovery::DiscoveryManager>>,
+    hooks: &Arc<ParticipantHooks>,
+    sedp_received: &Arc<
+        Mutex<
+            HashMap<
+                Guid,
+                std::collections::HashSet<dds_types::guid::SequenceNumber>,
+            >,
+        >,
+    >,
+    remote_prefix: GuidPrefix,
+    writer_id: EntityId,
+    writer_sn: dds_types::guid::SequenceNumber,
+    payload: &[u8],
+    from: std::net::SocketAddr,
+) {
+    let Some(mut endpoint) = dds_discovery::parse_sedp_packet(payload) else {
+        return;
+    };
+    if let std::net::SocketAddr::V4(v4) = from {
+        dds_discovery::DiscoveryManager::remap_loopback_locators(&mut endpoint, *v4.ip());
+    }
+    let remote_writer = Guid::new(remote_prefix, writer_id);
+    sedp_received
+        .lock()
+        .unwrap()
+        .entry(remote_writer)
+        .or_default()
+        .insert(writer_sn);
+    discovery
+        .lock()
+        .unwrap()
+        .process_sedp_endpoint(endpoint.clone());
+    hooks.publish_builtin_endpoint(&endpoint);
+    hooks.run_matchmaking();
+}
 
 /// Represents a local Participant containing topics, publishers, and subscribers.
 ///
@@ -2125,21 +2169,16 @@ impl DomainParticipant {
                                         || d.writer_id
                                             == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
                                     {
-                                        if let Some(endpoint) =
-                                            dds_discovery::parse_sedp_packet(&d.serialized_payload)
-                                        {
-                                            let remote_writer =
-                                                Guid::new(header.guid_prefix, d.writer_id);
-                                            sedp_received_mcast
-                                                .lock()
-                                                .unwrap()
-                                                .entry(remote_writer)
-                                                .or_default()
-                                                .insert(d.writer_sn);
-                                            discovery_clone.lock().unwrap().process_sedp_endpoint(endpoint.clone());
-                                            hooks_clone.publish_builtin_endpoint(&endpoint);
-                                            hooks_clone.run_matchmaking();
-                                        }
+                                        ingest_remote_sedp_endpoint(
+                                            &discovery_clone,
+                                            &hooks_clone,
+                                            &sedp_received_mcast,
+                                            header.guid_prefix,
+                                            d.writer_id,
+                                            d.writer_sn,
+                                            &d.serialized_payload,
+                                            from,
+                                        );
                                     } else if d.writer_id
                                         == dds_types::guid::EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER
                                     {
@@ -2258,18 +2297,16 @@ impl DomainParticipant {
                         }
                         
                         if writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER || writer_id == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER {
-                            if let Some(endpoint) = dds_discovery::parse_sedp_packet(&final_payload) {
-                                let remote_writer = Guid::new(header.guid_prefix, writer_id);
-                                sedp_received_shared
-                                    .lock()
-                                    .unwrap()
-                                    .entry(remote_writer)
-                                    .or_default()
-                                    .insert(d.writer_sn);
-                                discovery.lock().unwrap().process_sedp_endpoint(endpoint.clone());
-                                hooks.publish_builtin_endpoint(&endpoint);
-                                hooks.run_matchmaking();
-                            }
+                            ingest_remote_sedp_endpoint(
+                                &discovery,
+                                &hooks,
+                                &sedp_received_shared,
+                                header.guid_prefix,
+                                writer_id,
+                                d.writer_sn,
+                                &final_payload,
+                                from,
+                            );
                             continue;
                         }
 
