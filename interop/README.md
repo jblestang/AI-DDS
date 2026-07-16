@@ -117,6 +117,45 @@ Default build output directories:
 - `target/interop-cyclonedds/`
 - `target/interop-fastdds/`
 
+## OMG Shapes Demo (Square / Circle / Triangle)
+
+The classic DDS interop demo uses keyed `ShapeType` on topics **Square**, **Circle**, and **Triangle**:
+
+```idl
+// interop/idl/ShapeType.idl
+module org { module omg { module dds { module demo {
+  struct ShapeType {
+    @key string color;
+    long x;
+    long y;
+    long shapesize;
+  };
+};};};};
+```
+
+Type: `org::omg::dds::demo::ShapeType`  
+Peer apps: `shapes_publisher` / `shapes_subscriber` (alongside `interop_*` in each vendor build dir)  
+Stdout protocol: `SHAPES_PUBLISH` / `SHAPES_RECEIVE` with `topic`, `color`, `x`, `y`, `shapesize`, `domain`
+
+| Test crate | Domain base | Notes |
+|------------|-------------|-------|
+| `interop_shapes_cyclonedds` | 120 | Full bidirectional, all three topics |
+| `interop_shapes_fastdds` | 86 | AI-DDS → Fast DDS all topics **pass**; Fast DDS → AI-DDS keyed delivery **known gap** (ignored) |
+| `interop_shapes_wire` | — | CDR + Fast DDS wire fixture (no live deps) |
+
+```bash
+# Rebuild peer apps (adds shapes_publisher / shapes_subscriber)
+./interop/scripts/build-cyclonedds-apps.sh
+./interop/scripts/build-fastdds-apps.sh
+
+# Wire + live (included in run-interop.sh)
+cargo test -p dds --test interop_shapes_wire
+cargo test -p dds --test interop_shapes_cyclonedds -- --ignored --test-threads=1
+cargo test -p dds --test interop_shapes_fastdds -- --ignored --test-threads=1
+```
+
+Keyed AI-DDS writers must call `register_instance()` before `write()` (handled in the shapes live tests).
+
 ## Compliance status
 
 | Area | Status |
@@ -125,6 +164,9 @@ Default build output directories:
 | Parse CycloneDDS RTPS framing | Pass |
 | Live CycloneDDS pub/sub | Pass (`interop_cyclonedds`, `#[ignore]`) |
 | Live Fast DDS pub/sub | Pass (`interop_fastdds`, `#[ignore]`) |
+| Shapes Demo CycloneDDS (Square/Circle/Triangle) | Pass (`interop_shapes_cyclonedds`, `#[ignore]`) |
+| Shapes Demo Fast DDS (AI-DDS → vendor) | Pass (`interop_shapes_fastdds`, `#[ignore]`) |
+| Shapes Demo Fast DDS (vendor → AI-DDS keyed) | Known gap (tests `#[ignore]`) |
 | CdrLe/CdrBe user-data encapsulation | Pass |
 
 ## Peer applications
