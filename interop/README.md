@@ -140,7 +140,7 @@ Stdout protocol: `SHAPES_PUBLISH` / `SHAPES_RECEIVE` with `topic`, `color`, `x`,
 | Test crate | Domain base | Notes |
 |------------|-------------|-------|
 | `interop_shapes_cyclonedds` | 120 | Full bidirectional, all three topics |
-| `interop_shapes_fastdds` | 86 | AI-DDS → Fast DDS all topics **pass**; Fast DDS → AI-DDS keyed delivery **known gap** (ignored) |
+| `interop_shapes_fastdds` | 86 | Full bidirectional, all three topics |
 | `interop_shapes_wire` | — | CDR + Fast DDS wire fixture (no live deps) |
 
 ```bash
@@ -165,8 +165,7 @@ Keyed AI-DDS writers must call `register_instance()` before `write()` (handled i
 | Live CycloneDDS pub/sub | Pass (`interop_cyclonedds`, `#[ignore]`) |
 | Live Fast DDS pub/sub | Pass (`interop_fastdds`, `#[ignore]`) |
 | Shapes Demo CycloneDDS (Square/Circle/Triangle) | Pass (`interop_shapes_cyclonedds`, `#[ignore]`) |
-| Shapes Demo Fast DDS (AI-DDS → vendor) | Pass (`interop_shapes_fastdds`, `#[ignore]`) |
-| Shapes Demo Fast DDS (vendor → AI-DDS keyed) | Known gap (tests `#[ignore]`) |
+| Shapes Demo Fast DDS (Square/Circle/Triangle) | Pass (`interop_shapes_fastdds`, `#[ignore]`) |
 | CdrLe/CdrBe user-data encapsulation | Pass |
 
 ## Peer applications
