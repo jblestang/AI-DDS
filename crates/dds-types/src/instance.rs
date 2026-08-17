@@ -4,9 +4,9 @@
 //! It is derived from the key fields of the data type via MD5 or SHA-256
 //! hashing, depending on the key size.
 //!
-//! Reference: DCPS §2.2.1 — InstanceHandle_t
+//! Reference: DCPS §2.2.1 — `InstanceHandle_t`
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 use std::fmt;
 
 /// A 16-byte handle uniquely identifying a data instance within a topic.
@@ -14,7 +14,7 @@ use std::fmt;
 /// For keyed topics, this is computed by hashing the serialized key fields.
 /// For keyless topics, a single "nil" handle is used.
 ///
-/// Reference: DCPS §2.2.1, XTypes §7.6.6
+/// Reference: DCPS §2.2.1, `XTypes` §7.6.6
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InstanceHandle(pub [u8; 16]);
 
@@ -39,7 +39,7 @@ impl InstanceHandle {
     /// If the key is ≤ 16 bytes, it is used directly (zero-padded).
     /// If the key is > 16 bytes, SHA-256 is used and truncated to 16 bytes.
     ///
-    /// This follows the XTypes specification for key hash computation.
+    /// This follows the `XTypes` specification for key hash computation.
     #[must_use]
     pub fn from_key_bytes(key_bytes: &[u8]) -> Self {
         if key_bytes.len() <= 16 {

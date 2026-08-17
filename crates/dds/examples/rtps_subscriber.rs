@@ -51,8 +51,6 @@
     clippy::min_ident_chars,
     clippy::little_endian_bytes,
     clippy::unused_trait_names,
-    clippy::separated_literal_suffix,
-    clippy::unseparated_literal_suffix,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
 
@@ -90,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // Deserialize HelloWorld struct
                             let payload = data.serialized_payload;
                             if payload.len() >= 4 {
-                                let mut id_bytes = [0_u8; 4];
+                                let mut id_bytes = [u8::default(); 4];
                                 id_bytes.copy_from_slice(&payload[0..4]);
                                 let id = u32::from_le_bytes(id_bytes);
                                 let msg = String::from_utf8_lossy(&payload[4..]).to_string();

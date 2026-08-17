@@ -390,7 +390,7 @@ pub trait Cryptography: Send + Sync {
 // ──────────────────────────────────────────────────────────────────────────────
 
 pub trait DataTagging: Send + Sync {
-    /// Retrieve data tags for a DomainParticipant
+    /// Retrieve data tags for a `DomainParticipant`
     fn get_data_tags(&self, qos: &dds_types::qos::DomainParticipantQos) -> SecurityResult<Vec<(String, String)>>;
     
     /// Retrieve data tags for an endpoint based on its Property
@@ -1030,7 +1030,7 @@ pub fn base64_decode(input: &str) -> SecurityResult<Vec<u8>> {
     }
     
     let clean: Vec<u8> = input.bytes().filter(|&b| !b.is_ascii_whitespace()).collect();
-    if clean.len() % 4 != 0 {
+    if !clean.len().is_multiple_of(4) {
         return Err(SecurityError::AuthenticationFailed("Invalid base64 length".into()));
     }
     

@@ -3,7 +3,7 @@
 //! Each RTPS implementation is identified by a 2-byte vendor ID. This is
 //! sent in the RTPS message header for diagnostics and interoperability.
 //!
-//! Reference: RTPS §8.2.4.2 — VendorId
+//! Reference: RTPS §8.2.4.2 — `VendorId`
 
 use std::fmt;
 

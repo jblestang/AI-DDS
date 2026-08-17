@@ -164,7 +164,7 @@ pub trait CdrSerialize {
 /// Standard trait for deserializing types from CDR wire representation.
 pub trait CdrDeserialize: Sized {
     /// Deserialize an instance from the given deserializer.
-    fn deserialize<'a>(deserializer: &mut CdrDeserializer<'a>) -> CdrResult<Self>;
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self>;
 }
 
 
@@ -337,7 +337,7 @@ impl CdrSerializer {
     }
 
     /// XCDR2: Write an Extended Member Header (EMHEADER).
-    /// Format: [1 bit (MustUnderstand) | 1 bit (Reserved) | 14 bits (Length) | 16 bits (MemberId)]
+    /// Format: [1 bit (`MustUnderstand`) | 1 bit (Reserved) | 14 bits (Length) | 16 bits (`MemberId`)]
     /// Or a larger version if length > 7. We'll use the short version for simplicity (assuming len < 65536).
     pub fn serialize_emheader(&mut self, member_id: u32, length: u32) {
         self.align(4);
@@ -616,7 +616,7 @@ impl<'a> CdrDeserializer<'a> {
     }
 
     /// XCDR2: Read an Extended Member Header (EMHEADER)
-    /// Returns (member_id, length)
+    /// Returns (`member_id`, length)
     pub fn deserialize_emheader(&mut self) -> CdrResult<(u32, u32)> {
         let header = self.deserialize_u32()?;
         let length = (header >> 16) & 0x3FFF;
@@ -823,14 +823,14 @@ impl CdrDeserialize for ParameterList {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Convenience function to serialize any `CdrSerialize` value to a Bytes buffer.
-pub fn serialize_to_bytes<T: CdrSerialize>(value: &T, endian: Endianness) -> CdrResult<Bytes> {
+pub fn serialize_to_bytes<T>(value: &T, endian: Endianness) -> CdrResult<Bytes> where T: CdrSerialize {
     let mut serializer = CdrSerializer::new(endian);
     value.serialize(&mut serializer)?;
     Ok(serializer.into_bytes())
 }
 
 /// Convenience function to deserialize any `CdrDeserialize` value from a slice.
-pub fn deserialize_from_slice<T: CdrDeserialize>(slice: &[u8], endian: Endianness) -> CdrResult<T> {
+pub fn deserialize_from_slice<T>(slice: &[u8], endian: Endianness) -> CdrResult<T> where T: CdrDeserialize {
     let mut deserializer = CdrDeserializer::new(slice, endian);
     T::deserialize(&mut deserializer)
 }

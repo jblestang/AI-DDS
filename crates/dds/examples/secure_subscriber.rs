@@ -4,7 +4,7 @@
 //! secure DDS setup. It performs the 3-step handshake with secure_publisher,
 //! derives the key, receives the encrypted packet, and decrypts it.
 //!
-//! Spec Reference: OMG DDS Security 1.2 §8.4
+//! Spec Reference: OMG DDS Security 1.2 §8.4.
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -57,8 +57,6 @@
     clippy::min_ident_chars,
     clippy::little_endian_bytes,
     clippy::unused_trait_names,
-    clippy::separated_literal_suffix,
-    clippy::unseparated_literal_suffix,
     clippy::missing_asserts_for_indexing,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
@@ -136,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[Subscriber] Local identity validated successfully.");
 
     // 4. STEP 1 & 2: Receive Handshake Request & Respond with Handshake Reply.
-    let mut buf = [0_u8; RECV_BUFFER_SIZE];
+    let mut buf = vec![u8::default(); RECV_BUFFER_SIZE];
     let (len_req, _) = socket.recv_from(&mut buf)?;
     let token_req: HandshakeToken =
         dds::cdr::deserialize_from_slice(&buf[..len_req], Endianness::LittleEndian)?;

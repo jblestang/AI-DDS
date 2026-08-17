@@ -15,9 +15,9 @@ use crate::instance::InstanceHandle;
 // Forward declaration: QosPolicyId is used in status types but defined here
 // for self-containment. The qos module will reference this.
 
-/// Identifies individual QoS policies in incompatibility reports.
+/// Identifies individual `QoS` policies in incompatibility reports.
 ///
-/// Each numeric value corresponds to a specific QoS policy. These IDs
+/// Each numeric value corresponds to a specific `QoS` policy. These IDs
 /// are used in `OfferedIncompatibleQos` and `RequestedIncompatibleQos`
 /// status to indicate which policy failed matching.
 ///
@@ -25,13 +25,13 @@ use crate::instance::InstanceHandle;
 pub use self::policy_id::QosPolicyId;
 
 mod policy_id {
-    /// Numeric identifier for a QoS policy, used in incompatibility reports.
+    /// Numeric identifier for a `QoS` policy, used in incompatibility reports.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[repr(i32)]
     pub enum QosPolicyId {
         /// Invalid/unknown policy.
         Invalid = 0,
-        /// UserData policy.
+        /// `UserData` policy.
         UserData = 1,
         /// Durability policy.
         Durability = 2,
@@ -39,41 +39,41 @@ mod policy_id {
         Presentation = 3,
         /// Deadline policy.
         Deadline = 4,
-        /// LatencyBudget policy.
+        /// `LatencyBudget` policy.
         LatencyBudget = 5,
         /// Ownership policy.
         Ownership = 6,
-        /// OwnershipStrength policy.
+        /// `OwnershipStrength` policy.
         OwnershipStrength = 7,
         /// Liveliness policy.
         Liveliness = 8,
-        /// TimeBasedFilter policy.
+        /// `TimeBasedFilter` policy.
         TimeBasedFilter = 9,
         /// Partition policy.
         Partition = 10,
         /// Reliability policy.
         Reliability = 11,
-        /// DestinationOrder policy.
+        /// `DestinationOrder` policy.
         DestinationOrder = 12,
         /// History policy.
         History = 13,
-        /// ResourceLimits policy.
+        /// `ResourceLimits` policy.
         ResourceLimits = 14,
-        /// EntityFactory policy.
+        /// `EntityFactory` policy.
         EntityFactory = 15,
-        /// WriterDataLifecycle policy.
+        /// `WriterDataLifecycle` policy.
         WriterDataLifecycle = 16,
-        /// ReaderDataLifecycle policy.
+        /// `ReaderDataLifecycle` policy.
         ReaderDataLifecycle = 17,
-        /// TopicData policy.
+        /// `TopicData` policy.
         TopicData = 18,
-        /// GroupData policy.
+        /// `GroupData` policy.
         GroupData = 19,
-        /// TransportPriority policy.
+        /// `TransportPriority` policy.
         TransportPriority = 20,
         /// Lifespan policy.
         Lifespan = 21,
-        /// DurabilityService policy.
+        /// `DurabilityService` policy.
         DurabilityService = 22,
     }
 }
@@ -104,10 +104,10 @@ pub struct InconsistentTopicStatus {
     pub total_count_change: i32,
 }
 
-/// Offered deadline missed — the DataWriter failed to write within
+/// Offered deadline missed — the `DataWriter` failed to write within
 /// the deadline period for an instance.
 ///
-/// Applies to: DataWriter.
+/// Applies to: `DataWriter`.
 /// Reference: DCPS §2.2.4.2
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OfferedDeadlineMissedStatus {
@@ -119,10 +119,10 @@ pub struct OfferedDeadlineMissedStatus {
     pub last_instance_handle: InstanceHandle,
 }
 
-/// Requested deadline missed — the DataReader did not receive data
+/// Requested deadline missed — the `DataReader` did not receive data
 /// within the deadline period for an instance.
 ///
-/// Applies to: DataReader.
+/// Applies to: `DataReader`.
 /// Reference: DCPS §2.2.4.3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RequestedDeadlineMissedStatus {
@@ -134,10 +134,10 @@ pub struct RequestedDeadlineMissedStatus {
     pub last_instance_handle: InstanceHandle,
 }
 
-/// Offered incompatible QoS — a DataWriter's offered QoS is incompatible
-/// with a DataReader's requested QoS.
+/// Offered incompatible `QoS` — a `DataWriter`'s offered `QoS` is incompatible
+/// with a `DataReader`'s requested `QoS`.
 ///
-/// Applies to: DataWriter.
+/// Applies to: `DataWriter`.
 /// Reference: DCPS §2.2.4.4
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct OfferedIncompatibleQosStatus {
@@ -145,16 +145,16 @@ pub struct OfferedIncompatibleQosStatus {
     pub total_count: i32,
     /// Change since last read.
     pub total_count_change: i32,
-    /// The ID of the last QoS policy that caused incompatibility.
+    /// The ID of the last `QoS` policy that caused incompatibility.
     pub last_policy_id: Option<QosPolicyId>,
     /// Per-policy counts of incompatibilities.
     pub policies: Vec<QosPolicyCount>,
 }
 
-/// Requested incompatible QoS — a DataReader's requested QoS is
-/// incompatible with a DataWriter's offered QoS.
+/// Requested incompatible `QoS` — a `DataReader`'s requested `QoS` is
+/// incompatible with a `DataWriter`'s offered `QoS`.
 ///
-/// Applies to: DataReader.
+/// Applies to: `DataReader`.
 /// Reference: DCPS §2.2.4.5
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RequestedIncompatibleQosStatus {
@@ -162,7 +162,7 @@ pub struct RequestedIncompatibleQosStatus {
     pub total_count: i32,
     /// Change since last read.
     pub total_count_change: i32,
-    /// The ID of the last QoS policy that caused incompatibility.
+    /// The ID of the last `QoS` policy that caused incompatibility.
     pub last_policy_id: Option<QosPolicyId>,
     /// Per-policy counts of incompatibilities.
     pub policies: Vec<QosPolicyCount>,
@@ -179,7 +179,7 @@ pub struct QosPolicyCount {
 
 /// Sample lost status — samples were lost (never delivered to the reader).
 ///
-/// Applies to: DataReader.
+/// Applies to: `DataReader`.
 /// Reference: DCPS §2.2.4.6
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SampleLostStatus {
@@ -192,7 +192,7 @@ pub struct SampleLostStatus {
 /// Sample rejected status — samples were rejected (e.g., due to
 /// resource limits).
 ///
-/// Applies to: DataReader.
+/// Applies to: `DataReader`.
 /// Reference: DCPS §2.2.4.7
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SampleRejectedStatus {
@@ -208,27 +208,24 @@ pub struct SampleRejectedStatus {
 
 /// Reason why a sample was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum SampleRejectedKind {
     /// Not rejected.
+    #[default]
     NotRejected,
-    /// Rejected because max_instances limit was reached.
+    /// Rejected because `max_instances` limit was reached.
     RejectedByInstancesLimit,
-    /// Rejected because max_samples limit was reached.
+    /// Rejected because `max_samples` limit was reached.
     RejectedBySamplesLimit,
-    /// Rejected because max_samples_per_instance limit was reached.
+    /// Rejected because `max_samples_per_instance` limit was reached.
     RejectedBySamplesPerInstanceLimit,
 }
 
-impl Default for SampleRejectedKind {
-    fn default() -> Self {
-        Self::NotRejected
-    }
-}
 
-/// Liveliness changed — the liveliness of one or more DataWriters
-/// matching this DataReader has changed.
+/// Liveliness changed — the liveliness of one or more `DataWriters`
+/// matching this `DataReader` has changed.
 ///
-/// Applies to: DataReader.
+/// Applies to: `DataReader`.
 /// Reference: DCPS §2.2.4.8
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LivelinessChangedStatus {
@@ -236,18 +233,18 @@ pub struct LivelinessChangedStatus {
     pub alive_count: i32,
     /// Number of currently not-alive writers.
     pub not_alive_count: i32,
-    /// Change in alive_count since last read.
+    /// Change in `alive_count` since last read.
     pub alive_count_change: i32,
-    /// Change in not_alive_count since last read.
+    /// Change in `not_alive_count` since last read.
     pub not_alive_count_change: i32,
     /// Handle of the last writer whose liveliness changed.
     pub last_publication_handle: InstanceHandle,
 }
 
-/// Liveliness lost — the DataWriter failed to assert its liveliness
+/// Liveliness lost — the `DataWriter` failed to assert its liveliness
 /// within the lease duration.
 ///
-/// Applies to: DataWriter.
+/// Applies to: `DataWriter`.
 /// Reference: DCPS §2.2.4.9
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LivelinessLostStatus {
@@ -257,10 +254,10 @@ pub struct LivelinessLostStatus {
     pub total_count_change: i32,
 }
 
-/// Publication matched — a new DataReader matched (or unmatched) this
-/// DataWriter.
+/// Publication matched — a new `DataReader` matched (or unmatched) this
+/// `DataWriter`.
 ///
-/// Applies to: DataWriter.
+/// Applies to: `DataWriter`.
 /// Reference: DCPS §2.2.4.10
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PublicationMatchedStatus {
@@ -270,16 +267,16 @@ pub struct PublicationMatchedStatus {
     pub total_count_change: i32,
     /// Current number of matched readers.
     pub current_count: i32,
-    /// Change in current_count since last read.
+    /// Change in `current_count` since last read.
     pub current_count_change: i32,
     /// Handle of the last reader that matched or unmatched.
     pub last_subscription_handle: InstanceHandle,
 }
 
-/// Subscription matched — a new DataWriter matched (or unmatched) this
-/// DataReader.
+/// Subscription matched — a new `DataWriter` matched (or unmatched) this
+/// `DataReader`.
 ///
-/// Applies to: DataReader.
+/// Applies to: `DataReader`.
 /// Reference: DCPS §2.2.4.11
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SubscriptionMatchedStatus {
@@ -289,7 +286,7 @@ pub struct SubscriptionMatchedStatus {
     pub total_count_change: i32,
     /// Current number of matched writers.
     pub current_count: i32,
-    /// Change in current_count since last read.
+    /// Change in `current_count` since last read.
     pub current_count_change: i32,
     /// Handle of the last writer that matched or unmatched.
     pub last_publication_handle: InstanceHandle,
@@ -300,7 +297,7 @@ pub struct SubscriptionMatchedStatus {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Bitmask identifying which communication statuses to monitor.
-/// Used with WaitSets and StatusConditions.
+/// Used with `WaitSets` and `StatusConditions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StatusMask(pub u32);
 
@@ -317,9 +314,9 @@ impl StatusMask {
     pub const OFFERED_DEADLINE_MISSED: Self = Self(1 << 1);
     /// Requested deadline missed.
     pub const REQUESTED_DEADLINE_MISSED: Self = Self(1 << 2);
-    /// Offered incompatible QoS.
+    /// Offered incompatible `QoS`.
     pub const OFFERED_INCOMPATIBLE_QOS: Self = Self(1 << 5);
-    /// Requested incompatible QoS.
+    /// Requested incompatible `QoS`.
     pub const REQUESTED_INCOMPATIBLE_QOS: Self = Self(1 << 6);
     /// Sample lost.
     pub const SAMPLE_LOST: Self = Self(1 << 7);

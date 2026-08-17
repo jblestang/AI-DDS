@@ -340,7 +340,7 @@ pub fn parse_enum(input: &str) -> IResult<&str, EnumDef> {
         tag(";"),
     ))(input)?;
 
-    let variants = variants.into_iter().map(|s| s.to_owned()).collect();
+    let variants = variants.into_iter().map(std::borrow::ToOwned::to_owned).collect();
 
     Ok((
         input,
@@ -452,7 +452,7 @@ pub fn parse_bitmask(input: &str) -> IResult<&str, BitmaskDef> {
         tag(";"),
     ))(input)?;
 
-    let flags = flags.into_iter().map(|s| s.to_owned()).collect();
+    let flags = flags.into_iter().map(std::borrow::ToOwned::to_owned).collect();
 
     Ok((
         input,

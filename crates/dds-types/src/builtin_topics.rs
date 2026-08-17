@@ -17,10 +17,10 @@ use crate::qos;
 /// Builtin topic name for participant discovery data.
 pub const PARTICIPANT_TOPIC_NAME: &str = "DCPSParticipant";
 
-/// Builtin topic name for publication (DataWriter) discovery data.
+/// Builtin topic name for publication (`DataWriter`) discovery data.
 pub const PUBLICATION_TOPIC_NAME: &str = "DCPSPublication";
 
-/// Builtin topic name for subscription (DataReader) discovery data.
+/// Builtin topic name for subscription (`DataReader`) discovery data.
 pub const SUBSCRIPTION_TOPIC_NAME: &str = "DCPSSubscription";
 
 /// Builtin topic name for topic discovery data.
@@ -31,7 +31,7 @@ pub const TOPIC_TOPIC_NAME: &str = "DCPSTopic";
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin participant discovery topic.
-/// Contains the key (handle) and QoS of discovered participants.
+/// Contains the key (handle) and `QoS` of discovered participants.
 ///
 /// Reference: DCPS §2.2.5.4
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +47,7 @@ pub struct ParticipantBuiltinTopicData {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin topic discovery topic.
-/// Contains the key, name, type name, and QoS of discovered topics.
+/// Contains the key, name, type name, and `QoS` of discovered topics.
 ///
 /// Reference: DCPS §2.2.5.2
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,27 +58,27 @@ pub struct TopicBuiltinTopicData {
     pub name: String,
     /// Fully qualified type name.
     pub type_name: String,
-    /// Topic QoS policies.
+    /// Topic `QoS` policies.
     pub durability: qos::Durability,
-    /// Deadline QoS.
+    /// Deadline `QoS`.
     pub deadline: qos::Deadline,
-    /// Latency budget QoS.
+    /// Latency budget `QoS`.
     pub latency_budget: qos::LatencyBudget,
-    /// Liveliness QoS.
+    /// Liveliness `QoS`.
     pub liveliness: qos::Liveliness,
-    /// Reliability QoS.
+    /// Reliability `QoS`.
     pub reliability: qos::Reliability,
-    /// Transport priority QoS.
+    /// Transport priority `QoS`.
     pub transport_priority: qos::TransportPriority,
-    /// Lifespan QoS.
+    /// Lifespan `QoS`.
     pub lifespan: qos::Lifespan,
-    /// Destination order QoS.
+    /// Destination order `QoS`.
     pub destination_order: qos::DestinationOrder,
-    /// History QoS.
+    /// History `QoS`.
     pub history: qos::History,
-    /// Resource limits QoS.
+    /// Resource limits `QoS`.
     pub resource_limits: qos::ResourceLimits,
-    /// Ownership QoS.
+    /// Ownership `QoS`.
     pub ownership: qos::Ownership,
     /// Topic metadata.
     pub topic_data: qos::TopicData,
@@ -89,7 +89,7 @@ pub struct TopicBuiltinTopicData {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin publication discovery topic.
-/// Contains the key, topic info, and QoS of discovered DataWriters.
+/// Contains the key, topic info, and `QoS` of discovered `DataWriters`.
 ///
 /// Reference: DCPS §2.2.5.3
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,7 +123,7 @@ pub struct PublicationBuiltinTopicData {
     pub ownership_strength: qos::OwnershipStrength,
     /// Destination order.
     pub destination_order: qos::DestinationOrder,
-    /// Presentation QoS of the parent publisher.
+    /// Presentation `QoS` of the parent publisher.
     pub presentation: qos::Presentation,
     /// Partition of the parent publisher.
     pub partition: qos::Partition,
@@ -138,7 +138,7 @@ pub struct PublicationBuiltinTopicData {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin subscription discovery topic.
-/// Contains the key, topic info, and QoS of discovered DataReaders.
+/// Contains the key, topic info, and `QoS` of discovered `DataReaders`.
 ///
 /// Reference: DCPS §2.2.5.4
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,7 +170,7 @@ pub struct SubscriptionBuiltinTopicData {
     pub user_data: qos::UserData,
     /// Time-based filter.
     pub time_based_filter: qos::TimeBasedFilter,
-    /// Presentation QoS of the parent subscriber.
+    /// Presentation `QoS` of the parent subscriber.
     pub presentation: qos::Presentation,
     /// Partition of the parent subscriber.
     pub partition: qos::Partition,

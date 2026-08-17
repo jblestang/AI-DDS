@@ -1,11 +1,11 @@
 //! # Time — Duration and Timestamp types for DDS
 //!
 //! DDS uses two time-related types throughout its APIs:
-//! - `Duration` — a relative time interval (used in QoS policies, timeouts)
+//! - `Duration` — a relative time interval (used in `QoS` policies, timeouts)
 //! - `Timestamp` — an absolute wall-clock time (used in sample metadata)
 //!
 //! Both are represented as (seconds, fraction) pairs on the wire, matching
-//! the RTPS Time_t structure.
+//! the RTPS `Time_t` structure.
 //!
 //! Reference: DCPS §2.2.1, RTPS §8.2.4.5
 
@@ -17,15 +17,15 @@ use std::time;
 // Duration — Relative time interval (DCPS §2.2.1)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// A relative time interval, used in QoS policies and timeouts.
+/// A relative time interval, used in `QoS` policies and timeouts.
 ///
-/// Stored as seconds + nanoseconds, where nanoseconds is always < 1_000_000_000.
+/// Stored as seconds + nanoseconds, where nanoseconds is always < `1_000_000_000`.
 /// Special sentinel values `INFINITE` and `ZERO` are provided.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Duration {
     /// Whole seconds component.
     pub seconds: i32,
-    /// Sub-second component in nanoseconds (0..999_999_999).
+    /// Sub-second component in nanoseconds (`0..999_999_999`).
     pub nanoseconds: u32,
 }
 
@@ -33,7 +33,7 @@ pub struct Duration {
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 
 impl Duration {
-    /// An infinite duration — used as default for many QoS timeouts.
+    /// An infinite duration — used as default for many `QoS` timeouts.
     pub const INFINITE: Self = Self {
         seconds: i32::MAX,
         nanoseconds: u32::MAX,
@@ -100,7 +100,7 @@ impl Duration {
     /// Convert to a `std::time::Duration`. Returns `None` for negative
     /// durations or the INFINITE sentinel.
     #[must_use]
-    pub fn to_std(&self) -> Option<time::Duration> {
+    pub const fn to_std(&self) -> Option<time::Duration> {
         if self.is_infinite() || self.seconds < 0 {
             return None;
         }
@@ -109,9 +109,9 @@ impl Duration {
 
     /// Create from a `std::time::Duration`.
     ///
-    /// Returns `INFINITE` if the std duration exceeds i32::MAX seconds.
+    /// Returns `INFINITE` if the std duration exceeds `i32::MAX` seconds.
     #[must_use]
-    pub fn from_std(d: time::Duration) -> Self {
+    pub const fn from_std(d: time::Duration) -> Self {
         if d.as_secs() > i32::MAX as u64 {
             return Self::INFINITE;
         }
@@ -135,7 +135,7 @@ impl fmt::Debug for Duration {
 impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_infinite() {
-            write!(f, "∞")
+            write!(f, "\u{221e}")
         } else {
             write!(f, "{}.{:09}s", self.seconds, self.nanoseconds)
         }
@@ -143,7 +143,7 @@ impl fmt::Display for Duration {
 }
 
 impl Default for Duration {
-    /// Default duration is INFINITE (matches most DDS QoS defaults).
+    /// Default duration is INFINITE (matches most DDS `QoS` defaults).
     fn default() -> Self {
         Self::INFINITE
     }
@@ -159,12 +159,12 @@ impl Default for Duration {
 /// with `u32` seconds representing seconds since the Unix epoch (or a
 /// middleware-defined epoch).
 ///
-/// Reference: RTPS §8.2.4.5 (Time_t)
+/// Reference: RTPS §8.2.4.5 (`Time_t`)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp {
     /// Seconds since epoch.
     pub seconds: u32,
-    /// Sub-second component in nanoseconds (0..999_999_999).
+    /// Sub-second component in nanoseconds (`0..999_999_999`).
     pub nanoseconds: u32,
 }
 

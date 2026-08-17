@@ -1,15 +1,15 @@
 //! # dds-types — Foundation Types for the DDS Stack
 //!
 //! This crate provides the shared primitive types used across all DDS crates:
-//! GUIDs, QoS policies, time representations, return codes, instance handles,
+//! GUIDs, `QoS` policies, time representations, return codes, instance handles,
 //! status types, builtin topic data, locators, and vendor identifiers.
 //!
 //! All types follow the OMG DDS DCPS 1.4 and DDSI-RTPS 2.5 specifications.
 //!
 //! # Modules
 //!
-//! - [`guid`] — RTPS entity identification (GuidPrefix, EntityId, GUID)
-//! - [`qos`] — All 22 QoS policies as Rust structs/enums
+//! - [`guid`] — RTPS entity identification (`GuidPrefix`, `EntityId`, GUID)
+//! - [`qos`] — All 22 `QoS` policies as Rust structs/enums
 //! - [`time`] — Duration and Timestamp with spec-defined constants
 //! - [`return_code`] — `DdsResult<T>` and `DdsError` error types
 //! - [`instance`] — Instance handles and key hashing

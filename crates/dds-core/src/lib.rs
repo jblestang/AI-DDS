@@ -79,7 +79,7 @@ use dds_types::qos::{
     DataReaderQos, DataWriterQos, DomainParticipantQos, PublisherQos, SubscriberQos, TopicQos,
 };
 use dds_types::return_code::{DdsError, DdsResult};
-use dds_security::{Authentication, Cryptography};
+use dds_security::{Authentication as _, Cryptography as _};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
@@ -187,7 +187,7 @@ pub struct DataWriter {
     topic: Topic,
     qos: DataWriterQos,
     type_support: Arc<dyn TypeSupport>,
-    /// Backing RTPS writer shared with RtpsEngine.
+    /// Backing RTPS writer shared with `RtpsEngine`.
     rtps_writer: Arc<Mutex<StatefulWriter>>,
     listener: Mutex<Option<Arc<dyn DataWriterListener>>>,
     /// Monotonic sequence number counter.
@@ -196,8 +196,8 @@ pub struct DataWriter {
 }
 
 impl DataWriter {
-    /// Serialize the sample, push it into the RTPS HistoryCache as a CacheChange.
-    /// The RtpsEngine loop picks it up and sends it via UDP.
+    /// Serialize the sample, push it into the RTPS `HistoryCache` as a `CacheChange`.
+    /// The `RtpsEngine` loop picks it up and sends it via UDP.
     pub fn write(&self, value: &dyn core::any::Any) -> DdsResult<()> {
         if !self.is_enabled.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(DdsError::NotEnabled);
@@ -248,7 +248,7 @@ impl DataWriter {
         &self.topic
     }
 
-    /// Enables the DataWriter.
+    /// Enables the `DataWriter`.
     pub fn enable(&self) -> DdsResult<()> {
         self.is_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -288,7 +288,7 @@ impl DataReader {
         if lifespan != dds_types::time::Duration::INFINITE {
             let std_lifespan = std::time::Duration::new(lifespan.seconds.max(0) as u64, lifespan.nanoseconds);
             let now = std::time::Instant::now();
-            samples.retain(|&(_, _, ref t)| {
+            samples.retain(|(_, _, t)| {
                 if let Some(t) = t {
                     now.duration_since(*t) <= std_lifespan
                 } else {
@@ -329,7 +329,7 @@ impl DataReader {
                     }
                 }
             }
-            *last_rx = Some(now);
+            *last_rx = Some(now);;
         }
 
         {
@@ -374,7 +374,7 @@ impl DataReader {
         &self.topic
     }
 
-    /// Enables the DataReader.
+    /// Enables the `DataReader`.
     pub fn enable(&self) -> DdsResult<()> {
         self.is_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -407,7 +407,7 @@ pub struct Publisher {
     guid: Guid,
     qos: PublisherQos,
     writers: Mutex<HashMap<Guid, Arc<DataWriter>>>,
-    /// Transport shared with all DataWriters created by this Publisher.
+    /// Transport shared with all `DataWriters` created by this Publisher.
     transport: Arc<UdpTransport>,
     /// Central writer registry for matched remote participant lookup.
     writer_registry: Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
@@ -429,7 +429,7 @@ impl Publisher {
         Ok(())
     }
 
-    /// Deletes a DataWriter created by this Publisher.
+    /// Deletes a `DataWriter` created by this Publisher.
     pub fn delete_datawriter(&self, guid: &Guid) -> DdsResult<()> {
         let mut writers = self.writers.lock().unwrap();
         if writers.remove(guid).is_some() {
@@ -449,13 +449,12 @@ impl Publisher {
         qos: DataWriterQos,
         type_support: Arc<dyn TypeSupport>,
     ) -> DdsResult<Arc<DataWriter>> {
-        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast {
-            if qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
+        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast
+            && qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && qos.resource_limits.max_samples_per_instance < qos.history.depth
             {
                 return Err(DdsError::InconsistentPolicy("max_samples_per_instance < history depth".into()));
             }
-        }
 
         let mut writers = self.writers.lock().unwrap();
         let writer_entity_id = EntityId::new([
@@ -520,8 +519,8 @@ impl Publisher {
         Ok(writer)
     }
 
-    /// Add a reader locator to all DataWriters owned by this Publisher.
-    /// Used by DomainParticipant to wire newly created readers to existing writers.
+    /// Add a reader locator to all `DataWriters` owned by this Publisher.
+    /// Used by `DomainParticipant` to wire newly created readers to existing writers.
     pub fn add_reader_proxy_to_all(
         &self,
         reader_guid: dds_types::guid::Guid,
@@ -531,12 +530,12 @@ impl Publisher {
     ) {
         // Enforce Partition matching
         let pub_partitions = if self.qos.partition.name.is_empty() {
-            vec!["".to_string()]
+            vec![String::new()]
         } else {
             self.qos.partition.name.clone()
         };
         let sub_partitions = if subscriber_partition.name.is_empty() {
-            vec!["".to_string()]
+            vec![String::new()]
         } else {
             subscriber_partition.name.clone()
         };
@@ -582,7 +581,7 @@ pub struct Subscriber {
     guid: Guid,
     qos: SubscriberQos,
     readers: Mutex<HashMap<Guid, Arc<DataReader>>>,
-    /// Shared registry: topic_name -> DataReader, used by receive loop.
+    /// Shared registry: `topic_name` -> `DataReader`, used by receive loop.
     reader_registry: Arc<Mutex<HashMap<String, Arc<DataReader>>>>,
     /// Unicast port this participant's readers listen on.
     unicast_port: u32,
@@ -603,7 +602,7 @@ impl Subscriber {
         Ok(())
     }
 
-    /// Deletes a DataReader created by this Subscriber.
+    /// Deletes a `DataReader` created by this Subscriber.
     pub fn delete_datareader(&self, guid: &Guid) -> DdsResult<()> {
         let mut readers = self.readers.lock().unwrap();
         if readers.remove(guid).is_some() {
@@ -623,13 +622,12 @@ impl Subscriber {
         qos: DataReaderQos,
         type_support: Arc<dyn TypeSupport>,
     ) -> DdsResult<Arc<DataReader>> {
-        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast {
-            if qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
+        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast
+            && qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && qos.resource_limits.max_samples_per_instance < qos.history.depth
             {
                 return Err(DdsError::InconsistentPolicy("max_samples_per_instance < history depth".into()));
             }
-        }
 
         let mut readers = self.readers.lock().unwrap();
         let reader_entity_id = EntityId::new([
@@ -678,7 +676,7 @@ impl Subscriber {
 ///
 /// Owns the shared UDP transport and reader registry. Provides
 /// `spawn_receiver_loop()` which binds a UDP socket on the standard RTPS
-/// unicast port and routes incoming `DATA` submessages to matched DataReaders.
+/// unicast port and routes incoming `DATA` submessages to matched `DataReaders`.
 pub struct DomainParticipant {
     guid_prefix: GuidPrefix,
     domain_id: u32,
@@ -686,14 +684,14 @@ pub struct DomainParticipant {
     qos: DomainParticipantQos,
     topics: Mutex<HashMap<String, Topic>>,
     types: Mutex<HashMap<String, Arc<dyn TypeSupport>>>,
-    /// topic_name -> DataReader; populated when create_subscriber().create_datareader() is called.
+    /// `topic_name` -> `DataReader`; populated when `create_subscriber().create_datareader()` is called.
     reader_registry: Arc<Mutex<HashMap<String, Arc<DataReader>>>>,
-    /// guid -> StatefulWriter; populated when create_publisher().create_datawriter() is called.
+    /// guid -> `StatefulWriter`; populated when `create_publisher().create_datawriter()` is called.
     writer_registry: Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
     /// Shared UDP socket used by all Publishers/DataWriters in this participant.
     transport: Arc<UdpTransport>,
-    /// RTPS unicast port: PORT_BASE + DOMAIN_ID_GAIN * domain_id + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * participantId
-    /// RTPS multicast port: PORT_BASE + DOMAIN_ID_GAIN * domain_id + SPDP_MULTICAST_OFFSET
+    /// RTPS unicast port: `PORT_BASE` + `DOMAIN_ID_GAIN` * `domain_id` + `SPDP_UNICAST_OFFSET` + `PARTICIPANT_ID_GAIN` * participantId
+    /// RTPS multicast port: `PORT_BASE` + `DOMAIN_ID_GAIN` * `domain_id` + `SPDP_MULTICAST_OFFSET`
     unicast_port: u32,
     pub security_auth: Arc<dds_security::BuiltinAuthentication>,
     pub security_access: Arc<dds_security::BuiltinAccessControl>,
@@ -756,8 +754,8 @@ impl DomainParticipant {
 
     /// Computes the unicast port for user traffic (DataWriter/DataReader)
     /// RTPS Formula: PB + DG * domainId + d1 + PG * participantId
-    /// where PB=PORT_BASE, DG=DOMAIN_ID_GAIN, d1=USER_UNICAST_OFFSET.
-    fn compute_user_unicast_port(&self) -> u16 {
+    /// where `PB=PORT_BASE`, `DG=DOMAIN_ID_GAIN`, `d1=USER_UNICAST_OFFSET`.
+    const fn compute_user_unicast_port(&self) -> u16 {
         let domain_id = self.domain_id as u16;
         PORT_BASE + DOMAIN_ID_GAIN * domain_id + USER_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * self.participant_idx as u16
     }
@@ -768,7 +766,7 @@ impl DomainParticipant {
         self.domain_id
     }
 
-    /// Enables the DomainParticipant. If autoenable is false, this must be called explicitly.
+    /// Enables the `DomainParticipant`. If autoenable is false, this must be called explicitly.
     pub fn enable(&self) -> DdsResult<()> {
         let was_enabled = self.is_enabled.swap(true, std::sync::atomic::Ordering::SeqCst);
         if !was_enabled {
@@ -784,31 +782,31 @@ impl DomainParticipant {
         Ok(())
     }
 
-    /// Deletes a Topic created by this DomainParticipant.
+    /// Deletes a Topic created by this `DomainParticipant`.
     pub fn delete_topic(&self, name: &str) -> DdsResult<()> {
         let mut topics = self.topics.lock().unwrap();
         if topics.remove(name).is_some() {
             Ok(())
         } else {
-            Err(DdsError::Error(format!("Topic {} not found", name)))
+            Err(DdsError::Error(format!("Topic {name} not found")))
         }
     }
 
-    /// Deletes a Publisher created by this DomainParticipant.
+    /// Deletes a Publisher created by this `DomainParticipant`.
     pub fn delete_publisher(&self, publisher: &Publisher) -> DdsResult<()> {
         let writers = publisher.writers.lock().unwrap();
         let mut reg = self.writer_registry.lock().unwrap();
-        for (guid, _) in writers.iter() {
+        for guid in writers.keys() {
             reg.remove(guid);
         }
         Ok(())
     }
 
-    /// Deletes a Subscriber created by this DomainParticipant.
+    /// Deletes a Subscriber created by this `DomainParticipant`.
     pub fn delete_subscriber(&self, subscriber: &Subscriber) -> DdsResult<()> {
         let readers = subscriber.readers.lock().unwrap();
         let mut reg = self.reader_registry.lock().unwrap();
-        for (_, reader) in readers.iter() {
+        for reader in readers.values() {
             reg.remove(reader.topic.name());
         }
         Ok(())
@@ -866,7 +864,7 @@ impl DomainParticipant {
         })
     }
 
-    /// Create a Subscriber. DataReaders created from it are registered in the
+    /// Create a Subscriber. `DataReaders` created from it are registered in the
     /// shared `reader_registry` for UDP dispatch.
     pub fn create_subscriber(&self, qos: SubscriberQos) -> DdsResult<Subscriber> {
         let sub_guid = Guid::new(
@@ -896,7 +894,7 @@ impl DomainParticipant {
         let remote_crypto_handles = self.remote_crypto_handles.clone();
         let domain_id = self.domain_id;
         let discovery = self.discovery.clone();
-        println!("[spawn_receiver_loop] Spawning receiver loop for port {}", port);
+        println!("[spawn_receiver_loop] Spawning receiver loop for port {port}");
         
         struct FragmentBuffer {
             data_size: usize,
@@ -923,10 +921,10 @@ impl DomainParticipant {
             let multicast_port = PORT_BASE + DOMAIN_ID_GAIN * domain_id as u16 + SPDP_MULTICAST_OFFSET;
             let discovery_clone = discovery.clone();
             std::thread::spawn(move || {
-                let mcast_socket = match std::net::UdpSocket::bind(format!("{}:{}", DEFAULT_BIND_IP, multicast_port)) {
+                let mcast_socket = match std::net::UdpSocket::bind(format!("{DEFAULT_BIND_IP}:{multicast_port}")) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[SPDP Receiver] bind failed on port {}: {}", multicast_port, e);
+                        eprintln!("[SPDP Receiver] bind failed on port {multicast_port}: {e}");
                         return;
                     }
                 };
@@ -958,12 +956,12 @@ impl DomainParticipant {
                 let (len, from) = match socket.recv_from(&mut buf) {
                     Ok(r) => r,
                     Err(e) => {
-                        println!("[spawn_receiver_loop] recv_from failed: {:?}", e);
+                        println!("[spawn_receiver_loop] recv_from failed: {e:?}");
                         continue;
                     }
                 };
                 let data = &buf[..len];
-                println!("[spawn_receiver_loop] Received UDP packet of length {} from {:?}", len, from);
+                println!("[spawn_receiver_loop] Received UDP packet of length {len} from {from:?}");
 
                 // Parse RTPS message
                 let (header, submessages) = match parse_rtps_message(data) {
@@ -972,7 +970,7 @@ impl DomainParticipant {
                         r
                     }
                     Err(e) => {
-                        println!("[spawn_receiver_loop] parse_rtps_message failed: {:?}", e);
+                        println!("[spawn_receiver_loop] parse_rtps_message failed: {e:?}");
                         continue;
                     }
                 };
@@ -1054,7 +1052,7 @@ impl DomainParticipant {
                                 _fragment_size: df.fragment_size as usize,
                                 received_bytes: 0,
                                 buffer: vec![0; df.data_size as usize],
-                                received_mask: vec![false; ((df.data_size + df.fragment_size as u32 - 1) / df.fragment_size as u32) as usize],
+                                received_mask: vec![false; df.data_size.div_ceil(df.fragment_size as u32) as usize],
                             }
                         });
 
@@ -1118,7 +1116,7 @@ impl DomainParticipant {
                             }
 
                             let mut delivered = false;
-                            for (_guid, reader) in reg.iter() {
+                            for reader in reg.values() {
                                 let res = reader.type_support.deserialize(&final_payload);
                                 if res.is_ok() {
                                     reader.push_sample_sn(
@@ -1137,8 +1135,8 @@ impl DomainParticipant {
                     } else if let Submessage::Heartbeat(hb) = sub {
                         println!("[spawn_receiver_loop] Found Submessage::Heartbeat. Reader: {:?}, Writer: {:?}", hb.reader_id, hb.writer_id);
                         for reader in reg.values() {
-                            if hb.reader_id == reader.guid.entity_id || hb.reader_id == EntityId::UNKNOWN {
-                                if reader.qos.reliability.kind == dds_types::qos::ReliabilityKind::Reliable {
+                            if (hb.reader_id == reader.guid.entity_id || hb.reader_id == EntityId::UNKNOWN)
+                                && reader.qos.reliability.kind == dds_types::qos::ReliabilityKind::Reliable {
                                     let mut missing = Vec::new();
                                     {
                                         let received = reader.received_sns.lock().unwrap();
@@ -1162,7 +1160,6 @@ impl DomainParticipant {
                                     let dest = Locator::from_socket_addr(from);
                                     let _ = transport.send(&msg, &dest);
                                 }
-                            }
                         }
                     } else if let Submessage::AckNack(ack) = sub {
                         println!("[spawn_receiver_loop] Found Submessage::AckNack. Reader: {:?}, Writer: {:?}, SN State count: {}", ack.reader_id, ack.writer_id, ack.reader_sn_state.len());
@@ -1188,7 +1185,7 @@ impl DomainParticipant {
                                     if let Some(proxy) = w.reader_proxies.iter().find(|p| p.remote_reader_guid.entity_id == ack.reader_id) {
                                         let locators: Vec<Locator> = proxy.unicast_locator_list.iter()
                                             .chain(proxy.multicast_locator_list.iter())
-                                            .cloned()
+                                            .copied()
                                             .collect();
                                         for locator in &locators {
                                             let _ = transport.send(&msg, locator);
@@ -1198,7 +1195,7 @@ impl DomainParticipant {
                             }
                         }
                     } else {
-                        println!("[spawn_receiver_loop] Submessage kind: {:?}", sub);
+                        println!("[spawn_receiver_loop] Submessage kind: {sub:?}");
                     }
                 }
             }
@@ -1220,7 +1217,7 @@ impl DomainParticipantFactory {
     /// Binds a UDP socket for sending on a random ephemeral port, and
     /// computes the standard RTPS unicast receive port per RTPS §9.6.2:
     /// `PB + DG * domain_id + PO + 2 * participant_idx`
-    /// where PB=PORT_BASE, DG=DOMAIN_ID_GAIN, PO=SPDP_UNICAST_OFFSET.
+    /// where `PB=PORT_BASE`, `DG=DOMAIN_ID_GAIN`, `PO=SPDP_UNICAST_OFFSET`.
     pub fn create_participant(
         domain_id: u32,
         qos: DomainParticipantQos,
@@ -1258,7 +1255,7 @@ impl DomainParticipantFactory {
         Ok(DomainParticipant::new(
             GuidPrefix::new(prefix),
             domain_id,
-            participant_idx as u32,
+            participant_idx,
             qos,
             transport,
             unicast_port as u32,

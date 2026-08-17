@@ -12,7 +12,7 @@ use std::fmt;
 /// Alias for `Result<T, DdsError>` — used throughout the DDS stack.
 pub type DdsResult<T> = Result<T, DdsError>;
 
-/// DDS operation error codes, matching the spec's ReturnCode_t values.
+/// DDS operation error codes, matching the spec's `ReturnCode_t` values.
 ///
 /// Successful operations return `Ok(T)` rather than a `ReturnCode::OK`
 /// variant — we use Rust's `Result` idiom instead.
@@ -24,7 +24,7 @@ pub enum DdsError {
     #[error("unspecified error: {0}")]
     Error(String),
 
-    /// Unsupported operation or QoS policy.
+    /// Unsupported operation or `QoS` policy.
     #[error("operation not supported: {0}")]
     Unsupported(String),
 
@@ -37,21 +37,21 @@ pub enum DdsError {
     #[error("precondition not met: {0}")]
     PreconditionNotMet(String),
 
-    /// The middleware ran out of a resource governed by QoS
+    /// The middleware ran out of a resource governed by `QoS`
     /// (e.g., `ResourceLimits` exceeded).
     #[error("out of resources: {0}")]
     OutOfResources(String),
 
-    /// The entity has not been enabled yet (see `EntityFactory` QoS).
+    /// The entity has not been enabled yet (see `EntityFactory` `QoS`).
     #[error("entity not enabled")]
     NotEnabled,
 
-    /// An immutable QoS policy was changed, or an incompatible
-    /// QoS change was attempted on an enabled entity.
+    /// An immutable `QoS` policy was changed, or an incompatible
+    /// `QoS` change was attempted on an enabled entity.
     #[error("immutable QoS policy violation: {0}")]
     ImmutablePolicy(String),
 
-    /// The requested QoS policies are internally inconsistent.
+    /// The requested `QoS` policies are internally inconsistent.
     /// E.g., `Deadline.period < TimeBasedFilter.minimum_separation`.
     #[error("inconsistent QoS policy: {0}")]
     InconsistentPolicy(String),

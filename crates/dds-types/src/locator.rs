@@ -3,7 +3,7 @@
 //! A `Locator` encodes a transport-specific address: a kind (UDP, TCP, etc.),
 //! a port number, and a 16-byte address field (IPv4 uses the last 4 bytes).
 //!
-//! Reference: RTPS §8.2.4.3 — Locator_t
+//! Reference: RTPS §8.2.4.3 — `Locator_t`
 
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -43,13 +43,13 @@ impl LocatorKind {
 /// A transport-level address for an RTPS endpoint.
 ///
 /// The 16-byte `address` field encodes:
-/// - For UDPv4: bytes 12..16 hold the IPv4 address, bytes 0..12 are zero
-/// - For UDPv6: all 16 bytes hold the IPv6 address
+/// - For `UDPv4`: bytes 12..16 hold the IPv4 address, bytes 0..12 are zero
+/// - For `UDPv6`: all 16 bytes hold the IPv6 address
 ///
 /// Reference: RTPS §8.2.4.3
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Locator {
-    /// The transport kind (UDPv4, UDPv6, etc.).
+    /// The transport kind (`UDPv4`, `UDPv6`, etc.).
     pub kind: LocatorKind,
     /// The port number. 0 indicates "not specified".
     pub port: u32,
@@ -65,7 +65,7 @@ impl Locator {
         address: [0; 16],
     };
 
-    /// Create a UDPv4 locator from an IPv4 address and port.
+    /// Create a `UDPv4` locator from an IPv4 address and port.
     ///
     /// The IPv4 address is stored in bytes 12..16 of the address field,
     /// per the RTPS spec convention.
@@ -81,9 +81,9 @@ impl Locator {
         }
     }
 
-    /// Create a UDPv6 locator from an IPv6 address and port.
+    /// Create a `UDPv6` locator from an IPv6 address and port.
     #[must_use]
-    pub fn udpv6(addr: Ipv6Addr, port: u32) -> Self {
+    pub const fn udpv6(addr: Ipv6Addr, port: u32) -> Self {
         Self {
             kind: LocatorKind::UdpV6,
             port,
@@ -91,7 +91,7 @@ impl Locator {
         }
     }
 
-    /// Extract the IPv4 address if this is a UDPv4 locator.
+    /// Extract the IPv4 address if this is a `UDPv4` locator.
     #[must_use]
     pub fn to_ipv4(&self) -> Option<Ipv4Addr> {
         if self.kind != LocatorKind::UdpV4 {
@@ -105,7 +105,7 @@ impl Locator {
         ))
     }
 
-    /// Extract the IPv6 address if this is a UDPv6 locator.
+    /// Extract the IPv6 address if this is a `UDPv6` locator.
     #[must_use]
     pub fn to_ipv6(&self) -> Option<Ipv6Addr> {
         if self.kind != LocatorKind::UdpV6 {

@@ -1,14 +1,14 @@
-//! # QoS — Quality of Service Policies for DDS
+//! # `QoS` — Quality of Service Policies for DDS
 //!
-//! Defines all 22 QoS policies from the DDS DCPS 1.4 specification.
+//! Defines all 22 `QoS` policies from the DDS DCPS 1.4 specification.
 //! Each policy is a Rust struct with spec-defined default values.
 //!
-//! QoS policies control the behavior of DDS entities (participants, topics,
-//! publishers, subscribers, writers, readers). Some policies are "RxO"
+//! `QoS` policies control the behavior of DDS entities (participants, topics,
+//! publishers, subscribers, writers, readers). Some policies are "`RxO`"
 //! (Requested/Offered) — the middleware checks compatibility between a
-//! DataWriter's offered QoS and a DataReader's requested QoS.
+//! `DataWriter`'s offered `QoS` and a `DataReader`'s requested `QoS`.
 //!
-//! Reference: DCPS §2.2.3 — Supported QoS
+//! Reference: DCPS §2.2.3 — Supported `QoS`
 
 use crate::time::Duration;
 
@@ -16,11 +16,11 @@ use crate::time::Duration;
 // Policy 1: UserData (DCPS §2.2.3.1)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Arbitrary application data attached to a DomainParticipant, DataWriter,
-/// or DataReader. Propagated via discovery.
+/// Arbitrary application data attached to a `DomainParticipant`, `DataWriter`,
+/// or `DataReader`. Propagated via discovery.
 ///
 /// Default: empty (no data).
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct UserData {
     /// Opaque byte payload — interpretation is application-defined.
@@ -34,7 +34,7 @@ pub struct UserData {
 /// Arbitrary application data attached to a Topic. Propagated via discovery.
 ///
 /// Default: empty.
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct TopicData {
     /// Opaque byte payload.
@@ -48,7 +48,7 @@ pub struct TopicData {
 /// Arbitrary application data attached to a Publisher or Subscriber.
 ///
 /// Default: empty.
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct GroupData {
     /// Opaque byte payload.
@@ -62,14 +62,16 @@ pub struct GroupData {
 /// Controls whether data is kept for late-joining readers.
 ///
 /// Default: `Volatile`.
-/// RxO: Yes — offered must be ≥ requested.
+/// `RxO`: Yes — offered must be ≥ requested.
 ///
-/// Ordering: Volatile < TransientLocal < Transient < Persistent.
+/// Ordering: Volatile < `TransientLocal` < Transient < Persistent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum DurabilityKind {
     /// No durability — samples are not stored.
+    #[default]
     Volatile = 0,
-    /// Samples are stored in the DataWriter and sent to late-joiners.
+    /// Samples are stored in the `DataWriter` and sent to late-joiners.
     TransientLocal = 1,
     /// Samples are stored by a separate durability service.
     Transient = 2,
@@ -77,26 +79,15 @@ pub enum DurabilityKind {
     Persistent = 3,
 }
 
-impl Default for DurabilityKind {
-    fn default() -> Self {
-        Self::Volatile
-    }
-}
 
-/// Durability QoS policy wrapper.
+/// Durability `QoS` policy wrapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct Durability {
     /// The durability kind.
     pub kind: DurabilityKind,
 }
 
-impl Default for Durability {
-    fn default() -> Self {
-        Self {
-            kind: DurabilityKind::default(),
-        }
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Policy 5: DurabilityService (DCPS §2.2.3.5) — Full Profile
@@ -106,15 +97,15 @@ impl Default for Durability {
 /// durability. Controls the history and resource limits of the service's
 /// internal cache.
 ///
-/// Default: service_cleanup_delay = 0, history = KEEP_LAST(1).
-/// Not RxO.
+/// Default: `service_cleanup_delay` = 0, history = `KEEP_LAST(1)`.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DurabilityService {
     /// Delay before the service cleans up instances.
     pub service_cleanup_delay: Duration,
     /// History kind for the service's internal cache.
     pub history_kind: HistoryKind,
-    /// Depth when using KEEP_LAST.
+    /// Depth when using `KEEP_LAST`.
     pub history_depth: i32,
     /// Maximum samples the service will store.
     pub max_samples: i32,
@@ -145,7 +136,7 @@ impl Default for DurabilityService {
 /// If exceeded, a deadline-missed status is triggered.
 ///
 /// Default: `Duration::INFINITE` (no deadline).
-/// RxO: Yes — offered period must be ≤ requested period.
+/// `RxO`: Yes — offered period must be ≤ requested period.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Deadline {
     /// Maximum interval between successive writes for a given instance.
@@ -168,7 +159,7 @@ impl Default for Deadline {
 /// Does not guarantee latency — purely advisory.
 ///
 /// Default: `Duration::ZERO` (deliver ASAP).
-/// RxO: Yes — offered must be ≤ requested.
+/// `RxO`: Yes — offered must be ≤ requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LatencyBudget {
     /// Maximum acceptable delay for data delivery.
@@ -187,29 +178,26 @@ impl Default for LatencyBudget {
 // Policy 8: Liveliness (DCPS §2.2.3.8)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// How the system detects that a DataWriter is still alive.
+/// How the system detects that a `DataWriter` is still alive.
 ///
-/// Default: `Automatic`, lease_duration = INFINITE.
-/// RxO: Yes — offered kind must be ≥ requested kind, and offered
-///      lease_duration must be ≤ requested.
+/// Default: `Automatic`, `lease_duration` = INFINITE.
+/// `RxO`: Yes — offered kind must be ≥ requested kind, and offered
+///      `lease_duration` must be ≤ requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum LivelinessKind {
     /// The middleware automatically asserts liveliness.
+    #[default]
     Automatic = 0,
     /// The participant must assert liveliness (any writer in the
     /// participant asserting counts for all).
     ManualByParticipant = 1,
-    /// Each DataWriter must individually assert liveliness.
+    /// Each `DataWriter` must individually assert liveliness.
     ManualByTopic = 2,
 }
 
-impl Default for LivelinessKind {
-    fn default() -> Self {
-        Self::Automatic
-    }
-}
 
-/// Liveliness QoS policy.
+/// Liveliness `QoS` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Liveliness {
     /// The liveliness assertion mechanism.
@@ -233,9 +221,9 @@ impl Default for Liveliness {
 
 /// Whether data delivery is guaranteed (reliable) or best-effort.
 ///
-/// Default for DataWriter: RELIABLE, max_blocking_time = 100ms.
-/// Default for DataReader: BEST_EFFORT.
-/// RxO: Yes — offered must be ≥ requested.
+/// Default for `DataWriter`: RELIABLE, `max_blocking_time` = 100ms.
+/// Default for `DataReader`: `BEST_EFFORT`.
+/// `RxO`: Yes — offered must be ≥ requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReliabilityKind {
     /// No delivery guarantees — samples may be lost.
@@ -245,14 +233,14 @@ pub enum ReliabilityKind {
 }
 
 impl Default for ReliabilityKind {
-    /// Note: Spec default differs for writers (Reliable) vs readers (BestEffort).
-    /// This default is BestEffort; entity-specific defaults are applied in dds-core.
+    /// Note: Spec default differs for writers (Reliable) vs readers (`BestEffort`).
+    /// This default is `BestEffort`; entity-specific defaults are applied in dds-core.
     fn default() -> Self {
         Self::BestEffort
     }
 }
 
-/// Reliability QoS policy.
+/// Reliability `QoS` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Reliability {
     /// Reliable or best-effort delivery.
@@ -277,35 +265,26 @@ impl Default for Reliability {
 /// Order in which data is presented to the application.
 ///
 /// Default: `ByReceptionTimestamp`.
-/// RxO: Yes — offered must be ≥ requested.
+/// `RxO`: Yes — offered must be ≥ requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum DestinationOrderKind {
     /// Data is ordered by the time it was received.
+    #[default]
     ByReceptionTimestamp = 0,
     /// Data is ordered by the source timestamp (requires synchronized clocks).
     BySourceTimestamp = 1,
 }
 
-impl Default for DestinationOrderKind {
-    fn default() -> Self {
-        Self::ByReceptionTimestamp
-    }
-}
 
-/// Destination order QoS policy.
+/// Destination order `QoS` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct DestinationOrder {
     /// Ordering mechanism for data delivery.
     pub kind: DestinationOrderKind,
 }
 
-impl Default for DestinationOrder {
-    fn default() -> Self {
-        Self {
-            kind: DestinationOrderKind::default(),
-        }
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Policy 11: History (DCPS §2.2.3.11)
@@ -314,27 +293,24 @@ impl Default for DestinationOrder {
 /// How many samples are kept in the middleware cache per instance.
 ///
 /// Default: `KeepLast(1)`.
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum HistoryKind {
     /// Keep the last N samples per instance.
+    #[default]
     KeepLast = 0,
-    /// Keep all samples (bounded by ResourceLimits).
+    /// Keep all samples (bounded by `ResourceLimits`).
     KeepAll = 1,
 }
 
-impl Default for HistoryKind {
-    fn default() -> Self {
-        Self::KeepLast
-    }
-}
 
-/// History QoS policy.
+/// History `QoS` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct History {
     /// Keep-last or keep-all strategy.
     pub kind: HistoryKind,
-    /// Depth when using KeepLast (ignored for KeepAll).
+    /// Depth when using `KeepLast` (ignored for `KeepAll`).
     pub depth: i32,
 }
 
@@ -353,8 +329,8 @@ impl Default for History {
 
 /// Limits on the resources consumed by an entity's cache.
 ///
-/// Default: all limits are `LENGTH_UNLIMITED` (i32::MAX).
-/// Not RxO.
+/// Default: all limits are `LENGTH_UNLIMITED` (`i32::MAX`).
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceLimits {
     /// Maximum total samples in the cache.
@@ -386,18 +362,14 @@ impl Default for ResourceLimits {
 /// Higher values indicate higher priority (maps to UDP TOS/DSCP).
 ///
 /// Default: 0 (normal priority).
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct TransportPriority {
     /// Priority value. Higher = more urgent.
     pub value: i32,
 }
 
-impl Default for TransportPriority {
-    fn default() -> Self {
-        Self { value: 0 }
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Policy 14: Lifespan (DCPS §2.2.3.14)
@@ -407,7 +379,7 @@ impl Default for TransportPriority {
 /// Expired samples are automatically removed from caches.
 ///
 /// Default: `Duration::INFINITE` (samples never expire).
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lifespan {
     /// Maximum validity duration for a sample.
@@ -426,59 +398,46 @@ impl Default for Lifespan {
 // Policy 15: Ownership (DCPS §2.2.3.15)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Controls whether multiple DataWriters can update the same instance.
+/// Controls whether multiple `DataWriters` can update the same instance.
 ///
 /// Default: `Shared`.
-/// RxO: Yes — must match exactly.
+/// `RxO`: Yes — must match exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum OwnershipKind {
     /// Multiple writers can update the same instance concurrently.
+    #[default]
     Shared = 0,
     /// Only the highest-strength writer owns a given instance.
     Exclusive = 1,
 }
 
-impl Default for OwnershipKind {
-    fn default() -> Self {
-        Self::Shared
-    }
-}
 
-/// Ownership QoS policy.
+/// Ownership `QoS` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct Ownership {
     /// Shared or exclusive ownership mode.
     pub kind: OwnershipKind,
 }
 
-impl Default for Ownership {
-    fn default() -> Self {
-        Self {
-            kind: OwnershipKind::default(),
-        }
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Policy 16: OwnershipStrength (DCPS §2.2.3.16)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Priority of a DataWriter when using Exclusive ownership.
+/// Priority of a `DataWriter` when using Exclusive ownership.
 /// Only meaningful when `Ownership::kind` is `Exclusive`.
 ///
 /// Default: 0.
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct OwnershipStrength {
     /// Strength value. Higher wins when competing for ownership.
     pub value: i32,
 }
 
-impl Default for OwnershipStrength {
-    fn default() -> Self {
-        Self { value: 0 }
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Policy 17: Presentation (DCPS §2.2.3.17) — Full Profile
@@ -486,11 +445,13 @@ impl Default for OwnershipStrength {
 
 /// Controls the scope of coherent changes and ordered access.
 ///
-/// Default: `Instance` scope, coherent_access = false, ordered_access = false.
-/// RxO: Yes — offered scope must be ≥ requested.
+/// Default: `Instance` scope, `coherent_access` = false, `ordered_access` = false.
+/// `RxO`: Yes — offered scope must be ≥ requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum PresentationAccessScopeKind {
     /// Changes are scoped to individual instances.
+    #[default]
     Instance = 0,
     /// Changes are scoped to a single Topic.
     Topic = 1,
@@ -498,32 +459,19 @@ pub enum PresentationAccessScopeKind {
     Group = 2,
 }
 
-impl Default for PresentationAccessScopeKind {
-    fn default() -> Self {
-        Self::Instance
-    }
-}
 
-/// Presentation QoS policy.
+/// Presentation `QoS` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct Presentation {
     /// Scope of coherent/ordered access.
     pub access_scope: PresentationAccessScopeKind,
-    /// Whether begin/end_coherent_changes is supported.
+    /// Whether `begin/end_coherent_changes` is supported.
     pub coherent_access: bool,
-    /// Whether begin/end_access provides ordered delivery.
+    /// Whether `begin/end_access` provides ordered delivery.
     pub ordered_access: bool,
 }
 
-impl Default for Presentation {
-    fn default() -> Self {
-        Self {
-            access_scope: PresentationAccessScopeKind::default(),
-            coherent_access: false,
-            ordered_access: false,
-        }
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Policy 18: Partition (DCPS §2.2.3.18)
@@ -533,7 +481,7 @@ impl Default for Presentation {
 /// at least one matching partition name can communicate.
 ///
 /// Default: empty (matches all partitions).
-/// Not RxO (but matching is required for communication).
+/// Not `RxO` (but matching is required for communication).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Partition {
     /// List of partition name strings. Empty = default partition ("").
@@ -544,11 +492,11 @@ pub struct Partition {
 // Policy 19: TimeBasedFilter (DCPS §2.2.3.19)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Limits the rate at which a DataReader receives data.
+/// Limits the rate at which a `DataReader` receives data.
 /// The reader will not see samples arriving faster than `minimum_separation`.
 ///
 /// Default: `Duration::ZERO` (no filtering).
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimeBasedFilter {
     /// Minimum interval between successive samples delivered to the reader.
@@ -570,7 +518,7 @@ impl Default for TimeBasedFilter {
 /// Controls whether entities are automatically enabled upon creation.
 ///
 /// Default: `autoenable_created_entities = true`.
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntityFactory {
     /// If true, newly created entities are automatically enabled.
@@ -627,10 +575,10 @@ impl Property {
 // Policy 21: WriterDataLifecycle (DCPS §2.2.3.21)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Controls DataWriter behavior when instances are unregistered.
+/// Controls `DataWriter` behavior when instances are unregistered.
 ///
 /// Default: `autodispose_unregistered_instances = true`.
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WriterDataLifecycle {
     /// If true, unregistering an instance automatically disposes it.
@@ -649,11 +597,11 @@ impl Default for WriterDataLifecycle {
 // Policy 22: ReaderDataLifecycle (DCPS §2.2.3.22)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Controls how a DataReader manages the lifecycle of received instances.
+/// Controls how a `DataReader` manages the lifecycle of received instances.
 /// Automatic purging reclaims resources for instances that are no longer active.
 ///
 /// Default: both delays are INFINITE (no automatic purging).
-/// Not RxO.
+/// Not `RxO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReaderDataLifecycle {
     /// Delay before purging samples for an instance with no active writers.
@@ -675,7 +623,7 @@ impl Default for ReaderDataLifecycle {
 // Aggregate QoS structs per entity type
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// QoS policies applicable to a `DomainParticipant`.
+/// `QoS` policies applicable to a `DomainParticipant`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DomainParticipantQos {
     /// Application-specific data for discovery.
@@ -687,7 +635,7 @@ pub struct DomainParticipantQos {
     pub property: Property,
 }
 
-/// QoS policies applicable to a `Topic`.
+/// `QoS` policies applicable to a `Topic`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct TopicQos {
     /// Application-specific topic metadata.
@@ -718,7 +666,7 @@ pub struct TopicQos {
     pub ownership: Ownership,
 }
 
-/// QoS policies applicable to a `Publisher`.
+/// `QoS` policies applicable to a `Publisher`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct PublisherQos {
     /// Presentation scope for coherent/ordered access.
@@ -731,7 +679,7 @@ pub struct PublisherQos {
     pub entity_factory: EntityFactory,
 }
 
-/// QoS policies applicable to a `Subscriber`.
+/// `QoS` policies applicable to a `Subscriber`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct SubscriberQos {
     /// Presentation scope for coherent/ordered access.
@@ -744,7 +692,7 @@ pub struct SubscriberQos {
     pub entity_factory: EntityFactory,
 }
 
-/// QoS policies applicable to a `DataWriter`.
+/// `QoS` policies applicable to a `DataWriter`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DataWriterQos {
     /// Durability level.
@@ -779,7 +727,7 @@ pub struct DataWriterQos {
     pub writer_data_lifecycle: WriterDataLifecycle,
 }
 
-/// QoS policies applicable to a `DataReader`.
+/// `QoS` policies applicable to a `DataReader`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct DataReaderQos {
     /// Durability level.
@@ -823,12 +771,12 @@ pub enum TypeConsistencyKind {
     AllowTypeCoercion = 1,
 }
 
-/// TypeConsistencyEnforcement QoS policy wrapper.
+/// `TypeConsistencyEnforcement` `QoS` policy wrapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeConsistencyEnforcement {
     /// The enforcement kind.
     pub kind: TypeConsistencyKind,
-    /// Force validation of TypeObject structure layout.
+    /// Force validation of `TypeObject` structure layout.
     pub force_type_validation: bool,
     /// Prevent assignment of a wider type to a narrower type.
     pub prevent_type_widening: bool,

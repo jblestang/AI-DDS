@@ -3,7 +3,7 @@
 //! This example demonstrates how to configure and use the Reliability QoS policy
 //! on DataWriters and DataReaders in Antigravity DDS.
 //!
-//! Spec Reference: OMG DDS DCPS 1.4 §2.2.3.9 — Reliability QoS Policy
+//! Spec Reference: OMG DDS DCPS 1.4 §2.2.3.9 — Reliability QoS Policy.
 #![forbid(unsafe_code)]
 #![warn(
     rust_2018_idioms,
@@ -55,8 +55,6 @@
     clippy::min_ident_chars,
     clippy::little_endian_bytes,
     clippy::unused_trait_names,
-    clippy::separated_literal_suffix,
-    clippy::unseparated_literal_suffix,
     clippy::missing_asserts_for_indexing,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
@@ -107,11 +105,11 @@ impl TypeSupport for TelemetryTypeSupport {
         if bytes.len() < 12 {
             return Err(DdsError::Error("Payload too short".into()));
         }
-        let mut id_bytes = [0_u8; 4];
+        let mut id_bytes = [u8::default(); 4];
         id_bytes.copy_from_slice(&bytes[0..4]);
         let id = u32::from_le_bytes(id_bytes);
 
-        let mut val_bytes = [0_u8; 8];
+        let mut val_bytes = [u8::default(); 8];
         val_bytes.copy_from_slice(&bytes[4..12]);
         let value = f64::from_le_bytes(val_bytes);
 
@@ -193,7 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket.set_read_timeout(Some(StdDuration::from_secs(RECV_TIMEOUT_SECS)))?;
             println!("[Reader] Listening on UDP port {SUBSCRIBER_PORT}...");
 
-            let mut buf = [0u8; RECV_BUFFER_SIZE];
+            let mut buf = vec![u8::default(); RECV_BUFFER_SIZE];
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Reader] Received sample packet over UDP (len = {}).", len);
 

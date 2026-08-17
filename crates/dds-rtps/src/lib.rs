@@ -72,7 +72,7 @@ use dds_types::guid::{EntityId, Guid, GuidPrefix, SequenceNumber};
 use dds_types::locator::Locator;
 use dds_types::time::Timestamp;
 use dds_types::vendor::VendorId;
-use dds_cdr::{CdrDeserialize, CdrSerialize};
+use dds_cdr::{CdrDeserialize as _, CdrSerialize as _};
 use core::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -105,25 +105,25 @@ pub const RTPS_HEADER_SIZE: usize = 20;
 /// Fixed length of a submessage header (Kind, Flags, Length) in bytes.
 pub const SUBMESSAGE_HEADER_SIZE: usize = 4;
 
-/// Fixed length of the Data submessage fields before inline QoS and payload.
+/// Fixed length of the Data submessage fields before inline `QoS` and payload.
 pub const DATA_SUBMESSAGE_FIXED_SIZE: usize = 20;
 
-/// Fixed length of the DataFrag submessage fields before inline QoS and payload.
+/// Fixed length of the `DataFrag` submessage fields before inline `QoS` and payload.
 pub const DATA_FRAG_SUBMESSAGE_FIXED_SIZE: usize = 32;
 
 /// Fixed length of the Gap submessage base fields.
 pub const GAP_SUBMESSAGE_FIXED_SIZE: usize = 16;
 
-/// Fixed length of the AckNack submessage base fields.
+/// Fixed length of the `AckNack` submessage base fields.
 pub const ACKNACK_SUBMESSAGE_FIXED_SIZE: usize = 24;
 
-/// Fixed length of the InfoTs submessage timestamp field.
+/// Fixed length of the `InfoTs` submessage timestamp field.
 pub const INFOTS_TIMESTAMP_SIZE: usize = 8;
 
 /// Submessage flag indicating little-endian byte order.
 pub const FLAG_LITTLE_ENDIAN: u8 = 0x01;
 
-/// Submessage flag indicating the presence of Inline QoS.
+/// Submessage flag indicating the presence of Inline `QoS`.
 pub const FLAG_INLINE_QOS: u8 = 0x02;
 
 /// Submessage flag indicating the presence of a serialized Data payload.
@@ -154,7 +154,7 @@ pub const NANOS_PER_SEC: u64 = 1_000_000_000;
 pub const UDP_MAX_PAYLOAD_SIZE: usize = 65535;
 
 
-/// Submessage flag for Multicast flag in InfoReply.
+/// Submessage flag for Multicast flag in `InfoReply`.
 pub const FLAG_MULTICAST: u8 = 0x02;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ pub struct Data {
     pub writer_id: EntityId,
     /// Sequence number of the cache change.
     pub writer_sn: SequenceNumber,
-    /// Optional inline QoS parameters.
+    /// Optional inline `QoS` parameters.
     pub inline_qos: Option<dds_cdr::ParameterList>,
     /// Serialized payload data representation.
     pub serialized_payload: Bytes,
@@ -522,7 +522,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                     // A proper implementation would parse the locator lists.
                     submessages.push(Submessage::InfoReply(InfoReply {
                         unicast_locator_list: vec![],
-                        multicast_locator_list: if multicast_flag { Some(vec![]) } else { None },
+                        multicast_locator_list: multicast_flag.then(|| vec![]),
                     }));
                 }
                 SubmessageKind::Data => {
@@ -704,7 +704,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
 
                         let mut set_offset = 8;
                         if let Ok(reader_sn_state) = deserialize_sequence_number_set(
-                            &sub_payload,
+                            sub_payload,
                             &mut set_offset,
                             little_endian,
                         ) {
@@ -719,8 +719,8 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             };
 
                             submessages.push(Submessage::AckNack(AckNack {
-                                reader_id,
                                 writer_id,
+                                reader_id,
                                 reader_sn_state,
                                 count,
                             }));
@@ -751,7 +751,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
 
                         let mut set_offset = 16;
                         let gap_list = deserialize_sequence_number_set(
-                            &sub_payload,
+                            sub_payload,
                             &mut set_offset,
                             little_endian,
                         )
@@ -1064,10 +1064,10 @@ impl RtpsEngine {
         })
     }
 
-    /// Single dispatch tick: send all pending CacheChanges to matched readers.
+    /// Single dispatch tick: send all pending `CacheChanges` to matched readers.
     ///
-    /// For each reader proxy: find CacheChanges with SN >= proxy.next_unsent_sn,
-    /// build RTPS messages (Header + InfoTs + Data), send them, then advance SN.
+    /// For each reader proxy: find `CacheChanges` with SN >= `proxy.next_unsent_sn`,
+    /// build RTPS messages (Header + `InfoTs` + Data), send them, then advance SN.
     pub fn tick(
         writer: &Arc<Mutex<StatefulWriter>>,
         transport: &UdpTransport,
@@ -1100,7 +1100,7 @@ impl RtpsEngine {
                 .unicast_locator_list
                 .iter()
                 .chain(w.reader_proxies[idx].multicast_locator_list.iter())
-                .cloned()
+                .copied()
                 .collect();
 
             let header = RtpsHeader::new(guid_prefix);
@@ -1123,7 +1123,7 @@ impl RtpsEngine {
 
                 if payload_bytes.len() > max_payload {
                     let total_size = payload_bytes.len();
-                    let num_frags = (total_size + max_payload - 1) / max_payload;
+                    let num_frags = total_size.div_ceil(max_payload);
                     for f in 0..num_frags {
                         let start = f * max_payload;
                         let end = (start + max_payload).min(total_size);
@@ -1185,7 +1185,7 @@ impl RtpsEngine {
                 .unicast_locator_list
                 .iter()
                 .chain(w.reader_proxies[idx].multicast_locator_list.iter())
-                .cloned()
+                .copied()
                 .collect();
 
             let hb = Heartbeat {
@@ -1338,7 +1338,7 @@ pub struct StatelessWriter {
 
 impl StatelessWriter {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         guid: Guid,
         history_kind: dds_types::qos::HistoryKind,
         history_depth: i32,
@@ -1428,7 +1428,7 @@ impl UdpTransport {
     }
 }
 
-/// Serialize a SequenceNumberSet to the byte buffer.
+/// Serialize a `SequenceNumberSet` to the byte buffer.
 pub fn serialize_sequence_number_set(
     buf: &mut BytesMut,
     sns: &[SequenceNumber],
@@ -1465,7 +1465,7 @@ pub fn serialize_sequence_number_set(
         buf.put_u32(num_bits);
     }
 
-    let num_longs = ((num_bits + 31) / 32) as usize;
+    let num_longs = num_bits.div_ceil(32) as usize;
     let mut bitmap = vec![0_u32; num_longs];
 
     for sn in sns {
@@ -1486,7 +1486,7 @@ pub fn serialize_sequence_number_set(
     }
 }
 
-/// Deserialize a SequenceNumberSet from a payload slice starting at offset.
+/// Deserialize a `SequenceNumberSet` from a payload slice starting at offset.
 /// Returns the list of sequence numbers.
 pub fn deserialize_sequence_number_set(
     payload: &[u8],
@@ -1517,7 +1517,7 @@ pub fn deserialize_sequence_number_set(
 
     *offset += 12;
 
-    let num_longs = ((num_bits + 31) / 32) as usize;
+    let num_longs = num_bits.div_ceil(32) as usize;
     if *offset + 4 * num_longs > payload.len() {
         return Err(RtpsError::InvalidMessage("SequenceNumberSet bitmap truncated".into()));
     }
