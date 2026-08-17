@@ -56,8 +56,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install CycloneDDS build deps
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+      - name: Install vendor build deps
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential openjdk-17-jdk libasio-dev libtinyxml2-dev libfoonathan-memory-dev libssl-dev libboost-dev
 
       - name: Build CycloneDDS and peer apps
         run: |
@@ -72,3 +72,16 @@ jobs:
         env:
           CYCLONEDDS_PREFIX: /tmp/cyclonedds-install
         run: cargo test -p dds --test interop_cyclonedds -- --ignored --nocapture --test-threads=1
+
+      - name: Build Fast DDS and peer apps
+        run: |
+          ./interop/scripts/build-fastdds.sh
+          export FASTDDS_PREFIX=/tmp/fastdds-install
+          export FASTDDSGEN=/tmp/fastdds-gen2/scripts/fastddsgen
+          ./interop/scripts/build-fastdds-apps.sh
+
+      - name: Live Fast DDS interop
+        env:
+          FASTDDS_PREFIX: /tmp/fastdds-install
+          LD_LIBRARY_PATH: /tmp/fastdds-install/lib
+        run: cargo test -p dds --test interop_fastdds -- --ignored --nocapture --test-threads=1
