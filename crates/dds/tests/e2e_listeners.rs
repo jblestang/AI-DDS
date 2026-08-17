@@ -1,5 +1,7 @@
 //! E2E: listener callbacks fired via wire matchmaking.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

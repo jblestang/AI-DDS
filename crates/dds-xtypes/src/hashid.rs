@@ -34,7 +34,7 @@ pub const MEMBER_DEPENDENT_TYPEIDS: u32 = 0x0BA_4DFC9;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

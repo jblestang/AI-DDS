@@ -6,7 +6,7 @@
 //! Reference: `XTypes` §7
 
 #![forbid(unsafe_code)]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(warnings)] // Simplified for the exercise
 
 use dds_cdr::{CdrDeserialize, CdrDeserializer, CdrResult, CdrSerialize, CdrSerializer};
@@ -417,7 +417,7 @@ pub fn is_assignable_from(receiver: &TypeObject, sender: &TypeObject) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

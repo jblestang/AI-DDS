@@ -1,5 +1,7 @@
 //! Integration tests for XTypes §7.6.3.3 TypeLookup wire service.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use dds_xtypes::{
     make_get_types_request, serve_type_lookup_request, type_lookup_instance_name, ExtensibilityKind,
     Member, StructureType, TypeLookupCall, TypeLookupGetTypesResult, TypeLookupReturn, TypeObject,

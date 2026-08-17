@@ -77,7 +77,7 @@
     clippy::items_after_statements,
     reason = "DDS Security implementation uses standard library collections, standard returns, and common mathematical conversions."
 )]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use aes_gcm::aead::{Aead as _, KeyInit as _};
 use aes_gcm::{Aes128Gcm, Nonce};
@@ -1116,7 +1116,7 @@ pub fn verify_cms_signature(doc: &SignedDocument) -> SecurityResult<()> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

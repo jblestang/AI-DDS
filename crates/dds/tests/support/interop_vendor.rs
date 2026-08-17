@@ -1,6 +1,8 @@
 //! Shared live interop test bodies for external DDS vendor peer applications.
 
-use super::{
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use super::interop_common::{
     output_contains_interop_receive, spawn_vendor_publisher, spawn_vendor_subscriber,
     vendor_available, vendor_base_domain, vendor_display_name, wait_output, InteropMessage,
     InteropTypeSupport, InteropVendor, INTEROP_TOPIC, INTEROP_TYPE,

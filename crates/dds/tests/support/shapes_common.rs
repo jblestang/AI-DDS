@@ -10,7 +10,7 @@ use std::any::Any;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-pub use crate::interop_common::{InteropVendor, wait_output};
+pub use super::interop_common::{InteropVendor, wait_output};
 
 pub const SHAPES_TYPE: &str = "org::omg::dds::demo::ShapeType";
 
@@ -22,11 +22,12 @@ pub fn shapes_base_domain(vendor: InteropVendor) -> u32 {
         InteropVendor::CycloneDds => 120,
         // Align with proven Fast DDS interop domain block (83 + offset).
         InteropVendor::FastDds => 86,
+        InteropVendor::OpenDds => 199,
     }
 }
 
 pub fn shapes_bin_dir(vendor: InteropVendor) -> Option<PathBuf> {
-    crate::interop_common::vendor_bin_dir(vendor).filter(|d| d.join("shapes_publisher").exists())
+    super::interop_common::vendor_bin_dir(vendor).filter(|d| d.join("shapes_publisher").exists())
 }
 
 pub fn shapes_available(vendor: InteropVendor) -> bool {
@@ -52,7 +53,7 @@ pub fn spawn_shapes_publisher(
             std::io::ErrorKind::NotFound,
             format!(
                 "{} shapes_publisher not found; rebuild peer apps",
-                crate::interop_common::vendor_display_name(vendor)
+                super::interop_common::vendor_display_name(vendor)
             ),
         )
     })?;
@@ -85,7 +86,7 @@ pub fn spawn_shapes_subscriber(
             std::io::ErrorKind::NotFound,
             format!(
                 "{} shapes_subscriber not found; rebuild peer apps",
-                crate::interop_common::vendor_display_name(vendor)
+                super::interop_common::vendor_display_name(vendor)
             ),
         )
     })?;
@@ -225,9 +226,6 @@ pub fn output_contains_shapes_publish(output: &Output, topic: &str, shape: &Shap
         && stdout.contains(&format!("topic={topic}"))
         && stdout.contains(&format!("color={}", shape.color))
 }
-
-#[path = "shapes_vendor.rs"]
-pub mod shapes_vendor;
 
 #[cfg(test)]
 mod shapes_type_tests {

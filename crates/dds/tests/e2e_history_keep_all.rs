@@ -1,5 +1,7 @@
 //! E2E: History KEEP_ALL retains all received samples over the wire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

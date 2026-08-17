@@ -1,5 +1,7 @@
 //! Integration test: automatic discovery-driven endpoint matching (no manual proxy wiring).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use dds::cdr::{CdrDeserialize, CdrSerialize, CdrDeserializer, CdrSerializer, CdrResult};
 use dds::core::{DomainParticipantFactory, TypeSupport};
 use dds::types::qos::{
@@ -130,8 +132,10 @@ fn test_discovery_driven_matchmaking() {
             qos_reader: Some(DataReaderQos::default()),
             partition: vec![],
             unicast_locators: vec![reader_locator],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         });
     }
     participant_pub.run_matchmaking();
@@ -214,8 +218,10 @@ fn test_incompatible_qos_blocks_matchmaking() {
             qos_reader: Some(reader.qos().clone()),
             partition: vec![],
             unicast_locators: vec![reader_locator],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         });
     }
     participant_pub.run_matchmaking();

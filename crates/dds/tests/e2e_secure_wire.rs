@@ -1,5 +1,7 @@
 //! E2E: DDS Security encrypted payload delivery over RTPS wire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{default_wire, plain_type_support, read_next_plain, wire_bidirectional_discovery, PlainMessage};

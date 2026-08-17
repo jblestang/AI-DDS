@@ -8,13 +8,16 @@
 //! cargo test -p dds --test interop_fastdds -- --ignored --nocapture --test-threads=1
 //! ```
 
-mod interop_common;
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use interop_common::interop_vendor::{
+mod support;
+use support::interop_common;
+
+use support::interop_vendor::{
     aidds_publishes_vendor_receives, bidirectional_discovery_matchmaking,
     vendor_publishes_aidds_receives,
 };
-use interop_common::InteropVendor;
+use support::interop_common::InteropVendor;
 
 #[test]
 #[ignore = "requires Fast DDS interop binaries (see interop/README.md)"]

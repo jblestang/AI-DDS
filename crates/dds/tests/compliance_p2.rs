@@ -1,5 +1,7 @@
 //! P2 compliance: durability retransmit, instance lifecycle, builtin topics.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use dds::cdr::{CdrDeserialize, CdrSerialize, CdrDeserializer, CdrSerializer, CdrResult};
 use dds::core::{DomainParticipantFactory, TypeSupport};
 use dds::types::qos::{
@@ -129,8 +131,10 @@ fn test_durability_retransmit_on_late_joiner() {
             qos_reader: Some(DataReaderQos::default()),
             partition: vec![],
             unicast_locators: vec![reader_locator],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         });
     }
     participant_pub.run_matchmaking();

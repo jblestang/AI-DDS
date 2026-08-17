@@ -1,5 +1,7 @@
 //! E2E: XTypes type compatibility and assignability checks.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::wire_message_type_object;

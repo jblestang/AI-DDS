@@ -66,7 +66,7 @@
     clippy::separated_literal_suffix,
     reason = "DDS Core implementation requires standard library conversions, standard returns, and type erasure mechanics."
 )]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use dds_rtps::{
     CacheChange, ChangeKind, RtpsEngine,
@@ -3015,7 +3015,7 @@ pub trait DataWriterListener: Listener {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use std::any::Any;

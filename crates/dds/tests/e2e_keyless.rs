@@ -1,5 +1,7 @@
 //! E2E: keyless types — write without register_instance over the wire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

@@ -41,7 +41,6 @@
     clippy::cast_possible_truncation,
     clippy::as_conversions,
     clippy::too_many_lines,
-    clippy::panic,
     clippy::field_reassign_with_default,
     clippy::clone_on_ref_ptr,
     clippy::arithmetic_side_effects,
@@ -206,7 +205,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  -> Value: {}", received.value);
                 assert_eq!(received.id, SAMPLE_ID);
             } else {
-                panic!("Failed to downcast received sample!");
+                return Err(dds::types::return_code::DdsError::BadParameter(
+                    "failed to downcast received sample to ReliableTelemetry".into(),
+                )
+                .into());
             }
             println!("==============================================================");
         }
@@ -270,7 +272,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  -> Value: {}", received.value);
                 assert_eq!(received.id, SAMPLE_ID);
             } else {
-                panic!("Failed to downcast received sample!");
+                return Err(dds::types::return_code::DdsError::BadParameter(
+                    "failed to downcast received sample to ReliableTelemetry".into(),
+                )
+                .into());
             }
 
             println!("==============================================================");

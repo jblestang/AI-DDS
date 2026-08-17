@@ -1,5 +1,7 @@
 //! E2E: TypeLookup service over RTPS wire (XTypes §7.6.3.3).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

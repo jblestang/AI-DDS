@@ -1,6 +1,7 @@
 //! IDL to Rust code generator.
 
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(
     rust_2018_idioms,
     nonstandard_style,
@@ -45,7 +46,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -703,6 +703,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

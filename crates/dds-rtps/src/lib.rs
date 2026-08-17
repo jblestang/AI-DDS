@@ -64,7 +64,7 @@
     clippy::large_stack_arrays,
     reason = "RTPS Wire Protocol implementation requires standard library conversions, standard returns, and UDP socket structures."
 )]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use byteorder::{BigEndian, ByteOrder as _, LittleEndian};
 use bytes::{BufMut as _, Bytes, BytesMut};
@@ -2163,7 +2163,7 @@ pub enum Endianness {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

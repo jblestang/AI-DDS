@@ -1,5 +1,7 @@
 //! E2E: SampleInfo metadata on wire-delivered samples.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

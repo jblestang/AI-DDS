@@ -1,11 +1,13 @@
 //! Shared live Shapes Demo test bodies for external DDS vendor peer applications.
 
-use super::{
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use super::shapes_common::{
     output_contains_shapes_publish, output_contains_shapes_receive, shapes_available,
-    shapes_base_domain, spawn_shapes_publisher, spawn_shapes_subscriber, wait_output, InteropVendor,
-    ShapeType, ShapeTypeSupport, SHAPES_TOPICS,
+    shapes_base_domain, spawn_shapes_publisher, spawn_shapes_subscriber, ShapeType,
+    ShapeTypeSupport, SHAPES_TOPICS, SHAPES_TYPE,
 };
-use crate::interop_common::vendor_display_name;
+use super::interop_common::{vendor_display_name, wait_output, InteropVendor};
 use dds::core::DomainParticipantFactory;
 use dds::types::qos::{
     DataReaderQos, DataWriterQos, DomainParticipantQos, PublisherQos, ReliabilityKind,
@@ -46,9 +48,9 @@ pub fn vendor_publishes_shapes_aidds_receives(vendor: InteropVendor, topic: &str
     let participant =
         DomainParticipantFactory::create_participant(domain, DomainParticipantQos::default())
             .expect("participant");
-    participant.register_type(super::SHAPES_TYPE, ts.clone()).unwrap();
+    participant.register_type(SHAPES_TYPE, ts.clone()).unwrap();
     let topic_handle = participant
-        .create_topic(topic, super::SHAPES_TYPE, TopicQos::default())
+        .create_topic(topic, SHAPES_TYPE, TopicQos::default())
         .unwrap();
 
     let mut reader_qos = DataReaderQos::default();
@@ -107,9 +109,9 @@ pub fn aidds_publishes_shapes_vendor_receives(vendor: InteropVendor, topic: &str
     let participant =
         DomainParticipantFactory::create_participant(domain, DomainParticipantQos::default())
             .expect("participant");
-    participant.register_type(super::SHAPES_TYPE, ts.clone()).unwrap();
+    participant.register_type(SHAPES_TYPE, ts.clone()).unwrap();
     let topic_handle = participant
-        .create_topic(topic, super::SHAPES_TYPE, TopicQos::default())
+        .create_topic(topic, SHAPES_TYPE, TopicQos::default())
         .unwrap();
     let _rx = participant.spawn_receiver_loop();
 

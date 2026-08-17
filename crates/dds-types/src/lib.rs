@@ -75,7 +75,7 @@
     clippy::separated_literal_suffix,
     reason = "DDS Types implementation requires standard library conversions, standard returns, and spec-defined structures."
 )]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod builtin_topics;
 pub mod guid;

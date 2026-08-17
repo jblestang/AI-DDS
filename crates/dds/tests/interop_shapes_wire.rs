@@ -1,11 +1,13 @@
 //! Wire-level tests for the OMG DDS Shapes Demo `ShapeType` (no external deps).
 
-mod interop_common;
-mod shapes_common;
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod support;
+use support::interop_common;
 
 use dds::cdr::{CdrSerialize, EncapsulationHeader, EncapsulationKind, Endianness};
 use dds::core::TypeSupport;
-use shapes_common::{ShapeType, ShapeTypeSupport, SHAPES_TOPICS, SHAPES_TYPE};
+use support::shapes_common::{ShapeType, ShapeTypeSupport, SHAPES_TOPICS, SHAPES_TYPE};
 use std::any::Any;
 
 #[test]

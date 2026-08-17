@@ -1,5 +1,7 @@
 //! E2E: RTPS fragmentation for large payloads over the wire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

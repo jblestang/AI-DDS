@@ -1,5 +1,7 @@
 //! E2E: builtin topics registration and monitor snapshot.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{create_participant_pair, spawn_receivers, wire_bidirectional_discovery, wire_type_support};

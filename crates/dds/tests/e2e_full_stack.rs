@@ -1,6 +1,8 @@
 //! End-to-end smoke test exercising discovery, TypeLookup, QoS, data path,
 //! instance lifecycle, fragmentation, monitor snapshot, and type compatibility.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

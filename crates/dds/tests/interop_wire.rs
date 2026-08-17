@@ -1,10 +1,13 @@
 //! Wire-level interoperability fixtures: verify AI-DDS can parse RTPS packets
 //! from reference implementations (CycloneDDS-generated captures).
 
-mod interop_common;
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod support;
+use support::interop_common;
 
 use dds::rtps::{parse_rtps_message, Submessage};
-use interop_common::read_fixture;
+use support::interop_common::read_fixture;
 
 #[test]
 fn interop_wire_parse_cyclonedds_spdp_fixture() {
@@ -88,7 +91,7 @@ fn interop_cdr_encapsulation_roundtrip_matches_spec() {
         serialize_to_bytes, EncapsulationHeader, EncapsulationKind, Endianness,
     };
     use dds::core::TypeSupport;
-use interop_common::{InteropMessage, InteropTypeSupport};
+use support::interop_common::{InteropMessage, InteropTypeSupport};
     use std::any::Any;
 
     let ts = InteropTypeSupport;

@@ -1,5 +1,7 @@
 //! E2E: endpoints on different topics must not exchange data.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

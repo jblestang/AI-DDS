@@ -1,5 +1,7 @@
 //! E2E: SPDP lease expiry removes stale remote participants from discovery.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 mod common;
 
 use common::{

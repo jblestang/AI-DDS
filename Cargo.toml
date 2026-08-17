@@ -82,8 +82,9 @@ all = { level = "warn", priority = -4 }
 restriction = { level = "warn", priority = -3 }
 pedantic = { level = "warn", priority = -2 }
 nursery = { level = "warn", priority = -1 }
-
-# No allows, enforce warn on all rules
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 
 [profile.dev]
 opt-level = 0

@@ -4,6 +4,7 @@
 //! live data streams, and cryptographic handshake status.
 
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(
     rust_2018_idioms,
     nonstandard_style,
@@ -400,6 +401,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]
@@ -441,8 +443,10 @@ mod tests {
             qos_reader: None,
             partition: vec![],
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         });
         let snapshot: MonitorSnapshot = manager.monitor_snapshot();
         let app = MonitorApp::from_discovery_snapshot(&snapshot);

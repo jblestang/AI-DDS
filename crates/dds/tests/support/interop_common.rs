@@ -196,9 +196,6 @@ pub fn spawn_vendor_subscriber(
         .spawn()
 }
 
-#[path = "interop_vendor.rs"]
-pub mod interop_vendor;
-
 pub const INTEROP_DOMAIN: u32 = 73;
 pub const INTEROP_TOPIC: &str = "AiDdsInteropMessage";
 pub const INTEROP_TYPE: &str = "AiDdsInterop::Message";

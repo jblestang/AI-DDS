@@ -63,7 +63,7 @@
     clippy::separated_literal_suffix,
     reason = "DDS Discovery implementation requires standard library conversions, standard returns, and discovery state structures."
 )]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use dds_types::guid::{EntityId, EntityKind, Guid, GuidPrefix, SequenceNumber};
 use dds_types::sync::lock;
@@ -1798,7 +1798,7 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use dds_types::guid::EntityId;

@@ -1,5 +1,7 @@
 //! P1 compliance integration tests: read/take, reverse matchmaking, partition.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use dds::cdr::{CdrDeserialize, CdrSerialize, CdrDeserializer, CdrSerializer, CdrResult};
 use dds::core::{
     check_partition_compatibility, DomainParticipantFactory, TypeSupport,
@@ -203,8 +205,10 @@ fn test_reverse_matchmaking_subscription_matched() {
             qos_reader: None,
             partition: vec![],
             unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
             type_info: None,
+            type_information_wire: None,
         });
     }
     participant_sub.run_matchmaking();
