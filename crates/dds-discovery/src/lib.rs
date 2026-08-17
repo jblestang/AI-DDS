@@ -710,10 +710,13 @@ impl DiscoveryManager {
             })
             .collect();
         endpoints.sort_by_key(|ep| ep.guid.to_bytes());
+        let sns: Vec<SequenceNumber> = endpoints
+            .iter()
+            .map(|ep| self.sedp_sn_for_endpoint(ep))
+            .collect();
 
-        for endpoint in endpoints {
-            let sn = self.sedp_sn_for_endpoint(endpoint);
-            if !ack.reader_sn_state.is_empty() && !ack.reader_sn_state.contains(&sn) {
+        for (endpoint, sn) in endpoints.iter().zip(sns.iter()) {
+            if !ack.reader_sn_state.is_empty() && !ack.reader_sn_state.contains(sn) {
                 continue;
             }
             self.send_sedp_endpoint_directed(
@@ -723,8 +726,23 @@ impl DiscoveryManager {
                 reply_to,
                 remote_prefix,
                 ack.reader_id,
-                sn,
+                *sn,
             )?;
+        }
+
+        if let (Some(&first), Some(&last)) = (sns.first(), sns.last()) {
+            if last.0 >= first.0 {
+                let _ = self.send_sedp_heartbeat(
+                    transport,
+                    ack.writer_id,
+                    ack.reader_id,
+                    remote_prefix,
+                    reply_to,
+                    first,
+                    last,
+                    ack.count,
+                );
+            }
         }
         Ok(())
     }
