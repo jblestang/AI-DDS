@@ -164,7 +164,7 @@ pub fn spawn_vendor_publisher(
         .arg(payload)
         .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .env("AIDDS_INTEROP_WAIT_MATCH", "1")
         .spawn()
 }
@@ -192,7 +192,7 @@ pub fn spawn_vendor_subscriber(
     cmd.env("AIDDS_INTEROP_DOMAIN", domain.to_string())
         .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
 }
 
@@ -400,6 +400,17 @@ pub fn wait_output(mut child: std::process::Child, timeout: Duration) -> std::io
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.try_wait();
+            let output = child.wait_with_output().unwrap_or_else(|_| Output {
+                status: std::process::ExitStatus::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+            eprintln!(
+                "child timed out after {:?}\nstdout: {}\nstderr: {}",
+                timeout,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "child process timed out",
