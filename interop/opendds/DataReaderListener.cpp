@@ -17,6 +17,13 @@ void InteropDataReaderListener::set_expect_id(CORBA::ULong id, bool enabled)
   have_expect_id_ = enabled;
 }
 
+void InteropDataReaderListener::set_received(CORBA::ULong id, const char *payload)
+{
+  received_ = true;
+  received_id_ = id;
+  received_payload_ = payload;
+}
+
 void InteropDataReaderListener::on_requested_deadline_missed(
   DDS::DataReader_ptr,
   const DDS::RequestedDeadlineMissedStatus &)
@@ -32,8 +39,10 @@ void InteropDataReaderListener::on_requested_incompatible_qos(
 
 void InteropDataReaderListener::on_sample_rejected(
   DDS::DataReader_ptr,
-  const DDS::SampleRejectedStatus &)
+  const DDS::SampleRejectedStatus &status)
 {
+  ACE_ERROR((LM_ERROR, "sample rejected total=%d last_reason=%d\n",
+             status.total_count, static_cast<int>(status.last_reason)));
 }
 
 void InteropDataReaderListener::on_liveliness_changed(
@@ -46,8 +55,9 @@ void InteropDataReaderListener::on_subscription_matched(
   DDS::DataReader_ptr,
   const DDS::SubscriptionMatchedStatus &status)
 {
-  ACE_DEBUG((LM_DEBUG, "subscription matched current=%d total=%d\n",
-             status.current_count, status.total_count));
+  std::fprintf(stderr, "subscription matched current=%d total=%d\n",
+               status.current_count, status.total_count);
+  std::fflush(stderr);
 }
 
 void InteropDataReaderListener::on_sample_lost(

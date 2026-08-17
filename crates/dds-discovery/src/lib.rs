@@ -65,7 +65,7 @@
     reason = "DDS Discovery implementation requires standard library conversions, standard returns, and discovery state structures."
 )]
 
-use dds_types::guid::{EntityId, EntityKind, Guid, GuidPrefix};
+use dds_types::guid::{EntityId, EntityKind, Guid, GuidPrefix, SequenceNumber};
 use dds_types::locator::Locator;
 use dds_types::time::Duration;
 use std::collections::HashMap;
@@ -281,6 +281,10 @@ pub struct DiscoveryManager {
     type_lookup_reply_sn: dds_types::guid::SequenceNumber,
     /// Replies received on the TypeLookup reply builtin endpoint.
     type_lookup_replies: Vec<dds_xtypes::TypeLookupReply>,
+    /// Sequence numbers assigned to local endpoints on each built-in SEDP writer.
+    sedp_endpoint_sn: HashMap<Guid, SequenceNumber>,
+    next_sedp_publication_sn: SequenceNumber,
+    next_sedp_subscription_sn: SequenceNumber,
 }
 
 impl DiscoveryManager {
@@ -295,6 +299,9 @@ impl DiscoveryManager {
             type_object_db: HashMap::new(),
             type_lookup_reply_sn: dds_types::guid::SequenceNumber(1),
             type_lookup_replies: Vec::new(),
+            sedp_endpoint_sn: HashMap::new(),
+            next_sedp_publication_sn: SequenceNumber(1),
+            next_sedp_subscription_sn: SequenceNumber(1),
         }
     }
 
@@ -304,6 +311,15 @@ impl DiscoveryManager {
             .entry(endpoint.topic_name.clone())
             .or_default()
             .push(endpoint.guid);
+        if endpoint.qos_writer.is_some() {
+            let sn = self.next_sedp_publication_sn;
+            self.next_sedp_publication_sn = SequenceNumber(sn.0 + 1);
+            self.sedp_endpoint_sn.insert(endpoint.guid, sn);
+        } else if endpoint.qos_reader.is_some() {
+            let sn = self.next_sedp_subscription_sn;
+            self.next_sedp_subscription_sn = SequenceNumber(sn.0 + 1);
+            self.sedp_endpoint_sn.insert(endpoint.guid, sn);
+        }
         self.local_endpoints.insert(endpoint.guid, endpoint);
     }
 
@@ -333,7 +349,7 @@ impl DiscoveryManager {
 
     /// Process a newly received SEDP endpoint discovery packet.
     pub fn process_sedp_endpoint(&mut self, endpoint: DiscoveredEndpoint) {
-        if endpoint.guid.prefix == self.local_prefix {
+        if self.local_endpoints.contains_key(&endpoint.guid) {
             return;
         }
         self.discovered_endpoints
@@ -369,6 +385,35 @@ impl DiscoveryManager {
             .copied()
     }
 
+    /// Collect usable locators for user DATA to a remote endpoint.
+    #[must_use]
+    pub fn user_traffic_locators(
+        endpoint: &DiscoveredEndpoint,
+        participant: &DiscoveredParticipant,
+    ) -> Vec<Locator> {
+        let mut locators = Self::filter_valid_unicast_locators(&endpoint.unicast_locators);
+        locators.extend(Self::filter_valid_unicast_locators(
+            &endpoint.metatraffic_unicast_locators,
+        ));
+        if locators.is_empty() {
+            locators.extend(Self::filter_valid_unicast_locators(
+                &participant.unicast_locators,
+            ));
+        }
+        if locators.is_empty() {
+            locators.extend(Self::filter_valid_unicast_locators(
+                &participant.metatraffic_unicast_locators,
+            ));
+        }
+        // OpenDDS SPDP often advertises 127.0.0.1:12345 as a placeholder.
+        locators.retain(|loc| {
+            !loc.to_ipv4().is_some_and(|ip| ip.is_loopback() && loc.port == 12345)
+        });
+        locators.sort_by_key(|loc| loc.port);
+        locators.dedup();
+        locators
+    }
+
     /// FastDDS often advertises 127.0.0.1 in SEDP while sending from a real interface.
     pub fn remap_loopback_locators(endpoint: &mut DiscoveredEndpoint, source: std::net::Ipv4Addr) {
         if source.is_loopback() {
@@ -387,6 +432,16 @@ impl DiscoveryManager {
                 }
             }
         }
+    }
+
+    /// Collect unicast destinations for built-in SEDP requests to a remote participant.
+    fn sedp_request_destinations(participant: &DiscoveredParticipant) -> Vec<Locator> {
+        let mut dests =
+            Self::filter_valid_unicast_locators(&participant.metatraffic_unicast_locators);
+        if dests.is_empty() {
+            dests = Self::filter_valid_unicast_locators(&participant.unicast_locators);
+        }
+        dests
     }
 
     /// Ask a remote participant to (re)send built-in SEDP samples (late-joiner recovery).
@@ -427,6 +482,18 @@ impl DiscoveryManager {
                 Endianness::LittleEndian,
             );
             let _ = transport.send(&msg, dest);
+        }
+    }
+
+    /// Request built-in SEDP from a remote participant on every advertised metatraffic locator.
+    pub fn request_remote_sedp_for_participant(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        remote_prefix: GuidPrefix,
+        participant: &DiscoveredParticipant,
+    ) {
+        for dest in Self::sedp_request_destinations(participant) {
+            self.request_remote_sedp(transport, remote_prefix, &dest);
         }
     }
 
@@ -518,13 +585,18 @@ impl DiscoveryManager {
         domain_id: u32,
         endpoint: &DiscoveredEndpoint,
     ) -> Result<(), String> {
-        self.send_sedp_endpoint(transport, domain_id, endpoint, &metatraffic_multicast_locator(domain_id))?;
-        for participant in self.discovered_participants.values() {
-            let dest = DiscoveryManager::select_unicast_locator(&participant.metatraffic_unicast_locators)
-                .or_else(|| DiscoveryManager::select_unicast_locator(&participant.unicast_locators));
-            if let Some(loc) = dest {
-                let _ = self.send_sedp_endpoint(transport, domain_id, endpoint, &loc);
+        self.announce_sedp_endpoint(
+            transport,
+            domain_id,
+            endpoint,
+            &metatraffic_multicast_locator(domain_id),
+        )?;
+        for (remote_prefix, participant) in &self.discovered_participants {
+            for dest in Self::sedp_request_destinations(participant) {
+                let _ = self.announce_sedp_endpoint(transport, domain_id, endpoint, &dest);
             }
+            self.request_remote_sedp_for_participant(transport, *remote_prefix, participant);
+            self.announce_sedp_heartbeats_to_participant(transport, *remote_prefix, participant);
         }
         Ok(())
     }
@@ -539,16 +611,31 @@ impl DiscoveryManager {
         let Some(remote) = self.discovered_participants.get(&remote_prefix) else {
             return;
         };
-        let dest = DiscoveryManager::select_unicast_locator(&remote.metatraffic_unicast_locators)
-            .or_else(|| DiscoveryManager::select_unicast_locator(&remote.unicast_locators));
-        let Some(dest) = dest else {
-            return;
-        };
-        self.request_remote_sedp(transport, remote_prefix, &dest);
+        self.request_remote_sedp_for_participant(transport, remote_prefix, remote);
         let endpoints: Vec<DiscoveredEndpoint> = self.local_endpoints.values().cloned().collect();
         for endpoint in endpoints {
-            let _ = self.send_sedp_endpoint(transport, domain_id, &endpoint, &dest);
+            for dest in Self::sedp_request_destinations(remote) {
+                let _ = self.announce_sedp_endpoint(transport, domain_id, &endpoint, &dest);
+            }
         }
+        self.announce_sedp_heartbeats_to_participant(transport, remote_prefix, remote);
+    }
+
+    fn announce_sedp_endpoint(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        endpoint: &DiscoveredEndpoint,
+        dest: &Locator,
+    ) -> Result<(), String> {
+        self.send_sedp_endpoint(
+            transport,
+            domain_id,
+            endpoint,
+            dest,
+            EntityId::UNKNOWN,
+            self.sedp_sn_for_endpoint(endpoint),
+        )
     }
 
     fn send_sedp_endpoint(
@@ -557,6 +644,8 @@ impl DiscoveryManager {
         domain_id: u32,
         endpoint: &DiscoveredEndpoint,
         dest: &Locator,
+        directed_reader: EntityId,
+        writer_sn: SequenceNumber,
     ) -> Result<(), String> {
         use bytes::Bytes;
         use dds_rtps::{serialize_rtps_message, Data, Endianness, Submessage};
@@ -568,9 +657,9 @@ impl DiscoveryManager {
             EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
         };
         let data_sub = Data {
-            reader_id: EntityId::UNKNOWN,
+            reader_id: directed_reader,
             writer_id,
-            writer_sn: dds_types::guid::SequenceNumber(1),
+            writer_sn,
             inline_qos: None,
             serialized_payload: Bytes::from(payload),
         };
@@ -583,6 +672,202 @@ impl DiscoveryManager {
         transport.send(&msg, dest).map_err(|e| format!("{e:?}"))
     }
 
+    fn sedp_sn_for_endpoint(&self, endpoint: &DiscoveredEndpoint) -> SequenceNumber {
+        self.sedp_endpoint_sn
+            .get(&endpoint.guid)
+            .copied()
+            .unwrap_or(SequenceNumber(1))
+    }
+
+    /// Re-send local SEDP endpoint samples in response to a built-in SEDP AckNack.
+    ///
+    /// OpenDDS (and some other stacks) only deliver endpoint discovery over reliable
+    /// built-in writers after the remote reader NACKs missing sequence numbers.
+    pub fn reply_to_builtin_sedp_acknack(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        remote_prefix: GuidPrefix,
+        ack: &dds_rtps::AckNack,
+        reply_to: &Locator,
+    ) -> Result<(), String> {
+        let is_publications = ack.writer_id == EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER;
+        let is_subscriptions = ack.writer_id == EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER;
+        if !is_publications && !is_subscriptions {
+            return Ok(());
+        }
+
+        let mut endpoints: Vec<&DiscoveredEndpoint> = self
+            .local_endpoints
+            .values()
+            .filter(|ep| {
+                if is_publications {
+                    ep.qos_writer.is_some()
+                } else {
+                    ep.qos_reader.is_some()
+                }
+            })
+            .collect();
+        endpoints.sort_by_key(|ep| ep.guid.to_bytes());
+
+        for endpoint in endpoints {
+            let sn = self.sedp_sn_for_endpoint(endpoint);
+            if !ack.reader_sn_state.is_empty() && !ack.reader_sn_state.contains(&sn) {
+                continue;
+            }
+            self.send_sedp_endpoint_directed(
+                transport,
+                domain_id,
+                endpoint,
+                reply_to,
+                remote_prefix,
+                ack.reader_id,
+                sn,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn send_sedp_endpoint_directed(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        domain_id: u32,
+        endpoint: &DiscoveredEndpoint,
+        dest: &Locator,
+        remote_prefix: GuidPrefix,
+        directed_reader: EntityId,
+        writer_sn: SequenceNumber,
+    ) -> Result<(), String> {
+        use bytes::Bytes;
+        use dds_rtps::{serialize_rtps_message, Data, Endianness, InfoDst, Submessage};
+
+        let payload = sedp_to_plcdr(endpoint, domain_id).map_err(|e| format!("{e:?}"))?;
+        let writer_id = if endpoint.qos_writer.is_some() {
+            EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
+        } else {
+            EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+        };
+        let data_sub = Data {
+            reader_id: directed_reader,
+            writer_id,
+            writer_sn,
+            inline_qos: None,
+            serialized_payload: Bytes::from(payload),
+        };
+        let header = dds_rtps::RtpsHeader::new(self.local_prefix);
+        let msg = serialize_rtps_message(
+            &header,
+            &[
+                Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                Submessage::Data(data_sub),
+            ],
+            Endianness::LittleEndian,
+        );
+        transport.send(&msg, dest).map_err(|e| format!("{e:?}"))
+    }
+
+    fn send_sedp_heartbeat(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        writer_id: EntityId,
+        directed_reader: EntityId,
+        remote_prefix: GuidPrefix,
+        dest: &Locator,
+        first_sn: SequenceNumber,
+        last_sn: SequenceNumber,
+        count: i32,
+    ) -> Result<(), String> {
+        use dds_rtps::{serialize_rtps_message, Endianness, Heartbeat, InfoDst, RtpsHeader, Submessage};
+
+        if last_sn.0 < first_sn.0 {
+            return Ok(());
+        }
+        let hb = Heartbeat {
+            reader_id: directed_reader,
+            writer_id,
+            first_sn,
+            last_sn,
+            count,
+            flags: dds_rtps::FLAG_FINAL,
+        };
+        let header = RtpsHeader::new(self.local_prefix);
+        let msg = serialize_rtps_message(
+            &header,
+            &[
+                Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                Submessage::Heartbeat(hb),
+            ],
+            Endianness::LittleEndian,
+        );
+        transport.send(&msg, dest).map_err(|e| format!("{e:?}"))
+    }
+
+    fn sedp_writer_range(
+        &self,
+        publications: bool,
+    ) -> (SequenceNumber, SequenceNumber) {
+        let mut sns: Vec<SequenceNumber> = self
+            .local_endpoints
+            .values()
+            .filter(|ep| {
+                if publications {
+                    ep.qos_writer.is_some()
+                } else {
+                    ep.qos_reader.is_some()
+                }
+            })
+            .map(|ep| self.sedp_sn_for_endpoint(ep))
+            .collect();
+        if sns.is_empty() {
+            return (SequenceNumber(1), SequenceNumber(0));
+        }
+        sns.sort_by_key(|sn| sn.0);
+        (*sns.first().unwrap(), *sns.last().unwrap())
+    }
+
+    /// Notify a remote participant that local built-in SEDP writers have samples.
+    pub fn announce_sedp_heartbeats_to_participant(
+        &self,
+        transport: &Arc<dds_rtps::UdpTransport>,
+        remote_prefix: GuidPrefix,
+        participant: &DiscoveredParticipant,
+    ) {
+        static PUB_HB_COUNT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+        static SUB_HB_COUNT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+        let (pub_first, pub_last) = self.sedp_writer_range(true);
+        let (sub_first, sub_last) = self.sedp_writer_range(false);
+        for dest in Self::sedp_request_destinations(participant) {
+            if pub_last.0 >= pub_first.0 {
+                let _ = self.send_sedp_heartbeat(
+                    transport,
+                    EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER,
+                    EntityId::SEDP_BUILTIN_PUBLICATIONS_READER,
+                    remote_prefix,
+                    &dest,
+                    pub_first,
+                    pub_last,
+                    PUB_HB_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                );
+            }
+            if sub_last.0 >= sub_first.0 {
+                let _ = self.send_sedp_heartbeat(
+                    transport,
+                    EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER,
+                    EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER,
+                    remote_prefix,
+                    &dest,
+                    sub_first,
+                    sub_last,
+                    SUB_HB_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                );
+            }
+        }
+    }
+
     /// Spawn a background thread that periodically re-announces all local endpoints via SEDP.
     pub fn spawn_sedp_announcer(
         discovery: Arc<std::sync::Mutex<Self>>,
@@ -591,32 +876,30 @@ impl DiscoveryManager {
         domain_id: u32,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || loop {
-            let (endpoints, remote_unicasts) = {
+            let (endpoints, remote_participants) = {
                 let disc = discovery.lock().unwrap();
                 let endpoints: Vec<DiscoveredEndpoint> =
                     disc.local_endpoints.values().cloned().collect();
-                let remote_unicasts: Vec<Locator> = disc
+                let remote_participants: Vec<(GuidPrefix, DiscoveredParticipant)> = disc
                     .discovered_participants
-                    .values()
-                    .filter_map(|p| {
-                        p.metatraffic_unicast_locators
-                            .first()
-                            .or_else(|| p.unicast_locators.first())
-                            .copied()
-                    })
+                    .iter()
+                    .map(|(prefix, participant)| (*prefix, participant.clone()))
                     .collect();
-                (endpoints, remote_unicasts)
+                (endpoints, remote_participants)
             };
             for endpoint in &endpoints {
                 let disc = discovery.lock().unwrap();
-                let _ = disc.send_sedp_endpoint(
+                let _ = disc.announce_sedp_endpoint(
                     &transport,
                     domain_id,
                     endpoint,
                     &metatraffic_multicast_locator(domain_id),
                 );
-                for dest in &remote_unicasts {
-                    let _ = disc.send_sedp_endpoint(&transport, domain_id, endpoint, dest);
+                for (remote_prefix, participant) in &remote_participants {
+                    for dest in DiscoveryManager::sedp_request_destinations(participant) {
+                        let _ = disc.announce_sedp_endpoint(&transport, domain_id, endpoint, &dest);
+                    }
+                    disc.request_remote_sedp_for_participant(&transport, *remote_prefix, participant);
                 }
             }
             std::thread::sleep(interval);
@@ -1293,55 +1576,35 @@ fn apply_liveliness_param(
 /// Serializes a `DiscoveredEndpoint` to a PL-CDR parameter list.
 pub fn sedp_to_plcdr(
     endpoint: &DiscoveredEndpoint,
-    domain_id: u32,
+    _domain_id: u32,
 ) -> dds_cdr::CdrResult<Vec<u8>> {
     let mut parameters = Vec::new();
 
-    append_protocol_vendor_domain(&mut parameters, domain_id);
-    append_participant_guid(&mut parameters, endpoint.guid.prefix);
-
     append_plcdr_string(&mut parameters, PID_TOPIC_NAME, &endpoint.topic_name);
+    if let Some(ref wire) = endpoint.type_information_wire {
+        append_type_information_param(&mut parameters, wire);
+    }
     append_plcdr_string(&mut parameters, PID_TYPE_NAME, &endpoint.type_name);
+
+    if let Some(ref qos) = endpoint.qos_writer {
+        append_reliability_qos(&mut parameters, &qos.reliability);
+    } else if let Some(ref qos) = endpoint.qos_reader {
+        append_reliability_qos(&mut parameters, &qos.reliability);
+    }
+
+    append_data_representation_qos(&mut parameters);
 
     let mut guid_bytes = Vec::with_capacity(16);
     guid_bytes.extend_from_slice(&endpoint.guid.prefix.0);
     guid_bytes.extend_from_slice(&endpoint.guid.entity_id.0);
     parameters.push((PID_ENDPOINT_GUID, guid_bytes));
 
-    for locator in &endpoint.unicast_locators {
-        append_locator_param(&mut parameters, PID_UNICAST_LOCATOR, locator);
-        append_locator_param(&mut parameters, PID_DEFAULT_UNICAST_LOCATOR, locator);
-    }
-    for locator in &endpoint.metatraffic_unicast_locators {
-        append_locator_param(&mut parameters, PID_METATRAFFIC_UNICAST_LOCATOR, locator);
-    }
     for locator in &endpoint.multicast_locators {
         append_locator_param(&mut parameters, PID_MULTICAST_LOCATOR, locator);
-        append_locator_param(&mut parameters, PID_DEFAULT_MULTICAST_LOCATOR, locator);
-        append_locator_param(&mut parameters, PID_METATRAFFIC_MULTICAST_LOCATOR, locator);
     }
-
-    if let Some(ref qos) = endpoint.qos_writer {
-        append_durability_qos(&mut parameters, qos.durability.kind);
-        append_reliability_qos(&mut parameters, &qos.reliability);
-        append_history_qos(&mut parameters, &qos.history);
-        append_liveliness_qos(&mut parameters, &qos.liveliness);
-    } else if let Some(ref qos) = endpoint.qos_reader {
-        append_durability_qos(&mut parameters, qos.durability.kind);
-        append_reliability_qos(&mut parameters, &qos.reliability);
-        append_history_qos(&mut parameters, &qos.history);
-        append_liveliness_qos(&mut parameters, &qos.liveliness);
-    }
-
-    if !endpoint.partition.is_empty() {
-        let mut partition_bytes = Vec::new();
-        append_plcdr_string_sequence(&mut partition_bytes, &endpoint.partition);
-        parameters.push((PID_PARTITION, partition_bytes));
-    }
-
-    append_data_representation_qos(&mut parameters);
-    if let Some(ref wire) = endpoint.type_information_wire {
-        append_type_information_param(&mut parameters, wire);
+    for locator in &endpoint.unicast_locators {
+        append_locator_param(&mut parameters, PID_UNICAST_LOCATOR, locator);
+        append_locator_param(&mut parameters, PID_UNICAST_LOCATOR, locator);
     }
 
     Ok(serialize_rtps_plcdr(&parameters))

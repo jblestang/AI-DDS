@@ -21,8 +21,22 @@ use dds::types::qos::{
     DataReaderQos, DataWriterQos, DomainParticipantQos, PublisherQos, ReliabilityKind,
     SubscriberQos, TopicQos,
 };
+use dds::types::time::Duration as DdsDuration;
 use std::sync::Arc;
 use std::time::Duration;
+
+fn snapshot_has_remote_endpoint(
+    participant: &dds::core::DomainParticipant,
+    topic_name: &str,
+    is_writer: bool,
+) -> bool {
+    let local_prefix = participant.guid_prefix();
+    participant.monitor_snapshot().endpoints.iter().any(|e| {
+        e.topic_name == topic_name
+            && e.is_writer == is_writer
+            && e.guid.prefix != local_prefix
+    })
+}
 
 pub fn skip_if_no_vendor(vendor: InteropVendor) {
     if !vendor_available(vendor) {
@@ -52,6 +66,7 @@ pub fn vendor_publishes_aidds_receives(vendor: InteropVendor) {
 
     let mut reader_qos = DataReaderQos::default();
     reader_qos.reliability.kind = ReliabilityKind::Reliable;
+    reader_qos.reliability.max_blocking_time = DdsDuration::INFINITE;
     let subscriber = participant.create_subscriber(SubscriberQos::default()).unwrap();
     let reader = subscriber
         .create_datareader(&topic, reader_qos, ts.clone())
@@ -118,6 +133,7 @@ pub fn aidds_publishes_vendor_receives(vendor: InteropVendor) {
     let publisher = participant.create_publisher(PublisherQos::default()).unwrap();
     let mut writer_qos = DataWriterQos::default();
     writer_qos.reliability.kind = ReliabilityKind::Reliable;
+    writer_qos.reliability.max_blocking_time = DdsDuration::INFINITE;
     let writer = publisher
         .create_datawriter(&topic, writer_qos, ts.clone())
         .unwrap();
@@ -130,11 +146,7 @@ pub fn aidds_publishes_vendor_receives(vendor: InteropVendor) {
     assert!(
         wait_until(Duration::from_secs(15), || {
             participant.run_matchmaking();
-            participant
-                .monitor_snapshot()
-                .endpoints
-                .iter()
-                .any(|e| e.topic_name == INTEROP_TOPIC && !e.is_writer)
+            snapshot_has_remote_endpoint(&participant, INTEROP_TOPIC, false)
         }),
         "AI-DDS should discover remote {} DataReader via SEDP before writing",
         vendor_display_name(vendor)
@@ -184,6 +196,7 @@ pub fn bidirectional_discovery_matchmaking(vendor: InteropVendor) {
     let publisher = participant.create_publisher(PublisherQos::default()).unwrap();
     let mut writer_qos = DataWriterQos::default();
     writer_qos.reliability.kind = ReliabilityKind::Reliable;
+    writer_qos.reliability.max_blocking_time = DdsDuration::INFINITE;
     let writer = publisher
         .create_datawriter(&topic, writer_qos, ts.clone())
         .unwrap();
@@ -194,11 +207,7 @@ pub fn bidirectional_discovery_matchmaking(vendor: InteropVendor) {
     assert!(
         wait_until(Duration::from_secs(15), || {
             participant.run_matchmaking();
-            participant
-                .monitor_snapshot()
-                .endpoints
-                .iter()
-                .any(|e| e.topic_name == INTEROP_TOPIC && !e.is_writer)
+            snapshot_has_remote_endpoint(&participant, INTEROP_TOPIC, false)
         }),
         "AI-DDS should discover remote {} DataReader via SEDP before writing",
         vendor_display_name(vendor)

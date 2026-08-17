@@ -39,6 +39,8 @@ public:
 
   void set_expect_id(CORBA::ULong id, bool enabled);
 
+  void set_received(CORBA::ULong id, const char *payload);
+
   bool received() const { return received_; }
 
   CORBA::ULong received_id() const { return received_id_; }

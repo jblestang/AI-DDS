@@ -113,8 +113,12 @@ int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
       ACE_ERROR_RETURN((LM_ERROR, "create_publisher failed\n"), EXIT_FAILURE);
     }
 
+    DDS::DataWriterQos dw_qos;
+    publisher->get_default_datawriter_qos(dw_qos);
+    dw_qos.reliability.kind = DDS::RELIABLE_RELIABILITY_QOS;
+
     DDS::DataWriter_var writer =
-      publisher->create_datawriter(topic, DATAWRITER_QOS_DEFAULT, 0, OpenDDS::DCPS::DEFAULT_STATUS_MASK);
+      publisher->create_datawriter(topic, dw_qos, 0, OpenDDS::DCPS::DEFAULT_STATUS_MASK);
     if (!writer) {
       ACE_ERROR_RETURN((LM_ERROR, "create_datawriter failed\n"), EXIT_FAILURE);
     }
@@ -127,9 +131,13 @@ int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
 
     if (interop_wait_match()) {
       wait_for_publication_match(writer);
+      ACE_OS::sleep(1);
       DDS::PublicationMatchedStatus matches;
       if (writer->get_publication_matched_status(matches) != DDS::RETCODE_OK
           || matches.current_count < 1) {
+        std::fprintf(stderr, "publication matched current=%d total=%d\n",
+                     matches.current_count, matches.total_count);
+        std::fflush(stderr);
         ACE_ERROR_RETURN((LM_ERROR, "no publication match; refusing to write\n"), EXIT_FAILURE);
       }
     }
@@ -142,11 +150,19 @@ int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
                 static_cast<unsigned long>(sample_id), payload, domain_id);
     std::fflush(stdout);
 
-    if (message_writer->write(msg, DDS::HANDLE_NIL) != DDS::RETCODE_OK) {
+    DDS::ReturnCode_t write_rc = DDS::RETCODE_ERROR;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+      write_rc = message_writer->write(msg, DDS::HANDLE_NIL);
+      if (write_rc == DDS::RETCODE_OK) {
+        break;
+      }
+      ACE_OS::sleep(ACE_Time_Value(0, 200000));
+    }
+    if (write_rc != DDS::RETCODE_OK) {
       ACE_ERROR_RETURN((LM_ERROR, "write failed\n"), EXIT_FAILURE);
     }
 
-    DDS::Duration_t ack_timeout = {5, 0};
+    DDS::Duration_t ack_timeout = {10, 0};
     message_writer->wait_for_acknowledgments(ack_timeout);
 
     ACE_OS::sleep(2);

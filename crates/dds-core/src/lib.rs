@@ -892,7 +892,12 @@ impl Publisher {
 
         let engine = RtpsEngine::new(
             rtps_writer.clone(),
-            self.transport.clone(),
+            self.hooks
+                .user_transport
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| self.transport.clone()),
             encrypt_fn,
         );
         // Dispatch every 10ms — low latency for local loopback
@@ -1143,6 +1148,7 @@ struct ParticipantHooks {
     reader_registry: Arc<Mutex<HashMap<String, Arc<DataReader>>>>,
     domain_id: u32,
     transport: Arc<UdpTransport>,
+    user_transport: Mutex<Option<Arc<UdpTransport>>>,
     unicast_port: u32,
     guid_prefix: GuidPrefix,
 }
@@ -1265,27 +1271,18 @@ impl ParticipantHooks {
         let local_readers = self.local_readers.lock().unwrap();
 
         for (remote_guid, remote_ep) in disc.discovered_endpoints() {
-            if remote_ep.guid.prefix == self.guid_prefix {
+            if disc.local_endpoints().contains_key(remote_guid) {
                 continue;
             }
             let Some(remote_participant) = disc.discovered_participants().get(&remote_ep.guid.prefix)
             else {
                 continue;
             };
-            let remote_locators = if !remote_ep.unicast_locators.is_empty() {
-                dds_discovery::DiscoveryManager::filter_valid_unicast_locators(
-                    &remote_ep.unicast_locators,
-                )
-            } else {
-                dds_discovery::DiscoveryManager::filter_valid_unicast_locators(
-                    &remote_participant.unicast_locators,
-                )
-            };
-            let Some(participant_locator) =
-                dds_discovery::DiscoveryManager::select_unicast_locator(&remote_locators)
-            else {
+            let remote_locators =
+                dds_discovery::DiscoveryManager::user_traffic_locators(remote_ep, remote_participant);
+            if remote_locators.is_empty() {
                 continue;
-            };
+            }
 
             // Remote readers -> local writers
             if let Some(ref remote_reader_qos) = remote_ep.qos_reader {
@@ -1311,7 +1308,7 @@ impl ParticipantHooks {
                         }
                         let proxy = dds_rtps::ReaderProxy {
                             remote_reader_guid: *remote_guid,
-                            unicast_locator_list: vec![participant_locator],
+                            unicast_locator_list: remote_locators.clone(),
                             multicast_locator_list: vec![],
                             next_unsent_sn: dds_types::guid::SequenceNumber(1),
                         };
@@ -1514,6 +1511,12 @@ fn ingest_remote_sedp_endpoint(
     if let std::net::SocketAddr::V4(v4) = from {
         dds_discovery::DiscoveryManager::remap_loopback_locators(&mut endpoint, *v4.ip());
     }
+    {
+        let disc = discovery.lock().unwrap();
+        if disc.local_endpoints().contains_key(&endpoint.guid) {
+            return;
+        }
+    }
     let remote_writer = Guid::new(remote_prefix, writer_id);
     sedp_received
         .lock()
@@ -1578,6 +1581,10 @@ impl DomainParticipant {
 
         let discovery = Arc::new(Mutex::new(dds_discovery::DiscoveryManager::new(guid_prefix)));
         let reader_registry = Arc::new(Mutex::new(HashMap::new()));
+        let user_port = unicast_port + (USER_UNICAST_OFFSET - SPDP_UNICAST_OFFSET) as u32;
+        let user_transport = UdpTransport::bind(user_port as u16)
+            .ok()
+            .map(Arc::new);
 
         let hooks = Arc::new(ParticipantHooks {
             discovery: discovery.clone(),
@@ -1586,6 +1593,7 @@ impl DomainParticipant {
             reader_registry: reader_registry.clone(),
             domain_id,
             transport: transport.clone(),
+            user_transport: Mutex::new(user_transport),
             unicast_port,
             guid_prefix,
         });
@@ -1966,6 +1974,21 @@ impl DomainParticipant {
                 return;
             }
             let user_port = port + (USER_UNICAST_OFFSET - SPDP_UNICAST_OFFSET) as u32;
+            let user_send_transport = hooks
+                .user_transport
+                .lock()
+                .unwrap()
+                .clone()
+                .or_else(|| {
+                    UdpTransport::bind(user_port as u16)
+                        .ok()
+                        .map(Arc::new)
+                        .inspect(|t| *hooks.user_transport.lock().unwrap() = Some(t.clone()))
+                });
+            let Some(user_send_transport) = user_send_transport else {
+                eprintln!("[spawn_receiver_loop] user port bind failed on {user_port}");
+                return;
+            };
             {
                 let registry_user = registry.clone();
                 let discovery_user = discovery.clone();
@@ -1973,14 +1996,14 @@ impl DomainParticipant {
                 let local_crypto_user = local_crypto_handle;
                 let remote_crypto_user = remote_crypto_handles.clone();
                 let user_guid_prefix = guid_prefix;
+                let user_transport = match user_send_transport.try_clone() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("[spawn_receiver_loop] user transport clone failed: {e}");
+                        return;
+                    }
+                };
                 std::thread::spawn(move || {
-                    let user_transport = match UdpTransport::bind(user_port as u16) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            eprintln!("[spawn_receiver_loop] user port bind failed on {user_port}: {e}");
-                            return;
-                        }
-                    };
                     if user_transport.set_blocking(true).is_err() {
                         return;
                     }
@@ -2583,6 +2606,21 @@ impl DomainParticipant {
                             &transport,
                         );
                     } else if let Submessage::AckNack(ack) = sub {
+                        if ack.writer_id
+                            == dds_types::guid::EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER
+                            || ack.writer_id
+                                == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
+                        {
+                            let reply_to = Locator::from_socket_addr(from);
+                            let _ = discovery.lock().unwrap().reply_to_builtin_sedp_acknack(
+                                &transport,
+                                domain_id,
+                                header.guid_prefix,
+                                &ack,
+                                &reply_to,
+                            );
+                            continue;
+                        }
                         let writer_guid = Guid::new(guid_prefix, ack.writer_id);
                         let w_reg = writer_registry.lock().unwrap();
                         if let Some(shared_writer) = w_reg.get(&writer_guid) {
@@ -2654,10 +2692,13 @@ impl DomainParticipantFactory {
         domain_id: u32,
         qos: DomainParticipantQos,
     ) -> DdsResult<DomainParticipant> {
-        // Derive a unique GUID prefix using domain_id + process id
+        // Derive a unique GUID prefix: domain + pid + AI-DDS marker + participant index.
+        // The 0xA1DD marker avoids prefix collisions with OpenDDS/FastDDS on the same host.
         let mut prefix = [0u8; 12];
         prefix[0..4].copy_from_slice(&domain_id.to_be_bytes());
         prefix[4..8].copy_from_slice(&std::process::id().to_be_bytes());
+        prefix[8] = 0xA1;
+        prefix[9] = 0xDD;
 
         // Probe for an available unicast port using a process-wide participant index.
         static NEXT_PARTICIPANT_IDX: std::sync::atomic::AtomicU32 =
@@ -2672,7 +2713,7 @@ impl DomainParticipantFactory {
                 + PARTICIPANT_ID_GAIN * (participant_idx as u16);
             if std::net::UdpSocket::bind(format!("{LOCALHOST_IP}:{port}")).is_ok() {
                 unicast_port = port;
-                prefix[8..12].copy_from_slice(&participant_idx.to_be_bytes());
+                prefix[10..12].copy_from_slice(&(participant_idx as u16).to_be_bytes());
                 break;
             }
             participant_idx += 1;

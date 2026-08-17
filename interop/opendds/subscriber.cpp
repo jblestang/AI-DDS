@@ -41,6 +41,27 @@ static int interop_timeout_ms()
   return 12000;
 }
 
+static bool try_take_sample(
+  AiDdsInterop::MessageDataReader_ptr message_reader,
+  InteropDataReaderListener *listener,
+  CORBA::ULong expect_id,
+  bool have_expect_id)
+{
+  AiDdsInterop::Message msg;
+  DDS::SampleInfo info;
+  while (message_reader->take_next_sample(msg, info) == DDS::RETCODE_OK) {
+    if (!info.valid_data) {
+      continue;
+    }
+    if (have_expect_id && msg.id != expect_id) {
+      continue;
+    }
+    listener->set_received(msg.id, msg.payload.in());
+    return true;
+  }
+  return false;
+}
+
 int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
 {
   int domain_id = interop_domain_id();
@@ -94,11 +115,41 @@ int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
       ACE_ERROR_RETURN((LM_ERROR, "create_datareader failed\n"), EXIT_FAILURE);
     }
 
+    AiDdsInterop::MessageDataReader_var message_reader =
+      AiDdsInterop::MessageDataReader::_narrow(reader);
+    if (!message_reader) {
+      ACE_ERROR_RETURN((LM_ERROR, "MessageDataReader::_narrow failed\n"), EXIT_FAILURE);
+    }
+
+    DDS::StatusCondition_var condition = reader->get_statuscondition();
+    condition->set_enabled_statuses(DDS::SUBSCRIPTION_MATCHED_STATUS);
+    DDS::WaitSet_var ws = new DDS::WaitSet;
+    ws->attach_condition(condition);
+
+    const int match_wait_ms = 15000;
+    int match_elapsed_ms = 0;
+    while (match_elapsed_ms < match_wait_ms) {
+      DDS::SubscriptionMatchedStatus status;
+      if (reader->get_subscription_matched_status(status) == DDS::RETCODE_OK
+          && status.current_count >= 1) {
+        break;
+      }
+      DDS::ConditionSeq conditions;
+      DDS::Duration_t wait_time = {0, 100000000};
+      ws->wait(conditions, wait_time);
+      match_elapsed_ms += 100;
+    }
+
     int elapsed_ms = 0;
     while (elapsed_ms < timeout_ms && !listener_impl->received()) {
+      if (try_take_sample(message_reader, listener_impl, expect_id, have_expect_id)) {
+        break;
+      }
       ACE_OS::sleep(ACE_Time_Value(0, 50000));
       elapsed_ms += 50;
     }
+
+    ws->detach_condition(condition);
 
     if (listener_impl->received()) {
       std::printf("INTEROP_RECEIVE id=%u payload=%s domain=%d\n",
