@@ -12,13 +12,13 @@ use support::shapes_vendor::{
 };
 
 #[test]
-#[ignore = "known gap: Fast DDS keyed ShapeType writer to AI-DDS reader (wire CDR parses; delivery TBD)"]
+#[ignore = "requires Fast DDS shapes binaries (see interop/README.md)"]
 fn shapes_fastdds_publishes_square_aidds_receives() {
     vendor_publishes_shapes_aidds_receives(InteropVendor::FastDds, "Square");
 }
 
 #[test]
-#[ignore = "known gap: Fast DDS keyed ShapeType writer to AI-DDS reader (wire CDR parses; delivery TBD)"]
+#[ignore = "requires Fast DDS shapes binaries (see interop/README.md)"]
 fn shapes_fastdds_all_topics_to_aidds() {
     all_shapes_topics_vendor_to_aidds(InteropVendor::FastDds);
 }

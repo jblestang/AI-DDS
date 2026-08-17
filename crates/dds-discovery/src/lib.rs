@@ -2633,6 +2633,68 @@ mod tests {
     }
 
     #[test]
+    fn test_typelookup_gettypes_rtps_wire_roundtrip() {
+        use bytes::Bytes;
+        use dds_rtps::{serialize_rtps_message, Data, Endianness, RtpsHeader, Submessage};
+        use dds_types::guid::{EntityId, Guid, GuidPrefix, SequenceNumber};
+        use dds_xtypes::{
+            make_get_types_request, serve_type_lookup_request, type_lookup_instance_name,
+            ExtensibilityKind, Member, StructureType, TypeIdentifier, TypeLookupReply, TypeObject,
+        };
+
+        let obj = TypeObject::Complete(StructureType::new(
+            "WireMessage".to_string(),
+            ExtensibilityKind::Appendable,
+            vec![
+                Member::new(
+                    "id".to_string(),
+                    TypeIdentifier::TkUint32,
+                    true,
+                    false,
+                ),
+                Member::new(
+                    "payload".to_string(),
+                    TypeIdentifier::TiString8Large { bound: 0 },
+                    false,
+                    false,
+                ),
+            ],
+        ));
+        let type_id = obj.get_identifier().expect("type id");
+        let prefix = GuidPrefix::new([1; 12]);
+        let request = make_get_types_request(
+            Guid::new(prefix, EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER),
+            SequenceNumber::new(1),
+            type_lookup_instance_name(&prefix),
+            vec![type_id.clone()],
+        );
+        let mut db = std::collections::HashMap::new();
+        db.insert(type_id, obj.clone());
+        let reply = serve_type_lookup_request(&request, &db);
+        let wire = reply.to_wire_bytes().expect("reply wire");
+
+        let data = Data {
+            reader_id: EntityId::UNKNOWN,
+            writer_id: EntityId::BUILTIN_TYPE_LOOKUP_REPLY_DATA_WRITER,
+            writer_sn: SequenceNumber::new(1),
+            inline_qos: None,
+            serialized_payload: Bytes::from(wire.clone()),
+        };
+        let msg = serialize_rtps_message(
+            &RtpsHeader::new(prefix),
+            &[Submessage::Data(data)],
+            Endianness::LittleEndian,
+        );
+        let (_, subs) = dds_rtps::parse_rtps_message(&msg).expect("parse");
+        let payload = match &subs[0] {
+            Submessage::Data(d) => d.serialized_payload.to_vec(),
+            other => panic!("expected Data, got {other:?}"),
+        };
+        assert_eq!(payload, wire, "RTPS roundtrip must preserve TypeLookup payload");
+        TypeLookupReply::from_wire_bytes(&payload).expect("decode getTypes reply after RTPS");
+    }
+
+    #[test]
     fn test_monitor_snapshot() {
         let local = GuidPrefix::new([1; 12]);
         let mut manager = DiscoveryManager::new(local);

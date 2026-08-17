@@ -85,3 +85,9 @@ jobs:
           FASTDDS_PREFIX: /tmp/fastdds-install
           LD_LIBRARY_PATH: /tmp/fastdds-install/lib
         run: cargo test -p dds --test interop_fastdds -- --ignored --nocapture --test-threads=1
+
+      - name: Live Fast DDS Shapes Demo
+        env:
+          FASTDDS_PREFIX: /tmp/fastdds-install
+          LD_LIBRARY_PATH: /tmp/fastdds-install/lib
+        run: cargo test -p dds --test interop_shapes_fastdds -- --ignored --nocapture --test-threads=1
