@@ -51,7 +51,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -64,6 +63,7 @@
     clippy::separated_literal_suffix,
     reason = "CDR Serializer implementation requires standard library conversions, standard returns, and binary layout manipulation."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use byteorder::{BigEndian, ByteOrder as _, LittleEndian};
 use bytes::{BufMut as _, Bytes, BytesMut};
@@ -1107,6 +1107,8 @@ impl CdrDeserialize for dds_types::instance::InstanceHandle {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]

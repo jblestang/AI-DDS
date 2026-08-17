@@ -63,7 +63,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -76,6 +75,7 @@
     clippy::separated_literal_suffix,
     reason = "DDS Types implementation requires standard library conversions, standard returns, and spec-defined structures."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 pub mod builtin_topics;
 pub mod guid;

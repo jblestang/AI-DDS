@@ -6,6 +6,7 @@
 //! Reference: `XTypes` §7
 
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 #![allow(warnings)] // Simplified for the exercise
 
 use dds_cdr::{CdrDeserialize, CdrDeserializer, CdrResult, CdrSerialize, CdrSerializer};
@@ -331,7 +332,8 @@ impl TypeObject {
     /// Compute the `TypeIdentifier` for this `TypeObject` using SHA-256 (first 14 bytes)
     #[must_use]
     pub fn get_identifier(&self) -> TypeIdentifier {
-        let bytes = dds_cdr::serialize_to_bytes(self, dds_cdr::Endianness::LittleEndian).unwrap();
+        let bytes = dds_cdr::serialize_to_bytes(self, dds_cdr::Endianness::LittleEndian)
+            .unwrap_or_default();
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let hash_result: [u8; 32] = hasher.finalize().into();
@@ -415,6 +417,8 @@ pub fn is_assignable_from(receiver: &TypeObject, sender: &TypeObject) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]

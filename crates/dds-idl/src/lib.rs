@@ -49,7 +49,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -62,6 +61,7 @@
     clippy::separated_literal_suffix,
     reason = "IDL Parser implementation requires standard library conversions, standard returns, and parser parsing loops."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use nom::{
     bytes::complete::{tag, take_while1},
@@ -553,6 +553,8 @@ pub fn parse_idl(input: &str) -> Result<Vec<AstNode>, String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]

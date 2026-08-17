@@ -7,7 +7,7 @@
 #[must_use]
 pub fn hashid(name: &str) -> u32 {
     let digest = md5::compute(name.as_bytes());
-    let bytes: [u8; 4] = digest.0[0..4].try_into().expect("md5 digest length");
+    let bytes = [digest.0[0], digest.0[1], digest.0[2], digest.0[3]];
     u32::from_le_bytes(bytes) & 0x0FFF_FFFF
 }
 
@@ -34,6 +34,8 @@ pub const MEMBER_DEPENDENT_TYPEIDS: u32 = 0x0BA_4DFC9;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]
