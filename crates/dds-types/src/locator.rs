@@ -63,10 +63,17 @@ pub struct Locator {
 impl Locator {
     /// An invalid/unset locator — sentinel value.
     pub const INVALID: Self = Self {
+        address: [0; 16],
         kind: Kind::Invalid,
         port: 0,
-        address: [0; 16],
     };
+
+    /// Create a locator from wire-format fields.
+    #[must_use]
+    #[inline]
+    pub const fn from_raw(kind: Kind, port: u32, address: [u8; 16]) -> Self {
+        return Self { address, kind, port };
+    }
 
     /// Create a Locator from a `std::net::SocketAddr`.
     #[must_use]
@@ -140,9 +147,9 @@ impl Locator {
         let octets = addr.octets();
         address[12..16].copy_from_slice(&octets);
         return Self {
+            address,
             kind: Kind::UdpV4,
             port,
-            address,
         }
     }
 
@@ -151,9 +158,9 @@ impl Locator {
     #[inline]
     pub const fn udpv6(addr: Ipv6Addr, port: u32) -> Self {
         return Self {
+            address: addr.octets(),
             kind: Kind::UdpV6,
             port,
-            address: addr.octets(),
         }
     }
 
@@ -189,6 +196,8 @@ impl fmt::Display for Locator {
         }
     }
 }
+
+pub type LocatorKind = Kind;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests

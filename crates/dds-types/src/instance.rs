@@ -23,6 +23,13 @@ impl Handle {
     /// The nil handle — used for keyless topics or as a sentinel.
     pub const NIL: Self = Self([0; 16]);
 
+    /// Returns the raw byte representation.
+    #[must_use]
+    #[inline]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        return &self.0
+    }
+
     /// Compute an instance handle from serialized key bytes.
     ///
     /// If the key is ≤ 16 bytes, it is used directly (zero-padded).
@@ -107,6 +114,8 @@ impl Default for Handle {
         return Self::NIL
     }
 }
+
+pub type InstanceHandle = Handle;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests
