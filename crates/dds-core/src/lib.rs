@@ -54,7 +54,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -67,6 +66,7 @@
     clippy::separated_literal_suffix,
     reason = "DDS Core implementation requires standard library conversions, standard returns, and type erasure mechanics."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use dds_rtps::{
     CacheChange, ChangeKind, RtpsEngine,
@@ -79,6 +79,7 @@ use dds_types::qos::{
     DataReaderQos, DataWriterQos, DomainParticipantQos, PublisherQos, SubscriberQos, TopicQos,
 };
 use dds_types::return_code::{DdsError, DdsResult};
+use dds_types::sync::lock;
 use dds_security::{Authentication, Cryptography};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -260,7 +261,7 @@ impl DataWriter {
         let serialized = self.type_support.serialize(value)?;
         let key_hash = self.type_support.get_key_hash(value)?;
         if !key_hash.is_nil() {
-            let instances = self.registered_instances.lock().unwrap();
+            let instances = lock(&self.registered_instances);
             if !instances.contains_key(&key_hash) {
                 return Err(DdsError::PreconditionNotMet(
                     "instance not registered".into(),
@@ -272,7 +273,7 @@ impl DataWriter {
         }
 
         let sn = {
-            let mut sn = self.next_sn.lock().unwrap();
+            let mut sn = lock(&self.next_sn);
             let current = *sn;
             *sn = SequenceNumber(sn.0 + 1);
             current
@@ -287,18 +288,18 @@ impl DataWriter {
             source_timestamp: None,
         };
 
-        let mut w = self.rtps_writer.lock().unwrap();
+        let mut w = lock(&self.rtps_writer);
         if !w.writer_cache.add_change(change) {
             return Err(DdsError::OutOfResources("writer history cache full".into()));
         }
         w.last_change_sequence_number = sn;
 
         if self.qos.liveliness.kind != dds_types::qos::LivelinessKind::ManualByParticipant {
-            *self.last_liveliness_assertion.lock().unwrap() = std::time::Instant::now();
+            *lock(&self.last_liveliness_assertion) = std::time::Instant::now();
         }
 
         if self.qos.durability.kind != dds_types::qos::DurabilityKind::Volatile {
-            let mut cache = self.durability_cache.lock().unwrap();
+            let mut cache = lock(&self.durability_cache);
             cache.push((key_hash, serialized, sn));
             if matches!(self.qos.history.kind, dds_types::qos::HistoryKind::KeepLast) {
                 while cache.len() > self.qos.history.depth as usize {
@@ -319,7 +320,7 @@ impl DataWriter {
         if !self.is_enabled.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(DdsError::NotEnabled);
         }
-        *self.last_liveliness_assertion.lock().unwrap() = std::time::Instant::now();
+        *lock(&self.last_liveliness_assertion) = std::time::Instant::now();
         Ok(())
     }
 
@@ -338,11 +339,11 @@ impl DataWriter {
         ) {
             return;
         }
-        let last = *self.last_liveliness_assertion.lock().unwrap();
+        let last = *lock(&self.last_liveliness_assertion);
         if std::time::Instant::now().duration_since(last) > std_lease {
-            let mut lost_count = self.liveliness_lost_count.lock().unwrap();
+            let mut lost_count = lock(&self.liveliness_lost_count);
             *lost_count += 1;
-            if let Some(listener) = self.listener.lock().unwrap().as_ref() {
+            if let Some(listener) = lock(&self.listener).as_ref() {
                 listener.on_liveliness_lost(
                     self,
                     dds_types::status::LivelinessLostStatus {
@@ -351,14 +352,14 @@ impl DataWriter {
                     },
                 );
             }
-            *self.last_liveliness_assertion.lock().unwrap() = std::time::Instant::now();
+            *lock(&self.last_liveliness_assertion) = std::time::Instant::now();
         }
     }
 
     /// Return cached samples for durability service (TransientLocal late joiners).
     #[must_use]
     pub fn durability_samples(&self) -> Vec<(dds_types::instance::InstanceHandle, Vec<u8>, SequenceNumber)> {
-        self.durability_cache.lock().unwrap().clone()
+        lock(&self.durability_cache).clone()
     }
 
     /// Register a keyed instance before writing samples for it.
@@ -367,16 +368,14 @@ impl DataWriter {
         if handle.is_nil() {
             return Err(DdsError::BadParameter("type has no key".into()));
         }
-        self.registered_instances
-            .lock()
-            .unwrap()
+        lock(&self.registered_instances)
             .insert(handle, InstanceState::Alive);
         Ok(handle)
     }
 
     /// Mark an instance as disposed (DCPS dispose).
     pub fn dispose(&self, handle: dds_types::instance::InstanceHandle) -> DdsResult<()> {
-        let mut instances = self.registered_instances.lock().unwrap();
+        let mut instances = lock(&self.registered_instances);
         if instances.get(&handle) != Some(&InstanceState::Alive) {
             return Err(DdsError::PreconditionNotMet("instance not alive".into()));
         }
@@ -386,7 +385,7 @@ impl DataWriter {
 
     /// Unregister an instance (DCPS unregister_instance).
     pub fn unregister_instance(&self, handle: dds_types::instance::InstanceHandle) -> DdsResult<()> {
-        let mut instances = self.registered_instances.lock().unwrap();
+        let mut instances = lock(&self.registered_instances);
         if instances.remove(&handle).is_none() {
             return Err(DdsError::PreconditionNotMet("instance not registered".into()));
         }
@@ -395,7 +394,7 @@ impl DataWriter {
 
     /// Set a listener to receive callbacks.
     pub fn set_listener(&self, listener: Option<Arc<dyn DataWriterListener>>) {
-        let mut l = self.listener.lock().unwrap();
+        let mut l = lock(&self.listener);
         *l = listener;
     }
 
@@ -477,7 +476,7 @@ impl DataReader {
             return Err(DdsError::NotEnabled);
         }
         self.expire_lifespan_samples();
-        let samples = self.samples.lock().unwrap();
+        let samples = lock(&self.samples);
         let sample = samples
             .iter()
             .find(|s| !s.taken)
@@ -492,7 +491,7 @@ impl DataReader {
             return Err(DdsError::NotEnabled);
         }
         self.expire_lifespan_samples();
-        let mut samples = self.samples.lock().unwrap();
+        let mut samples = lock(&self.samples);
         let idx = samples.iter().position(|s| !s.taken).ok_or(DdsError::NoData)?;
         let sample = &mut samples[idx];
         let info = sample.sample_info;
@@ -515,7 +514,7 @@ impl DataReader {
         }
         let std_lifespan = std::time::Duration::new(lifespan.seconds.max(0) as u64, lifespan.nanoseconds);
         let now = std::time::Instant::now();
-        let mut samples = self.samples.lock().unwrap();
+        let mut samples = lock(&self.samples);
         samples.retain(|s| {
             if let Some(t) = s.received_at {
                 now.duration_since(t) <= std_lifespan
@@ -527,26 +526,24 @@ impl DataReader {
 
     /// Set a listener to receive callbacks.
     pub fn set_listener(&self, listener: Option<Arc<dyn DataReaderListener>>) {
-        let mut l = self.listener.lock().unwrap();
+        let mut l = lock(&self.listener);
         *l = listener;
     }
 
     /// Record that a matched writer is still alive (DATA, Heartbeat, or matchmaking).
     pub fn note_writer_liveliness(&self, writer_guid: Guid) {
         let now = std::time::Instant::now();
-        self.writer_liveliness_last
-            .lock()
-            .unwrap()
+        lock(&self.writer_liveliness_last)
             .insert(writer_guid, now);
 
-        let mut alive_map = self.writer_is_alive.lock().unwrap();
+        let mut alive_map = lock(&self.writer_is_alive);
         let was_alive = alive_map.get(&writer_guid).copied().unwrap_or(false);
         if !was_alive {
             alive_map.insert(writer_guid, true);
-            let mut alive_count = self.alive_writer_count.lock().unwrap();
+            let mut alive_count = lock(&self.alive_writer_count);
             *alive_count += 1;
             let not_alive_count = alive_map.values().filter(|alive| !**alive).count() as i32;
-            if let Some(listener) = self.listener.lock().unwrap().as_ref() {
+            if let Some(listener) = lock(&self.listener).as_ref() {
                 listener.on_liveliness_changed(
                     self,
                     dds_types::status::LivelinessChangedStatus {
@@ -574,11 +571,11 @@ impl DataReader {
             return;
         };
         let now = std::time::Instant::now();
-        let matched: Vec<Guid> = self.matched_writers.lock().unwrap().iter().copied().collect();
+        let matched: Vec<Guid> = lock(&self.matched_writers).iter().copied().collect();
         let mut expired = Vec::new();
         {
-            let last_seen = self.writer_liveliness_last.lock().unwrap();
-            let alive_map = self.writer_is_alive.lock().unwrap();
+            let last_seen = lock(&self.writer_liveliness_last);
+            let alive_map = lock(&self.writer_is_alive);
             for writer_guid in matched {
                 if alive_map.get(&writer_guid).copied().unwrap_or(false) {
                     if let Some(seen) = last_seen.get(&writer_guid) {
@@ -590,13 +587,13 @@ impl DataReader {
             }
         }
         for writer_guid in expired {
-            let mut alive_map = self.writer_is_alive.lock().unwrap();
+            let mut alive_map = lock(&self.writer_is_alive);
             if alive_map.get(&writer_guid).copied().unwrap_or(false) {
                 alive_map.insert(writer_guid, false);
-                let mut alive_count = self.alive_writer_count.lock().unwrap();
+                let mut alive_count = lock(&self.alive_writer_count);
                 *alive_count = (*alive_count - 1).max(0);
                 let not_alive_count = alive_map.values().filter(|alive| !**alive).count() as i32;
-                if let Some(listener) = self.listener.lock().unwrap().as_ref() {
+                if let Some(listener) = lock(&self.listener).as_ref() {
                     listener.on_liveliness_changed(
                         self,
                         dds_types::status::LivelinessChangedStatus {
@@ -630,7 +627,7 @@ impl DataReader {
         }
         let now = std::time::Instant::now();
         {
-            let mut last_rx = self.last_received_time.lock().unwrap();
+            let mut last_rx = lock(&self.last_received_time);
             let min_sep = self.qos.time_based_filter.minimum_separation;
             if let Some(t) = *last_rx {
                 if min_sep != dds_types::time::Duration::ZERO 
@@ -646,7 +643,7 @@ impl DataReader {
         }
 
         {
-            let mut samples = self.samples.lock().unwrap();
+            let mut samples = lock(&self.samples);
 
             if self.qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && samples.len() >= self.qos.resource_limits.max_samples_per_instance as usize
@@ -678,7 +675,7 @@ impl DataReader {
         }
 
         // Trigger listener callback if registered
-        let listener_opt = self.listener.lock().unwrap().clone();
+        let listener_opt = lock(&self.listener).clone();
         if let Some(listener) = listener_opt {
             listener.on_data_available(self);
         }
@@ -711,7 +708,7 @@ impl DataReader {
     }
 
     pub fn next_acknack_count(&self) -> i32 {
-        let mut count = self.acknack_count.lock().unwrap();
+        let mut count = lock(&self.acknack_count);
         *count += 1;
         *count
     }
@@ -725,7 +722,7 @@ impl DataReader {
     ) {
         self.note_writer_liveliness(writer_guid);
         {
-            let mut received = self.received_sns.lock().unwrap();
+            let mut received = lock(&self.received_sns);
             received.insert(sn);
         }
         if !self.is_enabled.load(std::sync::atomic::Ordering::SeqCst) {
@@ -733,7 +730,7 @@ impl DataReader {
         }
         let now = std::time::Instant::now();
         {
-            let mut last_rx = self.last_received_time.lock().unwrap();
+            let mut last_rx = lock(&self.last_received_time);
             let min_sep = self.qos.time_based_filter.minimum_separation;
             if let Some(t) = *last_rx {
                 if min_sep != dds_types::time::Duration::ZERO
@@ -748,7 +745,7 @@ impl DataReader {
             *last_rx = Some(now);
         }
         {
-            let mut samples = self.samples.lock().unwrap();
+            let mut samples = lock(&self.samples);
             if self.qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && samples.len() >= self.qos.resource_limits.max_samples_per_instance as usize
             {
@@ -775,7 +772,7 @@ impl DataReader {
                 }
             }
         }
-        let listener_opt = self.listener.lock().unwrap().clone();
+        let listener_opt = lock(&self.listener).clone();
         if let Some(listener) = listener_opt {
             listener.on_data_available(self);
         }
@@ -819,7 +816,7 @@ impl Publisher {
 
     /// Deletes a DataWriter created by this Publisher.
     pub fn delete_datawriter(&self, guid: &Guid) -> DdsResult<()> {
-        let mut writers = self.writers.lock().unwrap();
+        let mut writers = lock(&self.writers);
         if writers.remove(guid).is_some() {
             Ok(())
         } else {
@@ -845,7 +842,7 @@ impl Publisher {
             }
         }
 
-        let mut writers = self.writers.lock().unwrap();
+        let mut writers = lock(&self.writers);
         let entity_kind = if type_support.is_keyless() {
             EntityKind::WriterNoKey
         } else {
@@ -866,9 +863,7 @@ impl Publisher {
             qos.history.depth,
             qos.resource_limits.max_samples_per_instance,
         )));
-        self.writer_registry
-            .lock()
-            .unwrap()
+        lock(&self.writer_registry)
             .insert(writer_guid, rtps_writer.clone());
 
         let sec_crypto = self.security_crypto.clone();
@@ -876,7 +871,7 @@ impl Publisher {
         let rem_crypto_handles = self.remote_crypto_handles.clone();
 
         let encrypt_fn: Option<Arc<dyn Fn(&[u8], GuidPrefix) -> Option<Vec<u8>> + Send + Sync>> = Some(Arc::new(move |raw_bytes, remote_prefix| {
-            let opt_remote_crypto = rem_crypto_handles.lock().unwrap().get(&remote_prefix).copied();
+            let opt_remote_crypto = lock(&rem_crypto_handles).get(&remote_prefix).copied();
             if let Some(remote_crypto_handle) = opt_remote_crypto {
                 if let Ok((enc_bytes, h, f)) = sec_crypto.encrypt_payload(raw_bytes, &loc_crypto_handle, &remote_crypto_handle) {
                     let mut contig = Vec::with_capacity(28 + enc_bytes.len() + 16);
@@ -892,10 +887,7 @@ impl Publisher {
 
         let engine = RtpsEngine::new(
             rtps_writer.clone(),
-            self.hooks
-                .user_transport
-                .lock()
-                .unwrap()
+            lock(&self.hooks.user_transport)
                 .clone()
                 .unwrap_or_else(|| self.transport.clone()),
             encrypt_fn,
@@ -957,7 +949,7 @@ impl Publisher {
             return;
         }
 
-        let writers = self.writers.lock().unwrap();
+        let writers = lock(&self.writers);
         for writer in writers.values() {
             if writer.topic.name() == topic_name {
                 let proxy = dds_rtps::ReaderProxy {
@@ -966,7 +958,7 @@ impl Publisher {
                     multicast_locator_list: vec![],
                     next_unsent_sn: SequenceNumber(1),
                 };
-                writer.rtps_writer.lock().unwrap().matched_reader_add(proxy);
+                lock(&writer.rtps_writer).matched_reader_add(proxy);
             }
         }
     }
@@ -1010,7 +1002,7 @@ impl Subscriber {
 
     /// Deletes a DataReader created by this Subscriber.
     pub fn delete_datareader(&self, guid: &Guid) -> DdsResult<()> {
-        let mut readers = self.readers.lock().unwrap();
+        let mut readers = lock(&self.readers);
         if readers.remove(guid).is_some() {
             Ok(())
         } else {
@@ -1036,7 +1028,7 @@ impl Subscriber {
             }
         }
 
-        let mut readers = self.readers.lock().unwrap();
+        let mut readers = lock(&self.readers);
         let entity_kind = if type_support.is_keyless() {
             EntityKind::ReaderNoKey
         } else {
@@ -1070,9 +1062,7 @@ impl Subscriber {
 
         readers.insert(reader_guid, reader.clone());
         // Register so the receive loop can find this reader by topic
-        self.reader_registry
-            .lock()
-            .unwrap()
+        lock(&self.reader_registry)
             .insert(topic.name().to_owned(), reader.clone());
         self.hooks.register_reader(reader.clone(), &self.qos.partition);
         Ok(reader)
@@ -1214,7 +1204,7 @@ impl ParticipantHooks {
                 .type_information_wire()
                 .map(|b| b.to_vec()),
         };
-        let mut disc = self.discovery.lock().unwrap();
+        let mut disc = lock(&self.discovery);
         disc.register_local_endpoint(endpoint.clone());
         let _ = disc.announce_endpoint(&self.transport, self.domain_id, &endpoint);
         drop(disc);
@@ -1237,16 +1227,16 @@ impl ParticipantHooks {
                 .type_information_wire()
                 .map(|b| b.to_vec()),
         };
-        let mut disc = self.discovery.lock().unwrap();
+        let mut disc = lock(&self.discovery);
         disc.register_local_endpoint(endpoint.clone());
         let _ = disc.announce_endpoint(&self.transport, self.domain_id, &endpoint);
         drop(disc);
-        self.local_readers.lock().unwrap().push(reader);
+        lock(&self.local_readers).push(reader);
         self.run_matchmaking();
     }
 
     fn publish_builtin_endpoint(&self, endpoint: &dds_discovery::DiscoveredEndpoint) {
-        let reg = self.reader_registry.lock().unwrap();
+        let reg = lock(&self.reader_registry);
         let builtin_topic = if endpoint.qos_writer.is_some() {
             dds_types::builtin_topics::PUBLICATION_TOPIC_NAME
         } else {
@@ -1266,9 +1256,9 @@ impl ParticipantHooks {
     }
 
     fn run_matchmaking(&self) {
-        let disc = self.discovery.lock().unwrap();
-        let publishers = self.publishers.lock().unwrap();
-        let local_readers = self.local_readers.lock().unwrap();
+        let disc = lock(&self.discovery);
+        let publishers = lock(&self.publishers);
+        let local_readers = lock(&self.local_readers);
 
         for (remote_guid, remote_ep) in disc.discovered_endpoints() {
             if disc.local_endpoints().contains_key(remote_guid) {
@@ -1290,7 +1280,7 @@ impl ParticipantHooks {
                     if !check_partition_compatibility(&remote_ep.partition, &publisher.qos().partition) {
                         continue;
                     }
-                    let writers = publisher.writers.lock().unwrap();
+                    let writers = lock(&publisher.writers);
                     for writer in writers.values() {
                         if writer.topic().name() != remote_ep.topic_name
                             || writer.topic().type_name() != remote_ep.type_name
@@ -1298,7 +1288,7 @@ impl ParticipantHooks {
                         {
                             continue;
                         }
-                        let mut rtps_writer = writer.rtps_writer.lock().unwrap();
+                        let mut rtps_writer = lock(&writer.rtps_writer);
                         let already_matched = rtps_writer
                             .reader_proxies
                             .iter()
@@ -1323,9 +1313,9 @@ impl ParticipantHooks {
                             rtps_writer.reader_proxies[proxy_idx].next_unsent_sn = new_sn;
                         }
 
-                        let mut matched_count = writer.publication_matched_count.lock().unwrap();
+                        let mut matched_count = lock(&writer.publication_matched_count);
                         *matched_count += 1;
-                        if let Some(listener) = writer.listener.lock().unwrap().as_ref() {
+                        if let Some(listener) = lock(&writer.listener).as_ref() {
                             listener.on_publication_matched(
                                 writer,
                                 dds_types::status::PublicationMatchedStatus {
@@ -1356,7 +1346,7 @@ impl ParticipantHooks {
                     {
                         continue;
                     }
-                    let mut matched = reader.matched_writers.lock().unwrap();
+                    let mut matched = lock(&reader.matched_writers);
                     if matched.contains(remote_guid) {
                         continue;
                     }
@@ -1364,9 +1354,9 @@ impl ParticipantHooks {
                     drop(matched);
                     reader.note_writer_liveliness(*remote_guid);
 
-                    let mut sub_count = reader.publication_matched_count.lock().unwrap();
+                    let mut sub_count = lock(&reader.publication_matched_count);
                     *sub_count += 1;
-                    if let Some(listener) = reader.listener.lock().unwrap().as_ref() {
+                    if let Some(listener) = lock(&reader.listener).as_ref() {
                         listener.on_subscription_matched(
                             reader,
                             dds_types::status::SubscriptionMatchedStatus {
@@ -1390,10 +1380,10 @@ impl ParticipantHooks {
         for (_prefix, endpoints) in removed {
             for (remote_guid, remote_ep) in endpoints {
                 if remote_ep.qos_reader.is_some() {
-                    for publisher in self.publishers.lock().unwrap().iter() {
-                        for writer in publisher.writers.lock().unwrap().values() {
+                    for publisher in lock(&self.publishers).iter() {
+                        for writer in lock(&publisher.writers).values() {
                             let removed_proxy = {
-                                let mut rtps_writer = writer.rtps_writer.lock().unwrap();
+                                let mut rtps_writer = lock(&writer.rtps_writer);
                                 let had = rtps_writer
                                     .reader_proxies
                                     .iter()
@@ -1405,9 +1395,9 @@ impl ParticipantHooks {
                             };
                             if removed_proxy {
                                 let mut matched_count =
-                                    writer.publication_matched_count.lock().unwrap();
+                                    lock(&writer.publication_matched_count);
                                 *matched_count = (*matched_count - 1).max(0);
-                                if let Some(listener) = writer.listener.lock().unwrap().as_ref() {
+                                if let Some(listener) = lock(&writer.listener).as_ref() {
                                     listener.on_publication_matched(
                                         writer,
                                         dds_types::status::PublicationMatchedStatus {
@@ -1428,28 +1418,25 @@ impl ParticipantHooks {
                 }
 
                 if remote_ep.qos_writer.is_some() {
-                    for reader in self.local_readers.lock().unwrap().iter() {
+                    for reader in lock(&self.local_readers).iter() {
                         let removed_writer = {
-                            let mut matched = reader.matched_writers.lock().unwrap();
+                            let mut matched = lock(&reader.matched_writers);
                             matched.remove(&remote_guid)
                         };
                         if removed_writer {
                             {
-                                let mut alive_map = reader.writer_is_alive.lock().unwrap();
+                                let mut alive_map = lock(&reader.writer_is_alive);
                                 if alive_map.remove(&remote_guid).is_some() {
                                     let mut alive_count =
-                                        reader.alive_writer_count.lock().unwrap();
+                                        lock(&reader.alive_writer_count);
                                     *alive_count = (*alive_count - 1).max(0);
                                 }
                             }
-                            reader
-                                .writer_liveliness_last
-                                .lock()
-                                .unwrap()
+                            lock(&reader.writer_liveliness_last)
                                 .remove(&remote_guid);
-                            let mut sub_count = reader.publication_matched_count.lock().unwrap();
+                            let mut sub_count = lock(&reader.publication_matched_count);
                             *sub_count = (*sub_count - 1).max(0);
-                            if let Some(listener) = reader.listener.lock().unwrap().as_ref() {
+                            if let Some(listener) = lock(&reader.listener).as_ref() {
                                 listener.on_subscription_matched(
                                     reader,
                                     dds_types::status::SubscriptionMatchedStatus {
@@ -1472,11 +1459,11 @@ impl ParticipantHooks {
     }
 
     fn check_all_liveliness(&self) {
-        for reader in self.local_readers.lock().unwrap().iter() {
+        for reader in lock(&self.local_readers).iter() {
             reader.check_liveliness_timeouts();
         }
-        for publisher in self.publishers.lock().unwrap().iter() {
-            for writer in publisher.writers.lock().unwrap().values() {
+        for publisher in lock(&self.publishers).iter() {
+            for writer in lock(&publisher.writers).values() {
                 writer.check_liveliness_timeouts();
             }
         }
@@ -1512,21 +1499,17 @@ fn ingest_remote_sedp_endpoint(
         dds_discovery::DiscoveryManager::remap_loopback_locators(&mut endpoint, *v4.ip());
     }
     {
-        let disc = discovery.lock().unwrap();
+        let disc = lock(&discovery);
         if disc.local_endpoints().contains_key(&endpoint.guid) {
             return;
         }
     }
     let remote_writer = Guid::new(remote_prefix, writer_id);
-    sedp_received
-        .lock()
-        .unwrap()
+    lock(&sedp_received)
         .entry(remote_writer)
         .or_default()
         .insert(writer_sn);
-    discovery
-        .lock()
-        .unwrap()
+    lock(&discovery)
         .process_sedp_endpoint(endpoint.clone());
     hooks.publish_builtin_endpoint(&endpoint);
     hooks.run_matchmaking();
@@ -1601,7 +1584,7 @@ impl DomainParticipant {
         if qos.entity_factory.autoenable_created_entities {
             let (default_unicast, metatraffic_unicast, multicast) = hooks.spdp_locators();
             {
-                let disc = discovery.lock().unwrap();
+                let disc = lock(&discovery);
                 let _ = disc.announce_local_participant(
                     &transport,
                     domain_id,
@@ -1669,7 +1652,7 @@ impl DomainParticipant {
         let was_enabled = self.is_enabled.swap(true, std::sync::atomic::Ordering::SeqCst);
         if !was_enabled {
             let (default_unicast, metatraffic_unicast, multicast) = self.hooks.spdp_locators();
-            let discovery = self.discovery.lock().unwrap();
+            let discovery = lock(&self.discovery);
             discovery.spawn_spdp_announcer(
                 std::time::Duration::from_secs(1),
                 self.transport.clone(),
@@ -1698,7 +1681,7 @@ impl DomainParticipant {
 
     /// Deletes a Topic created by this DomainParticipant.
     pub fn delete_topic(&self, name: &str) -> DdsResult<()> {
-        let mut topics = self.topics.lock().unwrap();
+        let mut topics = lock(&self.topics);
         if topics.remove(name).is_some() {
             Ok(())
         } else {
@@ -1708,8 +1691,8 @@ impl DomainParticipant {
 
     /// Deletes a Publisher created by this DomainParticipant.
     pub fn delete_publisher(&self, publisher: &Arc<Publisher>) -> DdsResult<()> {
-        let writers = publisher.writers.lock().unwrap();
-        let mut reg = self.writer_registry.lock().unwrap();
+        let writers = lock(&publisher.writers);
+        let mut reg = lock(&self.writer_registry);
         for (guid, _) in writers.iter() {
             reg.remove(guid);
         }
@@ -1718,8 +1701,8 @@ impl DomainParticipant {
 
     /// Deletes a Subscriber created by this DomainParticipant.
     pub fn delete_subscriber(&self, subscriber: &Subscriber) -> DdsResult<()> {
-        let readers = subscriber.readers.lock().unwrap();
-        let mut reg = self.reader_registry.lock().unwrap();
+        let readers = lock(&subscriber.readers);
+        let mut reg = lock(&self.reader_registry);
         for (_, reader) in readers.iter() {
             reg.remove(reader.topic.name());
         }
@@ -1743,14 +1726,14 @@ impl DomainParticipant {
 
     /// Register a type support helper.
     pub fn register_type(&self, name: &str, type_support: Arc<dyn TypeSupport>) -> DdsResult<()> {
-        let mut types = self.types.lock().unwrap();
+        let mut types = lock(&self.types);
         types.insert(name.to_owned(), type_support);
         Ok(())
     }
 
     /// Create a Topic.
     pub fn create_topic(&self, name: &str, type_name: &str, qos: TopicQos) -> DdsResult<Topic> {
-        let mut topics = self.topics.lock().unwrap();
+        let mut topics = lock(&self.topics);
         if topics.contains_key(name) {
             return Err(DdsError::PreconditionNotMet("topic already exists".into()));
         }
@@ -1782,7 +1765,7 @@ impl DomainParticipant {
             remote_crypto_handles: self.remote_crypto_handles.clone(),
             is_enabled: std::sync::atomic::AtomicBool::new(self.qos.entity_factory.autoenable_created_entities),
         });
-        self.hooks.publishers.lock().unwrap().push(publisher.clone());
+        lock(&self.hooks.publishers).push(publisher.clone());
         Ok(publisher)
     }
 
@@ -1816,7 +1799,7 @@ impl DomainParticipant {
         request: &dds_xtypes::TypeLookupRequest,
         destination: &Locator,
     ) -> Result<(), String> {
-        self.discovery.lock().unwrap().send_type_lookup_request(
+        lock(&self.discovery).send_type_lookup_request(
             &self.hooks.transport,
             request,
             destination,
@@ -1826,13 +1809,13 @@ impl DomainParticipant {
     /// Retrieve TypeLookup replies received on the builtin reply endpoint.
     #[must_use]
     pub fn poll_type_lookup_replies(&self) -> Vec<dds_xtypes::TypeLookupReply> {
-        self.discovery.lock().unwrap().drain_type_lookup_replies()
+        lock(&self.discovery).drain_type_lookup_replies()
     }
 
     /// Export a discovery monitor snapshot for tooling/tests.
     #[must_use]
     pub fn monitor_snapshot(&self) -> dds_discovery::MonitorSnapshot {
-        self.discovery.lock().unwrap().monitor_snapshot()
+        lock(&self.discovery).monitor_snapshot()
     }
 
     /// Create builtin DCPS topic readers (`DCPSPublication`, `DCPSSubscription`, `DCPSParticipant`).
@@ -1883,9 +1866,7 @@ impl DomainParticipant {
             return;
         }
         let remote_writer_guid = dds_types::guid::Guid::new(remote_prefix, hb.writer_id);
-        let received_set = sedp_received
-            .lock()
-            .unwrap()
+        let received_set = lock(&sedp_received)
             .get(&remote_writer_guid)
             .cloned()
             .unwrap_or_default();
@@ -1903,7 +1884,7 @@ impl DomainParticipant {
         if missing.is_empty() {
             return;
         }
-        let mut counts = sedp_acknack_count.lock().unwrap();
+        let mut counts = lock(&sedp_acknack_count);
         let count = counts.entry(local_reader_id).or_insert(0);
         *count += 1;
         let ack_count = *count;
@@ -1974,16 +1955,13 @@ impl DomainParticipant {
                 return;
             }
             let user_port = port + (USER_UNICAST_OFFSET - SPDP_UNICAST_OFFSET) as u32;
-            let user_send_transport = hooks
-                .user_transport
-                .lock()
-                .unwrap()
+            let user_send_transport = lock(&hooks.user_transport)
                 .clone()
                 .or_else(|| {
                     UdpTransport::bind(user_port as u16)
                         .ok()
                         .map(Arc::new)
-                        .inspect(|t| *hooks.user_transport.lock().unwrap() = Some(t.clone()))
+                        .inspect(|t| *lock(&hooks.user_transport) = Some(t.clone()))
                 });
             let Some(user_send_transport) = user_send_transport else {
                 eprintln!("[spawn_receiver_loop] user port bind failed on {user_port}");
@@ -2026,7 +2004,7 @@ impl DomainParticipant {
                                     let mut final_payload = d.serialized_payload.to_vec();
                                     let sender_prefix = header.guid_prefix;
                                     if let Some(remote_crypto_handle) =
-                                        remote_crypto_user.lock().unwrap().get(&sender_prefix).copied()
+                                        lock(&remote_crypto_user).get(&sender_prefix).copied()
                                     {
                                         if final_payload.len() >= 44 {
                                             let mut iv = [0_u8; 12];
@@ -2052,13 +2030,11 @@ impl DomainParticipant {
                                         }
                                     }
                                     let writer_guid = Guid::new(header.guid_prefix, d.writer_id);
-                                    let topic_name = discovery_user
-                                        .lock()
-                                        .unwrap()
+                                    let topic_name = lock(&discovery_user)
                                         .topic_for_endpoint(&writer_guid)
                                         .map(str::to_owned);
                                     let candidate_readers: Vec<Arc<DataReader>> = {
-                                        let reg = registry_user.lock().unwrap();
+                                        let reg = lock(&registry_user);
                                         if let Some(topic) = topic_name.as_deref() {
                                             reg.get(topic).cloned().into_iter().collect()
                                         } else {
@@ -2080,9 +2056,7 @@ impl DomainParticipant {
                                 Submessage::Heartbeat(hb) => {
                                     let remote_writer_guid =
                                         Guid::new(header.guid_prefix, hb.writer_id);
-                                    let readers: Vec<Arc<DataReader>> = registry_user
-                                        .lock()
-                                        .unwrap()
+                                    let readers: Vec<Arc<DataReader>> = lock(&registry_user)
                                         .values()
                                         .cloned()
                                         .collect();
@@ -2093,10 +2067,7 @@ impl DomainParticipant {
                                             continue;
                                         }
                                         if (hb.flags & dds_rtps::FLAG_LIVELINESS) != 0
-                                            || reader
-                                                .matched_writers
-                                                .lock()
-                                                .unwrap()
+                                            || lock(&reader.matched_writers)
                                                 .contains(&remote_writer_guid)
                                         {
                                             reader.note_writer_liveliness(remote_writer_guid);
@@ -2106,7 +2077,7 @@ impl DomainParticipant {
                                         {
                                             let mut missing = Vec::new();
                                             {
-                                                let received = reader.received_sns.lock().unwrap();
+                                                let received = lock(&reader.received_sns);
                                                 for sn_val in hb.first_sn.0..=hb.last_sn.0 {
                                                     let sn = SequenceNumber(sn_val);
                                                     if !received.contains(&sn) {
@@ -2177,7 +2148,7 @@ impl DomainParticipant {
                                         if let Some(participant) = dds_discovery::parse_spdp_packet(&d.serialized_payload) {
                                             let remote_prefix = participant.guid_prefix;
                                             {
-                                                let mut disc = discovery_clone.lock().unwrap();
+                                                let mut disc = lock(&discovery_clone);
                                                 disc.process_spdp_packet(participant);
                                                 disc.announce_local_endpoints_to_participant(
                                                     &transport_mcast,
@@ -2206,7 +2177,7 @@ impl DomainParticipant {
                                         == dds_types::guid::EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER
                                     {
                                         let dest = dds_discovery::metatraffic_multicast_locator(domain_id_mcast);
-                                        discovery_clone.lock().unwrap().process_type_lookup_request(
+                                        lock(&discovery_clone).process_type_lookup_request(
                                             &transport_mcast,
                                             domain_id_mcast,
                                             &d.serialized_payload,
@@ -2238,7 +2209,7 @@ impl DomainParticipant {
                 if shutdown_rx.try_recv().is_ok() { break; }
                 if last_lease_check.elapsed() >= std::time::Duration::from_secs(1) {
                     let removed = {
-                        let mut disc = discovery.lock().unwrap();
+                        let mut disc = lock(&discovery);
                         disc.check_lease_timeouts()
                     };
                     if !removed.is_empty() {
@@ -2263,7 +2234,7 @@ impl DomainParticipant {
                     if let Submessage::Data(d) = sub {
                         let mut final_payload = d.serialized_payload.to_vec();
                         let sender_prefix = header.guid_prefix;
-                        let opt_remote_crypto = remote_crypto_handles.lock().unwrap().get(&sender_prefix).copied();
+                        let opt_remote_crypto = lock(&remote_crypto_handles).get(&sender_prefix).copied();
                         
                         if let Some(remote_crypto_handle) = opt_remote_crypto {
                             if final_payload.len() >= 44 { // 28 + 16
@@ -2306,7 +2277,7 @@ impl DomainParticipant {
                             {
                                 let remote_prefix = participant.guid_prefix;
                                 {
-                                    let mut disc = discovery.lock().unwrap();
+                                    let mut disc = lock(&discovery);
                                     disc.process_spdp_packet(participant);
                                     disc.announce_local_endpoints_to_participant(
                                         &transport,
@@ -2339,7 +2310,7 @@ impl DomainParticipant {
                                     *v4.ip(),
                                     u32::from(v4.port()),
                                 );
-                                discovery.lock().unwrap().process_type_lookup_request(
+                                lock(&discovery).process_type_lookup_request(
                                     &transport,
                                     domain_id,
                                     &final_payload,
@@ -2353,7 +2324,7 @@ impl DomainParticipant {
                             if let Ok(reply) =
                                 dds_xtypes::TypeLookupReply::from_wire_bytes(&final_payload)
                             {
-                                discovery.lock().unwrap().push_type_lookup_reply(reply);
+                                lock(&discovery).push_type_lookup_reply(reply);
                             }
                             continue;
                         }
@@ -2363,14 +2334,12 @@ impl DomainParticipant {
                         }
 
                         let writer_guid = Guid::new(header.guid_prefix, writer_id);
-                        let topic_name = discovery
-                            .lock()
-                            .unwrap()
+                        let topic_name = lock(&discovery)
                             .topic_for_endpoint(&writer_guid)
                             .map(str::to_owned);
 
                         let candidate_readers: Vec<Arc<DataReader>> = {
-                            let reg = registry.lock().unwrap();
+                            let reg = lock(&registry);
                             if let Some(topic) = topic_name.as_deref() {
                                 reg.get(topic).cloned().into_iter().collect()
                             } else {
@@ -2426,7 +2395,7 @@ impl DomainParticipant {
                             reassembly_buffers.remove(&key);
 
                             let sender_prefix = header.guid_prefix;
-                            let opt_remote_crypto = remote_crypto_handles.lock().unwrap().get(&sender_prefix).copied();
+                            let opt_remote_crypto = lock(&remote_crypto_handles).get(&sender_prefix).copied();
                             
                             if let Some(remote_crypto_handle) = opt_remote_crypto {
                                 if final_payload.len() >= 44 { // 28 + 16
@@ -2460,14 +2429,12 @@ impl DomainParticipant {
                             }
 
                             let writer_guid = Guid::new(header.guid_prefix, df.writer_id);
-                            let topic_name = discovery
-                                .lock()
-                                .unwrap()
+                            let topic_name = lock(&discovery)
                                 .topic_for_endpoint(&writer_guid)
                                 .map(str::to_owned);
 
                             let candidate_readers: Vec<Arc<DataReader>> = {
-                                let reg = registry.lock().unwrap();
+                                let reg = lock(&registry);
                                 if let Some(topic) = topic_name.as_deref() {
                                     reg.get(topic).cloned().into_iter().collect()
                                 } else {
@@ -2547,14 +2514,11 @@ impl DomainParticipant {
                     } else if let Submessage::Heartbeat(hb) = sub {
                         let remote_writer_guid = Guid::new(header.guid_prefix, hb.writer_id);
                         let readers: Vec<Arc<DataReader>> =
-                            registry.lock().unwrap().values().cloned().collect();
+                            lock(&registry).values().cloned().collect();
                         for reader in readers {
                             if hb.reader_id == reader.guid.entity_id || hb.reader_id == EntityId::UNKNOWN {
                                 if (hb.flags & dds_rtps::FLAG_LIVELINESS) != 0
-                                    || reader
-                                        .matched_writers
-                                        .lock()
-                                        .unwrap()
+                                    || lock(&reader.matched_writers)
                                         .contains(&remote_writer_guid)
                                 {
                                     reader.note_writer_liveliness(remote_writer_guid);
@@ -2562,7 +2526,7 @@ impl DomainParticipant {
                                 if reader.qos.reliability.kind == dds_types::qos::ReliabilityKind::Reliable {
                                     let mut missing = Vec::new();
                                     {
-                                        let received = reader.received_sns.lock().unwrap();
+                                        let received = lock(&reader.received_sns);
                                         for sn_val in hb.first_sn.0..=hb.last_sn.0 {
                                             let sn = SequenceNumber(sn_val);
                                             if !received.contains(&sn) {
@@ -2612,7 +2576,7 @@ impl DomainParticipant {
                                 == dds_types::guid::EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER
                         {
                             let reply_to = Locator::from_socket_addr(from);
-                            let _ = discovery.lock().unwrap().reply_to_builtin_sedp_acknack(
+                            let _ = lock(&discovery).reply_to_builtin_sedp_acknack(
                                 &transport,
                                 domain_id,
                                 header.guid_prefix,
@@ -2622,9 +2586,9 @@ impl DomainParticipant {
                             continue;
                         }
                         let writer_guid = Guid::new(guid_prefix, ack.writer_id);
-                        let w_reg = writer_registry.lock().unwrap();
+                        let w_reg = lock(&writer_registry);
                         if let Some(shared_writer) = w_reg.get(&writer_guid) {
-                            let w = shared_writer.lock().unwrap();
+                            let w = lock(&shared_writer);
                             for sn in &ack.reader_sn_state {
                                 if let Some(change) = w.writer_cache.get_changes().iter().find(|c| c.sequence_number == *sn) {
                                     if let Some(proxy) = w.reader_proxies.iter().find(|p| p.remote_reader_guid.entity_id == ack.reader_id) {
@@ -2869,7 +2833,7 @@ impl GuardCondition {
     }
 
     pub fn set_trigger_value(&self, value: bool) {
-        let mut trigger = self.trigger_value.lock().unwrap();
+        let mut trigger = lock(&self.trigger_value);
         *trigger = value;
     }
 }
@@ -2882,7 +2846,7 @@ impl Default for GuardCondition {
 
 impl Condition for GuardCondition {
     fn get_trigger_value(&self) -> bool {
-        return *self.trigger_value.lock().unwrap()
+        return *lock(&self.trigger_value)
     }
 }
 
@@ -2900,7 +2864,7 @@ impl StatusCondition {
     }
 
     pub fn set_trigger_value(&self, value: bool) {
-        let mut trigger = self.trigger_value.lock().unwrap();
+        let mut trigger = lock(&self.trigger_value);
         *trigger = value;
     }
 }
@@ -2913,7 +2877,7 @@ impl Default for StatusCondition {
 
 impl Condition for StatusCondition {
     fn get_trigger_value(&self) -> bool {
-        return *self.trigger_value.lock().unwrap()
+        return *lock(&self.trigger_value)
     }
 }
 
@@ -2932,14 +2896,14 @@ impl WaitSet {
 
     /// Attach a Condition to the `WaitSet`.
     pub fn attach_condition(&self, cond: Arc<dyn Condition>) -> DdsResult<()> {
-        let mut list = self.conditions.lock().unwrap();
+        let mut list = lock(&self.conditions);
         list.push(cond);
         Ok(())
     }
 
     /// Detach a Condition from the `WaitSet`.
     pub fn detach_condition(&self, cond: &Arc<dyn Condition>) -> DdsResult<()> {
-        let mut list = self.conditions.lock().unwrap();
+        let mut list = lock(&self.conditions);
         list.retain(|c| !Arc::ptr_eq(c, cond));
         Ok(())
     }
@@ -2956,7 +2920,7 @@ impl WaitSet {
             .unwrap_or(core::time::Duration::from_secs(0));
 
         loop {
-            let list = self.conditions.lock().unwrap();
+            let list = lock(&self.conditions);
             for cond in list.iter() {
                 if cond.get_trigger_value() {
                     active_conditions.push(cond.clone());
@@ -3051,6 +3015,8 @@ pub trait DataWriterListener: Listener {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use std::any::Any;
 
