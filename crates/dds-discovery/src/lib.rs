@@ -372,11 +372,11 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
                     let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
                     let mut address = [0u8; 16];
                     address.copy_from_slice(&param.value[8..24]);
-                    unicast_locators.push(Locator {
-                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+                    unicast_locators.push(Locator::from_raw(
+                        dds_types::locator::LocatorKind::from_i32(kind_val),
                         port,
                         address,
-                    });
+                    ));
                 }
             }
             PID_DEFAULT_MULTICAST_LOCATOR
@@ -385,11 +385,11 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
                     let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
                     let mut address = [0u8; 16];
                     address.copy_from_slice(&param.value[8..24]);
-                    multicast_locators.push(Locator {
-                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+                    multicast_locators.push(Locator::from_raw(
+                        dds_types::locator::LocatorKind::from_i32(kind_val),
                         port,
                         address,
-                    });
+                    ));
                 }
             _ => {}
         }
@@ -759,16 +759,13 @@ mod tests {
         manager.process_spdp_packet(remote_participant);
 
         // Define a type, compute type information and type_id
-        let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType {
-            name: "Dummy".to_string(),
-            extensibility: dds_xtypes::ExtensibilityKind::Final,
-            members: vec![],
-        });
-        let r_id = r_obj.get_identifier();
-        let type_info = dds_xtypes::TypeInformation {
-            type_name: "MyInt".to_string(),
-            type_id: r_id.clone(),
-        };
+        let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType::new(
+            "Dummy".to_string(),
+            dds_xtypes::ExtensibilityKind::Final,
+            vec![],
+        ));
+        let r_id = r_obj.get_identifier().unwrap();
+        let type_info = dds_xtypes::TypeInformation::new("MyInt".to_string(), r_id.clone());
 
         let endpoint_guid = Guid::new(remote_prefix, EntityId::new([0, 0, 1, 4]));
         let endpoint = DiscoveredEndpoint {

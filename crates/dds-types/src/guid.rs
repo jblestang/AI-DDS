@@ -371,6 +371,20 @@ impl SequenceNumber {
     /// The unknown sequence number — sentinel value.
     pub const UNKNOWN: Self = Self(0);
 
+    /// Create a sequence number from its integer value.
+    #[must_use]
+    #[inline]
+    pub const fn new(value: i64) -> Self {
+        return Self(value);
+    }
+
+    /// Return the underlying integer value.
+    #[must_use]
+    #[inline]
+    pub const fn value(self) -> i64 {
+        return self.0;
+    }
+
     /// Create from the RTPS wire representation (high, low).
     #[must_use]
     #[inline]

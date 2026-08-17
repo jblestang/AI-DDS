@@ -35,7 +35,16 @@ impl Id {
         return Self(bytes)
     }
 
+    /// Returns the raw byte representation.
+    #[must_use]
+    #[inline]
+    pub const fn as_bytes(&self) -> &[u8; 2] {
+        return &self.0
+    }
+
 }
+
+pub type VendorId = Id;
 
 impl fmt::Debug for Id {
     #[inline]

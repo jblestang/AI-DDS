@@ -789,7 +789,7 @@ pub fn serialize_rtps_message(
     buf.put_slice(b"RTPS");
     buf.put_u8(header.version.0);
     buf.put_u8(header.version.1);
-    buf.put_slice(&header.vendor_id.0);
+    buf.put_slice(header.vendor_id.as_bytes());
     buf.put_slice(header.guid_prefix.as_bytes());
 
     // 2. Write Submessages
@@ -1166,15 +1166,15 @@ impl RtpsEngine {
                     }
                 }
                 if change.sequence_number >= max_sn {
-                    max_sn = SequenceNumber(change.sequence_number.0 + 1);
+                    max_sn = SequenceNumber::new(change.sequence_number.value() + 1);
                 }
             }
             w.reader_proxies[idx].next_unsent_sn = max_sn;
         }
 
         // Send Heartbeat to all matched reader proxies to drive reliable transfer state
-        let first_sn = w.writer_cache.get_seq_num_min().unwrap_or(SequenceNumber(1));
-        let last_sn = w.writer_cache.get_seq_num_max().unwrap_or(SequenceNumber(0));
+        let first_sn = w.writer_cache.get_seq_num_min().unwrap_or(SequenceNumber::new(1));
+        let last_sn = w.writer_cache.get_seq_num_max().unwrap_or(SequenceNumber::new(0));
         w.heartbeat_count += 1;
         let count = w.heartbeat_count;
 
@@ -1312,7 +1312,7 @@ impl StatefulWriter {
             guid,
             reader_proxies: Vec::new(),
             writer_cache: HistoryCache::new(history_kind, history_depth, max_samples_per_instance),
-            last_change_sequence_number: SequenceNumber(0),
+            last_change_sequence_number: SequenceNumber::new(0),
             heartbeat_count: 0,
         }
     }
@@ -1348,7 +1348,7 @@ impl StatelessWriter {
             guid,
             writer_cache: HistoryCache::new(history_kind, history_depth, max_samples_per_instance),
             reader_locators: Vec::new(),
-            last_change_sequence_number: SequenceNumber(0),
+            last_change_sequence_number: SequenceNumber::new(0),
         }
     }
 
@@ -1435,7 +1435,7 @@ pub fn serialize_sequence_number_set(
     endian: Endianness,
 ) {
     let is_le = endian == Endianness::LittleEndian;
-    let base_sn = sns.first().copied().unwrap_or(SequenceNumber(1));
+    let base_sn = sns.first().copied().unwrap_or(SequenceNumber::new(1));
     let (base_high, base_low) = base_sn.to_high_low();
 
     // Serialize base
@@ -1457,7 +1457,7 @@ pub fn serialize_sequence_number_set(
     }
 
     let max_sn = sns.iter().max().copied().unwrap_or(base_sn);
-    let num_bits = ((max_sn.0 - base_sn.0 + 1).max(0).min(256)) as u32;
+    let num_bits = ((max_sn.value() - base_sn.value() + 1).max(0).min(256)) as u32;
 
     if is_le {
         buf.put_u32_le(num_bits);
@@ -1469,7 +1469,7 @@ pub fn serialize_sequence_number_set(
     let mut bitmap = vec![0_u32; num_longs];
 
     for sn in sns {
-        let diff = sn.0 - base_sn.0;
+        let diff = sn.value() - base_sn.value();
         if diff >= 0 && diff < i64::from(num_bits) {
             let word_idx = (diff / 32) as usize;
             let bit_idx = 31 - (diff % 32) as u32;
@@ -1537,7 +1537,7 @@ pub fn deserialize_sequence_number_set(
         let word_idx = (i / 32) as usize;
         let bit_idx = 31 - (i % 32);
         if (bitmap[word_idx] & (1 << bit_idx)) != 0 {
-            sns.push(SequenceNumber(base_sn.0 + i64::from(i)));
+            sns.push(SequenceNumber::new(base_sn.value() + i64::from(i)));
         }
     }
 
@@ -1606,7 +1606,7 @@ mod tests {
         let data = Data {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(15),
+            writer_sn: SequenceNumber::new(15),
             inline_qos: None,
             serialized_payload: payload.clone(),
         };
@@ -1640,7 +1640,7 @@ mod tests {
             kind: ChangeKind::Alive,
             writer_guid,
             instance_handle: instance,
-            sequence_number: SequenceNumber(1),
+            sequence_number: SequenceNumber::new(1),
             data_value: Bytes::copy_from_slice(b"one"),
             source_timestamp: None,
         };
@@ -1649,7 +1649,7 @@ mod tests {
             kind: ChangeKind::Alive,
             writer_guid,
             instance_handle: instance,
-            sequence_number: SequenceNumber(2),
+            sequence_number: SequenceNumber::new(2),
             data_value: Bytes::copy_from_slice(b"two"),
             source_timestamp: None,
         };
@@ -1657,12 +1657,12 @@ mod tests {
         cache.add_change(change2.clone());
         cache.add_change(change1.clone()); // Test insertion ordering
 
-        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber(1)));
-        assert_eq!(cache.get_seq_num_max(), Some(SequenceNumber(2)));
+        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber::new(1)));
+        assert_eq!(cache.get_seq_num_max(), Some(SequenceNumber::new(2)));
         assert_eq!(cache.get_changes().len(), 2);
 
-        cache.remove_change(SequenceNumber(1));
-        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber(2)));
+        cache.remove_change(SequenceNumber::new(1));
+        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber::new(2)));
         assert_eq!(cache.get_changes().len(), 1);
     }
 
@@ -1673,7 +1673,7 @@ mod tests {
         let ack = AckNack {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            reader_sn_state: vec![SequenceNumber(10)],
+            reader_sn_state: vec![SequenceNumber::new(10)],
             count: 5,
         };
 
@@ -1695,7 +1695,7 @@ mod tests {
         let ack_complex = AckNack {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            reader_sn_state: vec![SequenceNumber(10), SequenceNumber(12)],
+            reader_sn_state: vec![SequenceNumber::new(10), SequenceNumber::new(12)],
             count: 7,
         };
         let subs_complex = vec![Submessage::AckNack(ack_complex.clone())];
@@ -1703,7 +1703,7 @@ mod tests {
         let (_, parsed_subs_complex) = parse_rtps_message(&msg_complex).unwrap();
         assert_eq!(parsed_subs_complex.len(), 1);
         if let Submessage::AckNack(parsed_ack) = &parsed_subs_complex[0] {
-            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber(10), SequenceNumber(12)]);
+            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber::new(10), SequenceNumber::new(12)]);
             assert_eq!(parsed_ack.count, 7);
         } else {
             panic!("Expected complex AckNack");
@@ -1717,8 +1717,8 @@ mod tests {
         let gap = Gap {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            gap_start: SequenceNumber(20),
-            gap_list: vec![SequenceNumber(22), SequenceNumber(25)],
+            gap_start: SequenceNumber::new(20),
+            gap_list: vec![SequenceNumber::new(22), SequenceNumber::new(25)],
         };
 
         let subs = vec![Submessage::Gap(gap.clone())];
@@ -1743,7 +1743,7 @@ mod tests {
         let df = DataFrag {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(100),
+            writer_sn: SequenceNumber::new(100),
             fragment_starting_num: 5,
             fragments_in_submessage: 3,
             fragment_size: 1000,
@@ -1783,7 +1783,7 @@ mod tests {
         let data = Data {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(42),
+            writer_sn: SequenceNumber::new(42),
             inline_qos: Some(parameter_list),
             serialized_payload: Bytes::copy_from_slice(&[99, 100, 101]),
         };
@@ -1839,13 +1839,13 @@ mod tests {
             10,
             dds_types::qos::LENGTH_UNLIMITED,
         );
-        writer.last_change_sequence_number = SequenceNumber(5);
+        writer.last_change_sequence_number = SequenceNumber::new(5);
         for i in 1..=5 {
             writer.writer_cache.add_change(CacheChange {
                 kind: ChangeKind::Alive,
                 writer_guid,
                 instance_handle: dds_types::instance::InstanceHandle::NIL,
-                sequence_number: SequenceNumber(i),
+                sequence_number: SequenceNumber::new(i),
                 data_value: Bytes::copy_from_slice(b"sample"),
                 source_timestamp: None,
             });
@@ -1855,7 +1855,7 @@ mod tests {
             remote_reader_guid: Guid::new(GuidPrefix::new([2; 12]), EntityId::new([0, 0, 2, 7])),
             unicast_locator_list: vec![],
             multicast_locator_list: vec![],
-            next_unsent_sn: SequenceNumber(1),
+            next_unsent_sn: SequenceNumber::new(1),
         };
         writer.matched_reader_add(proxy);
 
@@ -1868,6 +1868,6 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let w = shared_writer.lock().unwrap();
-        assert!(w.reader_proxies[0].next_unsent_sn.0 > 1);
+        assert!(w.reader_proxies[0].next_unsent_sn.value() > 1);
     }
 }

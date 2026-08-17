@@ -134,10 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let topic = participant.create_topic("HistoryTopic", "HistorySample", TopicQos::default())?;
 
             let mut writer_qos = DataWriterQos::default();
-            writer_qos.history = History {
-                kind: HistoryKind::KeepLast,
-                depth: 3,
-            };
+            writer_qos.history.kind = HistoryKind::KeepLast;
+            writer_qos.history.depth = 3;
             println!("[Writer] Configuring History: KeepLast, Depth: 3");
 
             let publisher = participant.create_publisher(PublisherQos::default())?;
@@ -172,10 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let topic = participant.create_topic("HistoryTopic", "HistorySample", TopicQos::default())?;
 
             let mut reader_qos = DataReaderQos::default();
-            reader_qos.history = History {
-                kind: HistoryKind::KeepLast,
-                depth: 3,
-            };
+            reader_qos.history.kind = HistoryKind::KeepLast;
+            reader_qos.history.depth = 3;
             println!("[Reader] Configuring History: KeepLast, Depth: 3");
 
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;
@@ -223,10 +219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 3. Configure DataWriter QoS with KeepLast History.
             let mut writer_qos = DataWriterQos::default();
-            writer_qos.history = History {
-                kind: HistoryKind::KeepLast,
-                depth: 3,
-            };
+            writer_qos.history.kind = HistoryKind::KeepLast;
+            writer_qos.history.depth = 3;
             println!("[Writer] Configuring History: KeepLast, Depth: 3");
 
             let publisher = participant.create_publisher(PublisherQos::default())?;
@@ -234,10 +228,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 4. Configure DataReader QoS with KeepLast History.
             let mut reader_qos = DataReaderQos::default();
-            reader_qos.history = History {
-                kind: HistoryKind::KeepLast,
-                depth: 3,
-            };
+            reader_qos.history.kind = HistoryKind::KeepLast;
+            reader_qos.history.depth = 3;
             println!("[Reader] Configuring History: KeepLast, Depth: 3");
 
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;

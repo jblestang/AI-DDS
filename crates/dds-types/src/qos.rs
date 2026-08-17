@@ -875,6 +875,13 @@ impl Default for TypeConsistencyEnforcement {
     }
 }
 
+pub type DomainParticipantQos = DomainParticipant;
+pub type TopicQos = Topic;
+pub type PublisherQos = Publisher;
+pub type SubscriberQos = Subscriber;
+pub type DataWriterQos = DataWriter;
+pub type DataReaderQos = DataReader;
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────

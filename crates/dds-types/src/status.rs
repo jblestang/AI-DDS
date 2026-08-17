@@ -301,6 +301,20 @@ impl Mask {
     }
 }
 
+pub type StatusCount = Count;
+pub type InconsistentTopicStatus = InconsistentTopic;
+pub type OfferedDeadlineMissedStatus = OfferedDeadlineMissed;
+pub type RequestedDeadlineMissedStatus = RequestedDeadlineMissed;
+pub type OfferedIncompatibleQosStatus = OfferedIncompatibleQos;
+pub type RequestedIncompatibleQosStatus = RequestedIncompatibleQos;
+pub type SampleLostStatus = SampleLost;
+pub type SampleRejectedStatus = SampleRejected;
+pub type LivelinessChangedStatus = LivelinessChanged;
+pub type LivelinessLostStatus = LivelinessLost;
+pub type PublicationMatchedStatus = PublicationMatched;
+pub type SubscriptionMatchedStatus = SubscriptionMatched;
+pub type StatusMask = Mask;
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────────

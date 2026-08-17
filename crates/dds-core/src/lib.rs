@@ -208,7 +208,7 @@ impl DataWriter {
         let sn = {
             let mut sn = self.next_sn.lock().unwrap();
             let current = *sn;
-            *sn = SequenceNumber(sn.0 + 1);
+            *sn = SequenceNumber::new(sn.value() + 1);
             current
         };
 
@@ -511,7 +511,7 @@ impl Publisher {
             type_support,
             rtps_writer,
             listener: Mutex::new(None),
-            next_sn: Mutex::new(SequenceNumber(1)),
+            next_sn: Mutex::new(SequenceNumber::new(1)),
             is_enabled: std::sync::atomic::AtomicBool::new(self.qos.entity_factory.autoenable_created_entities),
         });
 
@@ -559,7 +559,7 @@ impl Publisher {
                     remote_reader_guid: reader_guid,
                     unicast_locator_list: vec![reader_locator],
                     multicast_locator_list: vec![],
-                    next_unsent_sn: SequenceNumber(1),
+                    next_unsent_sn: SequenceNumber::new(1),
                 };
                 writer.rtps_writer.lock().unwrap().matched_reader_add(proxy);
             }
@@ -1141,7 +1141,7 @@ impl DomainParticipant {
                                     {
                                         let received = reader.received_sns.lock().unwrap();
                                         for sn_val in hb.first_sn.0..=hb.last_sn.0 {
-                                            let sn = SequenceNumber(sn_val);
+                                            let sn = SequenceNumber::new(sn_val);
                                             if !received.contains(&sn) {
                                                 missing.push(sn);
                                             }
@@ -1328,6 +1328,7 @@ pub fn check_type_compatibility(
         dds_types::qos::TypeConsistencyKind::AllowTypeCoercion => {
             dds_xtypes::is_assignable_from(requested_type, offered_type)
         }
+        _ => false,
     }
 }
 
@@ -1588,32 +1589,18 @@ mod tests {
         assert!(check_qos_compatibility(&offered, &requested));
 
         // Incompatible Durability: Offered Volatile, Requested TransientLocal
-        offered.durability = Durability {
-            kind: DurabilityKind::Volatile,
-        };
-        requested.durability = Durability {
-            kind: DurabilityKind::TransientLocal,
-        };
+        offered.durability.kind = DurabilityKind::Volatile;
+        requested.durability.kind = DurabilityKind::TransientLocal;
         assert!(!check_qos_compatibility(&offered, &requested));
 
         // Compatible Durability: Offered TransientLocal, Requested Volatile
-        offered.durability = Durability {
-            kind: DurabilityKind::TransientLocal,
-        };
-        requested.durability = Durability {
-            kind: DurabilityKind::Volatile,
-        };
+        offered.durability.kind = DurabilityKind::TransientLocal;
+        requested.durability.kind = DurabilityKind::Volatile;
         assert!(check_qos_compatibility(&offered, &requested));
 
         // Incompatible Reliability: Offered BestEffort, Requested Reliable
-        offered.reliability = Reliability {
-            kind: ReliabilityKind::BestEffort,
-            max_blocking_time: dds_types::time::Duration::ZERO,
-        };
-        requested.reliability = Reliability {
-            kind: ReliabilityKind::Reliable,
-            max_blocking_time: dds_types::time::Duration::ZERO,
-        };
+        offered.reliability.kind = ReliabilityKind::BestEffort;
+        requested.reliability.kind = ReliabilityKind::Reliable;
         assert!(!check_qos_compatibility(&offered, &requested));
 
         // Compatible Reliability again so we can test other things
@@ -1693,16 +1680,16 @@ mod tests {
         use dds_types::qos::{TypeConsistencyEnforcement, TypeConsistencyKind};
         use dds_xtypes::{ExtensibilityKind, StructureType, TypeObject};
 
-        let offered = TypeObject::Complete(StructureType {
-            name: "Point".to_string(),
-            extensibility: ExtensibilityKind::Appendable,
-            members: vec![],
-        });
-        let requested = TypeObject::Complete(StructureType {
-            name: "Point".to_string(),
-            extensibility: ExtensibilityKind::Final, // Incompatible
-            members: vec![],
-        });
+        let offered = TypeObject::Complete(StructureType::new(
+            "Point".to_string(),
+            ExtensibilityKind::Appendable,
+            vec![],
+        ));
+        let requested = TypeObject::Complete(StructureType::new(
+            "Point".to_string(),
+            ExtensibilityKind::Final,
+            vec![],
+        ));
 
         // 1. Kind: DisallowTypeCoercion -> Must match exactly
         let mut policy = TypeConsistencyEnforcement::default();

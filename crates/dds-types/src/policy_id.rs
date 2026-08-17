@@ -29,3 +29,5 @@ pub enum Id {
     Lifespan = 21,
     DurabilityService = 22,
 }
+
+pub type PolicyId = Id;

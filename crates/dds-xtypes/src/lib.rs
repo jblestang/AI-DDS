@@ -356,6 +356,30 @@ pub struct StructureType {
     pub name: String,
 }
 
+impl Default for StructureType {
+    #[inline]
+    fn default() -> Self {
+        return Self {
+            extensibility: ExtensibilityKind::Final,
+            members: Vec::new(),
+            name: String::new(),
+        };
+    }
+}
+
+impl StructureType {
+    /// Create a structure type with the given name, extensibility, and members.
+    #[must_use]
+    #[inline]
+    pub fn new(name: String, extensibility: ExtensibilityKind, members: Vec<Member>) -> Self {
+        return Self {
+            extensibility,
+            members,
+            name,
+        };
+    }
+}
+
 impl CdrSerialize for StructureType {
     #[inline]
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
@@ -486,6 +510,14 @@ impl TypeObject {
 pub struct TypeInformation {
     pub type_id: TypeIdentifier,
     pub type_name: String,
+}
+
+impl TypeInformation {
+    #[must_use]
+    #[inline]
+    pub fn new(type_name: String, type_id: TypeIdentifier) -> Self {
+        return Self { type_id, type_name };
+    }
 }
 
 impl CdrSerialize for TypeInformation {

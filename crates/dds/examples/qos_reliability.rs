@@ -140,10 +140,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 participant.create_topic("TelemetryTopic", "ReliableTelemetry", TopicQos::default())?;
 
             let mut writer_qos = DataWriterQos::default();
-            writer_qos.reliability = Reliability {
-                kind: ReliabilityKind::Reliable,
-                max_blocking_time: Duration::from_millis(500),
-            };
+            writer_qos.reliability.kind = ReliabilityKind::Reliable;
+            writer_qos.reliability.max_blocking_time = Duration::from_millis(500);
             println!("[Writer] Configuring Offered Reliability: Reliable");
 
             let publisher = participant.create_publisher(PublisherQos::default())?;
@@ -177,10 +175,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 participant.create_topic("TelemetryTopic", "ReliableTelemetry", TopicQos::default())?;
 
             let mut reader_qos = DataReaderQos::default();
-            reader_qos.reliability = Reliability {
-                kind: ReliabilityKind::Reliable,
-                max_blocking_time: Duration::from_millis(500),
-            };
+            reader_qos.reliability.kind = ReliabilityKind::Reliable;
+            reader_qos.reliability.max_blocking_time = Duration::from_millis(500);
             println!("[Reader] Configuring Requested Reliability: Reliable");
 
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;
@@ -228,10 +224,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 3. Configure Reliable DataWriter QoS.
             let mut writer_qos = DataWriterQos::default();
-            writer_qos.reliability = Reliability {
-                kind: ReliabilityKind::Reliable,
-                max_blocking_time: Duration::from_millis(500),
-            };
+            writer_qos.reliability.kind = ReliabilityKind::Reliable;
+            writer_qos.reliability.max_blocking_time = Duration::from_millis(500);
             println!("[Writer] Configuring Offered Reliability: Reliable");
 
             let publisher = participant.create_publisher(PublisherQos::default())?;
@@ -239,10 +233,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 4. Configure Reliable DataReader QoS.
             let mut reader_qos = DataReaderQos::default();
-            reader_qos.reliability = Reliability {
-                kind: ReliabilityKind::Reliable,
-                max_blocking_time: Duration::from_millis(500),
-            };
+            reader_qos.reliability.kind = ReliabilityKind::Reliable;
+            reader_qos.reliability.max_blocking_time = Duration::from_millis(500);
             println!("[Reader] Configuring Requested Reliability: Reliable");
 
             let subscriber = participant.create_subscriber(SubscriberQos::default())?;
