@@ -633,8 +633,9 @@ impl TypeLookupRequest {
     pub fn from_wire_bytes(bytes: &[u8]) -> CdrResult<Self> {
         let mut de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
         if bytes.len() >= 4 {
-            let kind = u16::from_le_bytes([bytes[0], bytes[1]]);
-            if matches!(kind, 0x0010 | 0x0011) {
+            // Encapsulation identifier is big-endian on the wire (DDS CDR §10.2).
+            let kind = u16::from_be_bytes([bytes[0], bytes[1]]);
+            if matches!(kind, 0x0010 | 0x0011 | 0x0012 | 0x0013) {
                 let _ = EncapsulationHeader::deserialize(&mut de)?;
             } else {
                 de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
@@ -669,8 +670,9 @@ impl TypeLookupReply {
     pub fn from_wire_bytes(bytes: &[u8]) -> CdrResult<Self> {
         let mut de = CdrDeserializer::new(bytes, Endianness::LittleEndian);
         if bytes.len() >= 4 {
-            let kind = u16::from_le_bytes([bytes[0], bytes[1]]);
-            if matches!(kind, 0x0010 | 0x0011) {
+            // Encapsulation identifier is big-endian on the wire (DDS CDR §10.2).
+            let kind = u16::from_be_bytes([bytes[0], bytes[1]]);
+            if matches!(kind, 0x0010 | 0x0011 | 0x0012 | 0x0013) {
                 let _ = EncapsulationHeader::deserialize(&mut de)?;
             } else {
                 de = CdrDeserializer::new(bytes, Endianness::LittleEndian);

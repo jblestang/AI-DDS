@@ -84,5 +84,6 @@ pub mod locator;
 pub mod qos;
 pub mod return_code;
 pub mod status;
+pub mod sync;
 pub mod time;
 pub mod vendor;

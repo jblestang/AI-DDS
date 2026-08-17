@@ -51,7 +51,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -64,8 +63,10 @@
     clippy::separated_literal_suffix,
     reason = "DDS Discovery implementation requires standard library conversions, standard returns, and discovery state structures."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use dds_types::guid::{EntityId, EntityKind, Guid, GuidPrefix, SequenceNumber};
+use dds_types::sync::lock;
 use dds_types::locator::Locator;
 use dds_types::time::Duration;
 use std::collections::HashMap;
@@ -826,7 +827,10 @@ impl DiscoveryManager {
             return (SequenceNumber(1), SequenceNumber(0));
         }
         sns.sort_by_key(|sn| sn.0);
-        (*sns.first().unwrap(), *sns.last().unwrap())
+        match (sns.first(), sns.last()) {
+            (Some(&first), Some(&last)) => (first, last),
+            _ => (SequenceNumber(1), SequenceNumber(0)),
+        }
     }
 
     /// Notify a remote participant that local built-in SEDP writers have samples.
@@ -877,7 +881,7 @@ impl DiscoveryManager {
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || loop {
             let (endpoints, remote_participants) = {
-                let disc = discovery.lock().unwrap();
+                let disc = lock(&discovery);
                 let endpoints: Vec<DiscoveredEndpoint> =
                     disc.local_endpoints.values().cloned().collect();
                 let remote_participants: Vec<(GuidPrefix, DiscoveredParticipant)> = disc
@@ -888,7 +892,7 @@ impl DiscoveryManager {
                 (endpoints, remote_participants)
             };
             for endpoint in &endpoints {
-                let disc = discovery.lock().unwrap();
+                let disc = lock(&discovery);
                 let _ = disc.announce_sedp_endpoint(
                     &transport,
                     domain_id,
@@ -1587,9 +1591,15 @@ pub fn sedp_to_plcdr(
     append_plcdr_string(&mut parameters, PID_TYPE_NAME, &endpoint.type_name);
 
     if let Some(ref qos) = endpoint.qos_writer {
+        append_durability_qos(&mut parameters, qos.durability.kind);
         append_reliability_qos(&mut parameters, &qos.reliability);
+        append_history_qos(&mut parameters, &qos.history);
+        append_liveliness_qos(&mut parameters, &qos.liveliness);
     } else if let Some(ref qos) = endpoint.qos_reader {
+        append_durability_qos(&mut parameters, qos.durability.kind);
         append_reliability_qos(&mut parameters, &qos.reliability);
+        append_history_qos(&mut parameters, &qos.history);
+        append_liveliness_qos(&mut parameters, &qos.liveliness);
     }
 
     append_data_representation_qos(&mut parameters);
@@ -1605,6 +1615,16 @@ pub fn sedp_to_plcdr(
     for locator in &endpoint.unicast_locators {
         append_locator_param(&mut parameters, PID_UNICAST_LOCATOR, locator);
         append_locator_param(&mut parameters, PID_UNICAST_LOCATOR, locator);
+    }
+
+    if !endpoint.partition.is_empty() {
+        let mut partition_bytes = Vec::new();
+        append_plcdr_string_sequence(&mut partition_bytes, &endpoint.partition);
+        parameters.push((PID_PARTITION, partition_bytes));
+    } else {
+        let mut partition_bytes = Vec::new();
+        append_plcdr_string_sequence(&mut partition_bytes, &[String::new()]);
+        parameters.push((PID_PARTITION, partition_bytes));
     }
 
     Ok(serialize_rtps_plcdr(&parameters))
@@ -1760,6 +1780,8 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use dds_types::guid::EntityId;
     use std::sync::Arc;

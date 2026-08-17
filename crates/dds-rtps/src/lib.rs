@@ -51,7 +51,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -65,11 +64,13 @@
     clippy::large_stack_arrays,
     reason = "RTPS Wire Protocol implementation requires standard library conversions, standard returns, and UDP socket structures."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use byteorder::{BigEndian, ByteOrder as _, LittleEndian};
 use bytes::{BufMut as _, Bytes, BytesMut};
 use dds_types::guid::{EntityId, Guid, GuidPrefix, SequenceNumber};
 use dds_types::locator::Locator;
+use dds_types::sync::lock;
 use dds_types::time::Timestamp;
 use dds_types::vendor::VendorId;
 use dds_cdr::{CdrDeserialize, CdrSerialize};
@@ -1339,7 +1340,7 @@ impl RtpsEngine {
         transport: &UdpTransport,
         encrypt_fn: &Option<Arc<dyn Fn(&[u8], GuidPrefix) -> Option<Vec<u8>> + Send + Sync>>,
     ) {
-        let mut w = writer.lock().unwrap();
+        let mut w = lock(writer);
         let guid_prefix = w.guid.prefix;
 
         // Collect indices and unsent changes without borrowing proxies mutably yet
@@ -2162,6 +2163,8 @@ pub enum Endianness {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]
