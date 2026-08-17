@@ -1693,13 +1693,14 @@ fn append_liveliness_qos(parameters: &mut Vec<(u16, Vec<u8>)>, liveliness: &dds_
 }
 
 fn append_data_representation_qos(parameters: &mut Vec<(u16, Vec<u8>)>) {
-    // Match CycloneDDS default: XCDR1 + XCDR2.
+    // OpenDDS interop writers often use XCDR2; advertise both XCDR1 and XCDR2 using
+    // the DDS CDR layout for DataRepresentationIdSeq (length + uint16 ids, 4-byte aligned).
     let ids = [DATA_REPRESENTATION_XCDR1, DATA_REPRESENTATION_XCDR2];
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(4 + ids.len() * 4);
     bytes.extend_from_slice(&(ids.len() as u32).to_le_bytes());
     for id in ids {
         bytes.extend_from_slice(&id.to_le_bytes());
-        bytes.extend_from_slice(&[0u8, 0u8]); // align uint16 to 4 bytes
+        bytes.extend_from_slice(&[0u8, 0u8]);
     }
     parameters.push((PID_DATA_REPRESENTATION, bytes));
 }

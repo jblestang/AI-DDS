@@ -84,6 +84,15 @@ pub fn vendor_publishes_aidds_receives(vendor: InteropVendor) {
         spawn_vendor_publisher(vendor, domain, sample_id, &payload).expect("spawn publisher");
     let output = wait_output(child, Duration::from_secs(40)).expect("publisher finished");
 
+    if !String::from_utf8_lossy(&output.stdout).contains("INTEROP_PUBLISH") {
+        eprintln!(
+            "{} publisher stdout: {}\nstderr: {}",
+            vendor_display_name(vendor),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("INTEROP_PUBLISH"),
         "{} publisher stdout: {}",
@@ -166,7 +175,9 @@ pub fn aidds_publishes_vendor_receives(vendor: InteropVendor) {
     participant.run_matchmaking();
 
     let output = wait_output(sub_child, Duration::from_secs(35)).expect("subscriber finished");
-    if !output_contains_interop_receive(&output, sample_id, &payload) {
+    let dump_vendor_stderr = std::env::var("AIDDS_OPENDDS_DEBUG").is_ok()
+        || !output_contains_interop_receive(&output, sample_id, &payload);
+    if dump_vendor_stderr {
         eprintln!(
             "{} subscriber stdout: {}\nstderr: {}",
             vendor_display_name(vendor),

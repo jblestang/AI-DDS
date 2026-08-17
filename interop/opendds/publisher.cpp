@@ -116,6 +116,9 @@ int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
     DDS::DataWriterQos dw_qos;
     publisher->get_default_datawriter_qos(dw_qos);
     dw_qos.reliability.kind = DDS::RELIABLE_RELIABILITY_QOS;
+    // Match AI-DDS interop reader (plain CDR samples on the wire).
+    dw_qos.representation.value.length(1);
+    dw_qos.representation.value[0] = DDS::XCDR_DATA_REPRESENTATION;
 
     DDS::DataWriter_var writer =
       publisher->create_datawriter(topic, dw_qos, 0, OpenDDS::DCPS::DEFAULT_STATUS_MASK);
@@ -146,10 +149,6 @@ int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
     msg.id = sample_id;
     msg.payload = payload;
 
-    std::printf("INTEROP_PUBLISH id=%lu payload=%s domain=%d\n",
-                static_cast<unsigned long>(sample_id), payload, domain_id);
-    std::fflush(stdout);
-
     DDS::ReturnCode_t write_rc = DDS::RETCODE_ERROR;
     for (int attempt = 0; attempt < 20; ++attempt) {
       write_rc = message_writer->write(msg, DDS::HANDLE_NIL);
@@ -162,14 +161,12 @@ int ACE_TMAIN(int argc, ACE_TCHAR *argv[])
       ACE_ERROR_RETURN((LM_ERROR, "write failed\n"), EXIT_FAILURE);
     }
 
-    DDS::Duration_t ack_timeout = {10, 0};
-    message_writer->wait_for_acknowledgments(ack_timeout);
+    std::printf("INTEROP_PUBLISH id=%lu payload=%s domain=%d\n",
+                static_cast<unsigned long>(sample_id), payload, domain_id);
+    std::fflush(stdout);
 
-    ACE_OS::sleep(2);
-
-    participant->delete_contained_entities();
-    dpf->delete_participant(participant);
-    TheServiceParticipant->shutdown();
+    // One-shot interop process: OpenDDS shutdown can block ~100s on internal threads.
+    _exit(EXIT_SUCCESS);
   } catch (const CORBA::Exception &e) {
     e._tao_print_exception("Exception in interop_publisher:");
     return EXIT_FAILURE;

@@ -1100,7 +1100,7 @@ pub fn serialize_rtps_message(
             }
             Submessage::Heartbeat(hb) => {
                 buf.put_u8(SubmessageKind::Heartbeat as u8);
-                buf.put_u8(hb.flags);
+                buf.put_u8(hb.flags | flags);
 
                 if is_le {
                     buf.put_u16_le(28); // submessage size
@@ -2717,6 +2717,28 @@ mod tests {
         } else {
             panic!("Expected InfoReply");
         }
+    }
+
+    #[test]
+    fn test_heartbeat_submessage_serialization() {
+        let header = RtpsHeader::new(GuidPrefix::new([9; 12]));
+        let hb = Heartbeat {
+            reader_id: EntityId::new([0, 0, 0, 4]),
+            writer_id: EntityId::new([0, 0, 1, 3]),
+            first_sn: SequenceNumber(1),
+            last_sn: SequenceNumber(1),
+            count: 1,
+            flags: FLAG_LIVELINESS,
+        };
+        let msg = serialize_rtps_message(
+            &header,
+            &[Submessage::Heartbeat(hb)],
+            Endianness::LittleEndian,
+        );
+        assert_eq!(msg[20], SubmessageKind::Heartbeat as u8);
+        assert_eq!(msg[21], FLAG_LIVELINESS | FLAG_LITTLE_ENDIAN);
+        let (_hdr, parsed) = parse_rtps_message(&msg).expect("parse heartbeat message");
+        assert!(matches!(parsed.as_slice(), [Submessage::Heartbeat(parsed_hb)] if parsed_hb.count == 1));
     }
 
     #[test]

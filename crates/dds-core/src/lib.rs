@@ -1136,6 +1136,41 @@ fn send_durability_to_proxy(
 
 /// Handle an AckNack directed at a local user-data writer: update reader-proxy state
 /// and retransmit any NACKed samples.
+fn send_reliable_reader_acknack_for_sn(
+    reader: &DataReader,
+    writer_id: EntityId,
+    sn: SequenceNumber,
+    local_prefix: GuidPrefix,
+    remote_prefix: GuidPrefix,
+    transport: &Arc<dds_rtps::UdpTransport>,
+    from: std::net::SocketAddr,
+) {
+    if reader.qos.reliability.kind != dds_types::qos::ReliabilityKind::Reliable {
+        return;
+    }
+    use dds_rtps::{AckNack, Endianness, InfoDst, RtpsHeader, Submessage};
+    let ack_sub = Submessage::AckNack(AckNack {
+        reader_id: reader.guid.entity_id,
+        writer_id,
+        reader_sn_state: Vec::new(),
+        ack_through: Some(sn),
+        count: reader.next_acknack_count(),
+    });
+    let reply_header = RtpsHeader::new(local_prefix);
+    let msg = dds_rtps::serialize_rtps_message(
+        &reply_header,
+        &[
+            Submessage::InfoDst(InfoDst {
+                guid_prefix: remote_prefix,
+            }),
+            ack_sub,
+        ],
+        Endianness::LittleEndian,
+    );
+    let dest = Locator::from_socket_addr(from);
+    let _ = transport.send(&msg, &dest);
+}
+
 fn handle_user_data_writer_acknack(
     writer_registry: &Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
     local_prefix: GuidPrefix,
@@ -2220,6 +2255,15 @@ impl DomainParticipant {
                                                 d.writer_sn,
                                                 writer_guid,
                                             );
+                                            send_reliable_reader_acknack_for_sn(
+                                                &reader,
+                                                d.writer_id,
+                                                d.writer_sn,
+                                                user_guid_prefix,
+                                                header.guid_prefix,
+                                                &user_transport_arc,
+                                                from,
+                                            );
                                             break;
                                         }
                                     }
@@ -2556,6 +2600,15 @@ impl DomainParticipant {
                                     final_payload.clone(),
                                     d.writer_sn,
                                     writer_guid,
+                                );
+                                send_reliable_reader_acknack_for_sn(
+                                    &reader,
+                                    d.writer_id,
+                                    d.writer_sn,
+                                    guid_prefix,
+                                    header.guid_prefix,
+                                    &transport,
+                                    from,
                                 );
                                 break;
                             }

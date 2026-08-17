@@ -139,6 +139,12 @@ fn apply_vendor_runtime(cmd: &mut Command, vendor: InteropVendor) {
         if let Some(ini) = opendds_config_file() {
             cmd.arg("-DCPSConfigFile").arg(ini);
         }
+        if std::env::var("AIDDS_OPENDDS_DEBUG").is_ok() {
+            let level = std::env::var("AIDDS_OPENDDS_DEBUG_LEVEL").unwrap_or_else(|_| "10".to_string());
+            cmd.arg("-DCPSDebugLevel").arg(&level);
+            let tlevel = std::env::var("AIDDS_OPENDDS_TRANSPORT_DEBUG").unwrap_or_else(|_| "6".to_string());
+            cmd.arg("-DCPSTransportDebugLevel").arg(tlevel);
+        }
     }
 }
 
@@ -159,10 +165,9 @@ pub fn spawn_vendor_publisher(
         )
     })?;
     let mut cmd = Command::new(&bin);
+    cmd.arg(sample_id.to_string()).arg(payload);
     apply_vendor_runtime(&mut cmd, vendor);
-    cmd.arg(sample_id.to_string())
-        .arg(payload)
-        .env("AIDDS_INTEROP_DOMAIN", domain.to_string())
+    cmd.env("AIDDS_INTEROP_DOMAIN", domain.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("AIDDS_INTEROP_WAIT_MATCH", "1")
@@ -185,10 +190,10 @@ pub fn spawn_vendor_subscriber(
         )
     })?;
     let mut cmd = Command::new(&bin);
-    apply_vendor_runtime(&mut cmd, vendor);
     if let Some(id) = expect_id {
         cmd.arg(id.to_string());
     }
+    apply_vendor_runtime(&mut cmd, vendor);
     cmd.env("AIDDS_INTEROP_DOMAIN", domain.to_string())
         .env("AIDDS_INTEROP_TIMEOUT_MS", "12000")
         .stdout(Stdio::piped())
