@@ -27,10 +27,8 @@ fn e2e_disallow_type_coercion_requires_exact_match() {
         s.extensibility = ExtensibilityKind::Final;
     }
 
-    let policy = TypeConsistencyEnforcement {
-        kind: TypeConsistencyKind::DisallowTypeCoercion,
-        ..Default::default()
-    };
+    let mut policy = TypeConsistencyEnforcement::default();
+    policy.kind = TypeConsistencyKind::DisallowTypeCoercion;
 
     assert!(!check_type_compatibility(&policy, &offered, &requested));
     assert!(check_type_compatibility(&policy, &offered, &offered));
@@ -38,35 +36,35 @@ fn e2e_disallow_type_coercion_requires_exact_match() {
 
 #[test]
 fn e2e_appendable_supertype_assignable_to_subtype() {
-    let base = TypeObject::Complete(StructureType {
-        name: "Base".to_string(),
-        extensibility: ExtensibilityKind::Appendable,
-        members: vec![Member {
-            name: "id".to_string(),
-            type_id: TypeIdentifier::TkUint32,
-            is_key: true,
-            is_optional: false,
-        }],
-    });
+    let base = TypeObject::Complete(StructureType::new(
+        "Base".to_string(),
+        ExtensibilityKind::Appendable,
+        vec![Member::new(
+            "id".to_string(),
+            TypeIdentifier::TkUint32,
+            true,
+            false,
+        )],
+    ));
 
-    let extended = TypeObject::Complete(StructureType {
-        name: "Extended".to_string(),
-        extensibility: ExtensibilityKind::Appendable,
-        members: vec![
-            Member {
-                name: "id".to_string(),
-                type_id: TypeIdentifier::TkUint32,
-                is_key: true,
-                is_optional: false,
-            },
-            Member {
-                name: "extra".to_string(),
-                type_id: TypeIdentifier::TiString8Large { bound: 0 },
-                is_key: false,
-                is_optional: false,
-            },
+    let extended = TypeObject::Complete(StructureType::new(
+        "Extended".to_string(),
+        ExtensibilityKind::Appendable,
+        vec![
+            Member::new(
+                "id".to_string(),
+                TypeIdentifier::TkUint32,
+                true,
+                false,
+            ),
+            Member::new(
+                "extra".to_string(),
+                TypeIdentifier::TiString8Large { bound: 0 },
+                false,
+                false,
+            ),
         ],
-    });
+    ));
 
     let policy = TypeConsistencyEnforcement::default();
     // Extended (offered) is assignable to Base (requested) under coercion
@@ -75,27 +73,27 @@ fn e2e_appendable_supertype_assignable_to_subtype() {
 
 #[test]
 fn e2e_incompatible_member_types_fail_assignability() {
-    let offered = TypeObject::Complete(StructureType {
-        name: "Offered".to_string(),
-        extensibility: ExtensibilityKind::Appendable,
-        members: vec![Member {
-            name: "value".to_string(),
-            type_id: TypeIdentifier::TkFloat32,
-            is_key: false,
-            is_optional: false,
-        }],
-    });
+    let offered = TypeObject::Complete(StructureType::new(
+        "Offered".to_string(),
+        ExtensibilityKind::Appendable,
+        vec![Member::new(
+            "value".to_string(),
+            TypeIdentifier::TkFloat32,
+            false,
+            false,
+        )],
+    ));
 
-    let requested = TypeObject::Complete(StructureType {
-        name: "Requested".to_string(),
-        extensibility: ExtensibilityKind::Appendable,
-        members: vec![Member {
-            name: "value".to_string(),
-            type_id: TypeIdentifier::TkInt32,
-            is_key: false,
-            is_optional: false,
-        }],
-    });
+    let requested = TypeObject::Complete(StructureType::new(
+        "Requested".to_string(),
+        ExtensibilityKind::Appendable,
+        vec![Member::new(
+            "value".to_string(),
+            TypeIdentifier::TkInt32,
+            false,
+            false,
+        )],
+    ));
 
     let policy = TypeConsistencyEnforcement::default();
     assert!(!check_type_compatibility(&policy, &offered, &requested));

@@ -35,9 +35,11 @@ fn e2e_matching_partition_delivers_over_wire() {
         .create_topic(TOPIC, TYPE, TopicQos::default())
         .unwrap();
 
+    let mut sub_qos = SubscriberQos::default();
+    sub_qos.partition.name = vec![PARTITION.to_string()];
     let subscriber = pair
         .sub_participant
-        .create_subscriber(SubscriberQos::default())
+        .create_subscriber(sub_qos)
         .unwrap();
     let mut reader_qos = DataReaderQos::default();
     reader_qos.reliability.kind = ReliabilityKind::Reliable;
@@ -63,8 +65,9 @@ fn e2e_matching_partition_delivers_over_wire() {
 
     wire_pub_to_sub_reader(
         &pair.pub_participant,
-        pair.sub_participant.guid_prefix(),
-        common::localhost_locator(subscriber.unicast_port()),
+        &pair.sub_participant,
+        common::user_data_locator(&pair.sub_participant),
+        writer.guid(),
         reader.guid(),
         &wire,
     );

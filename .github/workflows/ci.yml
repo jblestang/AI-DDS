@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace (exclude GUI monitor)
+        run: cargo build --workspace --exclude dds-monitor
+
+      - name: Unit and integration tests
+        run: cargo test --workspace --exclude dds-monitor
+
+      - name: Wire compliance tier
+        run: cargo test -p dds --test interop_wire --test wire_loopback --test type_lookup_wire
+
+      - name: Compliance tier
+        run: cargo test -p dds --test compliance_p1 --test compliance_p2
+
+      - name: End-to-end wire tier
+        run: cargo test -p dds --test e2e_full_stack --test e2e_discovery --test e2e_type_lookup --test e2e_qos_durability --test e2e_partition_match --test e2e_partition_compliance
+
+      - name: Shapes wire fixtures (no vendor binaries)
+        run: cargo test -p dds --test interop_shapes_wire
+
+  vendor-interop:
+    name: Vendor interop (optional)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install CycloneDDS build deps
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Build CycloneDDS and peer apps
+        run: |
+          git clone --depth 1 --branch 0.10.5 https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cyclonedds
+          cmake -S /tmp/cyclonedds -B /tmp/cyclonedds/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/cyclonedds/build -j"$(nproc)"
+          cmake --install /tmp/cyclonedds/build --prefix /tmp/cyclonedds-install
+          export CYCLONEDDS_PREFIX=/tmp/cyclonedds-install
+          ./interop/scripts/build-cyclonedds-apps.sh
+
+      - name: Live CycloneDDS interop
+        env:
+          CYCLONEDDS_PREFIX: /tmp/cyclonedds-install
+        run: cargo test -p dds --test interop_cyclonedds -- --ignored --nocapture --test-threads=1

@@ -63,7 +63,6 @@ fn e2e_read_leaves_sample_available_over_wire() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,
@@ -139,7 +138,6 @@ fn e2e_take_removes_sample_over_wire() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

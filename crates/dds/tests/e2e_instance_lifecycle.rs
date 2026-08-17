@@ -60,7 +60,6 @@ fn e2e_dispose_prevents_further_writes() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,
@@ -164,7 +163,6 @@ fn e2e_multiple_instances_delivered_in_order() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

@@ -456,11 +456,15 @@ pub enum Submessage {
     Unsupported(SubmessageKind),
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// RTPS Message parser and formatter
-// ──────────────────────────────────────────────────────────────────────────────
+/// Trim trailing zero bytes added for 4-byte RTPS submessage alignment.
+fn trim_submessage_padding(payload: &[u8]) -> Bytes {
+    let mut end = payload.len();
+    while end > 0 && payload[end - 1] == 0 {
+        end -= 1;
+    }
+    Bytes::copy_from_slice(&payload[..end])
+}
 
-/// Parses a byte buffer into an RTPS Header and a list of Submessages.
 pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>)> {
     if buf.len() < 20 {
         return Err(RtpsError::InvalidMessage(
@@ -627,7 +631,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                         }
 
                         let payload = if sub_payload.len() > payload_start {
-                            Bytes::copy_from_slice(&sub_payload[payload_start..])
+                            trim_submessage_padding(&sub_payload[payload_start..])
                         } else {
                             Bytes::new()
                         };
@@ -688,7 +692,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                         };
 
                         let payload = if sub_payload.len() > 32 {
-                            Bytes::copy_from_slice(&sub_payload[32..])
+                            trim_submessage_padding(&sub_payload[32..])
                         } else {
                             Bytes::new()
                         };
@@ -1296,6 +1300,19 @@ pub fn serialize_rtps_message(
         while (buf.len() - start_len) % 4 != 0 {
             buf.put_u8(0);
         }
+
+        // octetsToNextHeader must span the full submessage body including padding
+        // (RTPS §9.4.5.1.3; CycloneDDS rejects unaligned lengths when not last submessage).
+        let content_len = buf.len().saturating_sub(start_len + 4);
+        if content_len <= u16::MAX as usize {
+            if is_le {
+                buf[start_len + 2..start_len + 4]
+                    .copy_from_slice(&(content_len as u16).to_le_bytes());
+            } else {
+                buf[start_len + 2..start_len + 4]
+                    .copy_from_slice(&(content_len as u16).to_be_bytes());
+            }
+        }
     }
 
     buf.freeze()
@@ -1419,7 +1436,7 @@ impl RtpsEngine {
         }
 
         for (idx, changes) in to_send {
-            let reader_id = w.reader_proxies[idx].remote_reader_guid.entity_id;
+            let reader_id = dds_types::guid::EntityId::UNKNOWN;
             let writer_id = w.guid.entity_id;
             let locators: Vec<Locator> = w.reader_proxies[idx]
                 .unicast_locator_list
@@ -1448,6 +1465,7 @@ impl RtpsEngine {
                 let info_dst = || Submessage::InfoDst(InfoDst {
                     guid_prefix: remote_prefix,
                 });
+                let now = dds_types::time::Timestamp::now();
                 if payload_bytes.len() > max_payload {
                     let total_size = payload_bytes.len();
                     let num_frags = total_size.div_ceil(max_payload);
@@ -1469,7 +1487,9 @@ impl RtpsEngine {
 
                         let subs = [
                             info_dst(),
-                            Submessage::InfoTs(InfoTs { timestamp: change.source_timestamp }),
+                            Submessage::InfoTs(InfoTs {
+                                timestamp: Some(now),
+                            }),
                             Submessage::DataFrag(df),
                         ];
                         let msg = serialize_rtps_message(&header, &subs, Endianness::LittleEndian);
@@ -1480,7 +1500,9 @@ impl RtpsEngine {
                 } else {
                     let subs = [
                         info_dst(),
-                        Submessage::InfoTs(InfoTs { timestamp: change.source_timestamp }),
+                        Submessage::InfoTs(InfoTs {
+                            timestamp: Some(now),
+                        }),
                         Submessage::Data(Data {
                             reader_id,
                             writer_id,

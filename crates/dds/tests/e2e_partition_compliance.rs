@@ -23,7 +23,7 @@ const TYPE: &str = "PlainMessage";
 fn e2e_default_empty_partitions_match() {
     assert!(check_partition_compatibility(
         &[],
-        &Partition { name: vec![] }
+        &Partition::default()
     ));
 
     let pair = create_participant_pair(DOMAIN);
@@ -67,8 +67,9 @@ fn e2e_default_empty_partitions_match() {
 
     wire_pub_to_sub_reader(
         &pair.pub_participant,
-        pair.sub_participant.guid_prefix(),
-        common::localhost_locator(subscriber.unicast_port()),
+        &pair.sub_participant,
+        common::user_data_locator(&pair.sub_participant),
+        writer.guid(),
         reader.guid(),
         &wire,
     );
@@ -86,11 +87,11 @@ fn e2e_default_empty_partitions_match() {
 
 #[test]
 fn e2e_partition_mismatch_blocks_wire_delivery() {
+    let mut lab_b = Partition::default();
+    lab_b.name = vec!["lab-b".to_string()];
     assert!(!check_partition_compatibility(
         &["lab-a".to_string()],
-        &Partition {
-            name: vec!["lab-b".to_string()],
-        }
+        &lab_b
     ));
 
     let pair = create_participant_pair(DOMAIN + 1);
@@ -136,8 +137,9 @@ fn e2e_partition_mismatch_blocks_wire_delivery() {
 
     wire_pub_to_sub_reader(
         &pair.pub_participant,
-        pair.sub_participant.guid_prefix(),
-        common::localhost_locator(subscriber.unicast_port()),
+        &pair.sub_participant,
+        common::user_data_locator(&pair.sub_participant),
+        writer.guid(),
         reader.guid(),
         &wire,
     );
@@ -157,11 +159,11 @@ fn e2e_partition_mismatch_blocks_wire_delivery() {
 
 #[test]
 fn e2e_multi_partition_overlap_delivers_over_wire() {
+    let mut shared_partition = Partition::default();
+    shared_partition.name = vec!["shared".to_string(), "beta".to_string()];
     assert!(check_partition_compatibility(
         &["alpha".to_string(), "shared".to_string()],
-        &Partition {
-            name: vec!["shared".to_string(), "beta".to_string()],
-        }
+        &shared_partition
     ));
 
     let pair = create_participant_pair(DOMAIN + 2);
@@ -179,10 +181,9 @@ fn e2e_multi_partition_overlap_delivers_over_wire() {
         .create_topic(TOPIC, TYPE, TopicQos::default())
         .unwrap();
 
-    let subscriber = pair
-        .sub_participant
-        .create_subscriber(SubscriberQos::default())
-        .unwrap();
+    let mut sub_qos = SubscriberQos::default();
+    sub_qos.partition.name = vec!["shared".to_string(), "beta".to_string()];
+    let subscriber = pair.sub_participant.create_subscriber(sub_qos).unwrap();
     let mut reader_qos = DataReaderQos::default();
     reader_qos.reliability.kind = ReliabilityKind::Reliable;
     let reader = subscriber
@@ -201,14 +202,16 @@ fn e2e_multi_partition_overlap_delivers_over_wire() {
         .unwrap();
 
     let mut wire = default_wire(TOPIC, TYPE);
-    wire.partition = vec!["shared".to_string(), "beta".to_string()];
+    wire.writer_partition = Some(vec!["alpha".to_string(), "shared".to_string()]);
+    wire.reader_partition = Some(vec!["shared".to_string(), "beta".to_string()]);
     wire.writer_qos = Some(writer_qos);
     wire.reader_qos = Some(reader_qos);
 
     wire_pub_to_sub_reader(
         &pair.pub_participant,
-        pair.sub_participant.guid_prefix(),
-        common::localhost_locator(subscriber.unicast_port()),
+        &pair.sub_participant,
+        common::user_data_locator(&pair.sub_participant),
+        writer.guid(),
         reader.guid(),
         &wire,
     );

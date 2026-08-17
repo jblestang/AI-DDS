@@ -72,8 +72,9 @@ fn e2e_transient_local_retransmits_to_late_joiner() {
 
     wire_pub_to_sub_reader(
         &pair.pub_participant,
-        pair.sub_participant.guid_prefix(),
-        common::localhost_locator(subscriber.unicast_port()),
+        &pair.sub_participant,
+        common::user_data_locator(&pair.sub_participant),
+        writer.guid(),
         reader.guid(),
         &wire,
     );
@@ -128,7 +129,6 @@ fn e2e_reliable_delivery_over_wire() {
     common::wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

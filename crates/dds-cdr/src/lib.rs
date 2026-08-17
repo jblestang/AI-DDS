@@ -539,17 +539,26 @@ impl<'a> CdrDeserializer<'a> {
         if len == 0 {
             return Err(CdrError::InvalidString("Null string has length 0".into()));
         }
-        if self.offset + len > self.buf.len() {
-            return Err(CdrError::RemainingBytesMismatch {
-                expected: len,
-                found: self.remaining(),
-            });
+        let available = self.remaining();
+        if available >= len {
+            let str_bytes = &self.buf[self.offset..self.offset + len - 1]; // omit null terminator
+            let s = String::from_utf8(str_bytes.to_vec())
+                .map_err(|e| CdrError::InvalidString(e.to_string()))?;
+            self.offset += len;
+            return Ok(s);
         }
-        let str_bytes = &self.buf[self.offset..self.offset + len - 1]; // omit null terminator
-        let s = String::from_utf8(str_bytes.to_vec())
-            .map_err(|e| CdrError::InvalidString(e.to_string()))?;
-        self.offset += len;
-        Ok(s)
+        if available + 1 == len {
+            // CycloneDDS and some peers omit the trailing NUL while length includes it.
+            let str_bytes = &self.buf[self.offset..self.offset + available];
+            let s = String::from_utf8(str_bytes.to_vec())
+                .map_err(|e| CdrError::InvalidString(e.to_string()))?;
+            self.offset += available;
+            return Ok(s);
+        }
+        Err(CdrError::RemainingBytesMismatch {
+            expected: len,
+            found: available,
+        })
     }
 
     /// Read raw slice from the buffer.
@@ -635,7 +644,17 @@ impl EncapsulationHeader {
 
     /// Read encapsulation header from raw byte stream.
     pub fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        let kind_val = deserializer.deserialize_u16()?;
+        deserializer.align(2)?;
+        if deserializer.offset + 2 > deserializer.buf.len() {
+            return Err(CdrError::RemainingBytesMismatch {
+                expected: 2,
+                found: deserializer.remaining(),
+            });
+        }
+        let slice = &deserializer.buf[deserializer.offset..deserializer.offset + 2];
+        // Encapsulation kind is always big-endian on the wire (RTPS §10.2).
+        let kind_val = BigEndian::read_u16(slice);
+        deserializer.offset += 2;
         let kind = match kind_val {
             0x0000 => EncapsulationKind::CdrBe,
             0x0001 => EncapsulationKind::CdrLe,

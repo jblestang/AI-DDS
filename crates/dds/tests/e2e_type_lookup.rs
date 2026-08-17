@@ -22,7 +22,7 @@ const DOMAIN: u32 = 57;
 fn e2e_type_lookup_get_types_over_wire() {
     let pair = create_participant_pair(DOMAIN);
     let type_obj = wire_message_type_object();
-    let type_id = type_obj.get_identifier();
+    let type_id = type_obj.get_identifier().expect("type id");
 
     {
         let mut disc = pair.pub_participant.discovery.lock().unwrap();
@@ -38,7 +38,7 @@ fn e2e_type_lookup_get_types_over_wire() {
             pair.sub_participant.guid_prefix(),
             EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER,
         ),
-        dds::types::guid::SequenceNumber(100),
+        dds::types::guid::SequenceNumber::new(100),
         type_lookup_instance_name(&pair.sub_participant.guid_prefix()),
         vec![type_id.clone()],
     );
@@ -65,7 +65,7 @@ fn e2e_type_lookup_get_types_over_wire() {
 fn e2e_type_lookup_get_type_dependencies_over_wire() {
     let pair = create_participant_pair(DOMAIN + 1);
     let (type_obj, nested_dep) = type_with_nested_dependency();
-    let type_id = type_obj.get_identifier();
+    let type_id = type_obj.get_identifier().expect("type id");
 
     {
         let mut disc = pair.pub_participant.discovery.lock().unwrap();
@@ -83,7 +83,7 @@ fn e2e_type_lookup_get_type_dependencies_over_wire() {
                     pair.sub_participant.guid_prefix(),
                     EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER,
                 ),
-                sequence_number: dds::types::guid::SequenceNumber(101),
+                sequence_number: dds::types::guid::SequenceNumber::new(101),
             },
             instance_name: type_lookup_instance_name(&pair.sub_participant.guid_prefix()),
         },
@@ -130,7 +130,7 @@ fn e2e_type_lookup_unknown_type_returns_empty_result() {
             pair.sub_participant.guid_prefix(),
             EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER,
         ),
-        dds::types::guid::SequenceNumber(102),
+        dds::types::guid::SequenceNumber::new(102),
         type_lookup_instance_name(&pair.sub_participant.guid_prefix()),
         vec![unknown],
     );
@@ -166,7 +166,7 @@ fn e2e_type_lookup_with_type_info_in_discovery() {
 
     // Verify type_info can be attached to discovery wire metadata
     assert_eq!(info.type_name, "WireMessage");
-    assert_eq!(info.type_id, type_obj.get_identifier());
+    assert_eq!(info.type_id, type_obj.get_identifier().expect("type id"));
 
     let _sub_rx = pair.sub_participant.spawn_receiver_loop();
     let _pub_rx = pair.pub_participant.spawn_receiver_loop();
@@ -176,7 +176,7 @@ fn e2e_type_lookup_with_type_info_in_discovery() {
             pair.sub_participant.guid_prefix(),
             EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER,
         ),
-        dds::types::guid::SequenceNumber(103),
+        dds::types::guid::SequenceNumber::new(103),
         type_lookup_instance_name(&pair.sub_participant.guid_prefix()),
         vec![info.type_id.clone()],
     );

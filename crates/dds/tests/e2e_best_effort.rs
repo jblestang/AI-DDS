@@ -63,7 +63,6 @@ fn e2e_best_effort_compatible_delivery() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

@@ -132,7 +132,6 @@ fn e2e_secure_encrypted_delivery_over_wire() {
     wire_bidirectional_discovery(
         &alice,
         &bob,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,
