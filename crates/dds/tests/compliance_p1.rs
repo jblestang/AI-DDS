@@ -117,12 +117,10 @@ fn test_read_vs_take_semantics() {
 #[test]
 fn test_partition_blocks_matchmaking() {
     let remote = vec!["lab".to_string()];
-    let local_match = Partition {
-        name: vec!["lab".to_string()],
-    };
-    let local_mismatch = Partition {
-        name: vec!["other".to_string()],
-    };
+    let mut local_match = Partition::default();
+    local_match.name = vec!["lab".to_string()];
+    let mut local_mismatch = Partition::default();
+    local_mismatch.name = vec!["other".to_string()];
     assert!(check_partition_compatibility(&remote, &local_match));
     assert!(!check_partition_compatibility(&remote, &local_mismatch));
 }

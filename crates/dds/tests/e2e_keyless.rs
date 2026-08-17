@@ -63,7 +63,6 @@ fn e2e_keyless_write_without_register_instance() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,
@@ -126,7 +125,6 @@ fn e2e_keyless_multiple_samples_same_handle() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

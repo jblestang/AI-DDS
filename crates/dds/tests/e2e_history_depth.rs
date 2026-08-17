@@ -9,7 +9,7 @@ use common::{
     wire_type_support, WireMessage,
 };
 use dds::types::qos::{
-    DataReaderQos, DataWriterQos, History, HistoryKind, PublisherQos, ReliabilityKind,
+    DataReaderQos, DataWriterQos, HistoryKind, PublisherQos, ReliabilityKind,
     SubscriberQos, TopicQos,
 };
 use std::time::Duration;
@@ -42,10 +42,8 @@ fn e2e_reader_keep_last_depth_over_wire() {
         .unwrap();
     let mut reader_qos = DataReaderQos::default();
     reader_qos.reliability.kind = ReliabilityKind::Reliable;
-    reader_qos.history = History {
-        kind: HistoryKind::KeepLast,
-        depth: HISTORY_DEPTH,
-    };
+    reader_qos.history.kind = HistoryKind::KeepLast;
+    reader_qos.history.depth = HISTORY_DEPTH;
     let reader = subscriber
         .create_datareader(&sub_topic, reader_qos.clone(), ts.clone())
         .unwrap();
@@ -69,7 +67,6 @@ fn e2e_reader_keep_last_depth_over_wire() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

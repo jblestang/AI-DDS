@@ -10,24 +10,24 @@ use std::collections::HashMap;
 
 #[test]
 fn type_lookup_get_types_wire_serve() {
-    let obj = TypeObject::Complete(StructureType {
-        name: "SensorReading".to_string(),
-        extensibility: ExtensibilityKind::Appendable,
-        members: vec![Member {
-            name: "value".to_string(),
-            type_id: dds_xtypes::TypeIdentifier::TkFloat32,
-            is_key: false,
-            is_optional: false,
-        }],
-    });
-    let type_id = obj.get_identifier();
+    let obj = TypeObject::Complete(StructureType::new(
+        "SensorReading".to_string(),
+        ExtensibilityKind::Appendable,
+        vec![Member::new(
+            "value".to_string(),
+            dds_xtypes::TypeIdentifier::TkFloat32,
+            false,
+            false,
+        )],
+    ));
+    let type_id = obj.get_identifier().expect("type id");
     let mut db = HashMap::new();
     db.insert(type_id.clone(), obj.clone());
 
     let prefix = dds_types::guid::GuidPrefix::new([0xAB; 12]);
     let request = make_get_types_request(
         dds_types::guid::Guid::new(prefix, dds_types::guid::EntityId::PARTICIPANT),
-        dds_types::guid::SequenceNumber(99),
+        dds_types::guid::SequenceNumber::new(99),
         type_lookup_instance_name(&prefix),
         vec![type_id],
     );
@@ -39,7 +39,7 @@ fn type_lookup_get_types_wire_serve() {
     let decoded_rep =
         dds_xtypes::TypeLookupReply::from_wire_bytes(&rep_wire).expect("decode reply");
 
-    assert_eq!(decoded_rep.header.request_id.sequence_number.0, 99);
+    assert_eq!(decoded_rep.header.request_id.sequence_number.value(), 99);
     match decoded_rep.return_data {
         TypeLookupReturn::GetTypes(TypeLookupGetTypesResult::Ok(out)) => {
             assert_eq!(out.types.len(), 1);
@@ -62,7 +62,7 @@ fn type_lookup_call_discriminators_match_spec() {
             dds_types::guid::GuidPrefix::new([1; 12]),
             dds_types::guid::EntityId::PARTICIPANT,
         ),
-        dds_types::guid::SequenceNumber(1),
+        dds_types::guid::SequenceNumber::new(1),
         "dds.builtin.TOS.test".to_string(),
         vec![],
     );

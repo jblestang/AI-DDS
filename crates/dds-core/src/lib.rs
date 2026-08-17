@@ -1279,11 +1279,11 @@ impl ParticipantHooks {
         self.unicast_port + (USER_UNICAST_OFFSET - SPDP_UNICAST_OFFSET) as u32
     }
 
-    fn user_unicast_locator(&self) -> Locator {
+    pub(crate) fn user_unicast_locator(&self) -> Locator {
         Locator::udpv4(self.advertise_ipv4(), self.user_unicast_port())
     }
 
-    fn metatraffic_unicast_locator(&self) -> Locator {
+    pub(crate) fn metatraffic_unicast_locator(&self) -> Locator {
         Locator::udpv4(self.advertise_ipv4(), self.unicast_port)
     }
 
@@ -1863,6 +1863,24 @@ impl DomainParticipant {
     #[must_use]
     pub const fn unicast_port(&self) -> u32 {
         self.unicast_port
+    }
+
+    /// User DATA unicast port (`unicast_port + 1` per RTPS §9.6.2).
+    #[must_use]
+    pub fn user_data_unicast_port(&self) -> u32 {
+        self.hooks.user_unicast_port()
+    }
+
+    /// Locator where remote writers should send user DATA for this participant.
+    #[must_use]
+    pub fn user_data_locator(&self) -> Locator {
+        self.hooks.user_unicast_locator()
+    }
+
+    /// Locator for metatraffic (SPDP/SEDP/TypeLookup) to this participant.
+    #[must_use]
+    pub fn metatraffic_locator(&self) -> Locator {
+        self.hooks.metatraffic_unicast_locator()
     }
 
     /// Register a type support helper.

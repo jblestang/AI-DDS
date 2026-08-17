@@ -60,8 +60,9 @@ fn e2e_topic_name_mismatch_blocks_wire_delivery() {
 
     wire_pub_to_sub_reader(
         &pair.pub_participant,
-        pair.sub_participant.guid_prefix(),
-        common::localhost_locator(subscriber.unicast_port()),
+        &pair.sub_participant,
+        common::user_data_locator(&pair.sub_participant),
+        writer.guid(),
         reader.guid(),
         &wire,
     );

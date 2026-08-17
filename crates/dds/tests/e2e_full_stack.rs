@@ -35,8 +35,8 @@ const E2E_PARTITION: &str = "e2e-lab";
 fn e2e_validate_implemented_features() {
     let type_obj = wire_message_type_object();
     let (type_obj_with_dep, nested_dep) = type_with_nested_dependency();
-    let type_id = type_obj.get_identifier();
-    let type_id_with_dep = type_obj_with_dep.get_identifier();
+    let type_id = type_obj.get_identifier().expect("type id");
+    let type_id_with_dep = type_obj_with_dep.get_identifier().expect("type id");
     let type_info = type_info_for(&type_obj);
     let ts = wire_type_support();
 
@@ -50,7 +50,9 @@ fn e2e_validate_implemented_features() {
     let mut sub_reader_qos = DataReaderQos::default();
     sub_reader_qos.reliability.kind = ReliabilityKind::Reliable;
 
-    let subscriber = sub.create_subscriber(SubscriberQos::default()).unwrap();
+    let mut sub_qos = SubscriberQos::default();
+    sub_qos.partition.name = vec![E2E_PARTITION.to_string()];
+    let subscriber = sub.create_subscriber(sub_qos).unwrap();
     let reader = subscriber
         .create_datareader(&sub_topic, sub_reader_qos.clone(), ts.clone())
         .unwrap();
@@ -132,6 +134,8 @@ fn e2e_validate_implemented_features() {
         topic: E2E_TOPIC.to_string(),
         type_name: E2E_TYPE.to_string(),
         partition: vec![E2E_PARTITION.to_string()],
+        writer_partition: None,
+        reader_partition: None,
         type_info: Some(type_info.clone()),
         writer_qos: Some(writer_qos.clone()),
         reader_qos: Some(sub_reader_qos.clone()),
@@ -139,7 +143,6 @@ fn e2e_validate_implemented_features() {
     wire_bidirectional_discovery(
         &pub_participant,
         &sub,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,
@@ -171,14 +174,14 @@ fn e2e_validate_implemented_features() {
             sub.guid_prefix(),
             EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER,
         ),
-        SequenceNumber(42),
+        SequenceNumber::new(42),
         type_lookup_instance_name(&sub.guid_prefix()),
         vec![type_id.clone()],
     );
     sub
         .send_type_lookup_request(
             &get_types_req,
-            &common::localhost_locator(pub_participant.unicast_port()),
+            &common::metatraffic_locator(&pub_participant),
         )
         .expect("send getTypes request");
 
@@ -200,7 +203,7 @@ fn e2e_validate_implemented_features() {
                     sub.guid_prefix(),
                     EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER,
                 ),
-                sequence_number: SequenceNumber(43),
+                sequence_number: SequenceNumber::new(43),
             },
             instance_name: type_lookup_instance_name(&sub.guid_prefix()),
         },
@@ -212,7 +215,7 @@ fn e2e_validate_implemented_features() {
     sub
         .send_type_lookup_request(
             &dep_request,
-            &common::localhost_locator(pub_participant.unicast_port()),
+            &common::metatraffic_locator(&pub_participant),
         )
         .expect("send getTypeDependencies request");
 

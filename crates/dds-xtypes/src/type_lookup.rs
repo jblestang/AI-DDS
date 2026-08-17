@@ -847,33 +847,33 @@ mod tests {
     use crate::{ExtensibilityKind, Member, StructureType};
 
     fn sample_type_object(name: &str) -> TypeObject {
-        TypeObject::Complete(StructureType {
-            name: name.to_string(),
-            extensibility: ExtensibilityKind::Appendable,
-            members: vec![Member {
-                name: "x".to_string(),
-                type_id: TypeIdentifier::TkInt32,
-                is_key: false,
-                is_optional: false,
-            }],
-        })
+        TypeObject::Complete(StructureType::new(
+            name.to_string(),
+            ExtensibilityKind::Appendable,
+            vec![Member::new(
+                "x".to_string(),
+                TypeIdentifier::TkInt32,
+                false,
+                false,
+            )],
+        ))
     }
 
     #[test]
     fn type_lookup_request_reply_xcdr2_roundtrip() {
         let obj = sample_type_object("Point");
-        let type_id = obj.get_identifier();
+        let type_id = obj.get_identifier().expect("type id");
 
         let request = make_get_types_request(
             Guid::new(GuidPrefix::new([9; 12]), EntityId::PARTICIPANT),
-            SequenceNumber(7),
+            SequenceNumber::new(7),
             type_lookup_instance_name(&GuidPrefix::new([9; 12])),
             vec![type_id.clone()],
         );
 
         let req_wire = request.to_wire_bytes().unwrap();
         let decoded_req = TypeLookupRequest::from_wire_bytes(&req_wire).unwrap();
-        assert_eq!(decoded_req.header.request_id.sequence_number, SequenceNumber(7));
+        assert_eq!(decoded_req.header.request_id.sequence_number, SequenceNumber::new(7));
         assert!(matches!(
             decoded_req.data,
             TypeLookupCall::GetTypes(ref inner) if inner.type_ids == vec![type_id.clone()]
@@ -897,17 +897,17 @@ mod tests {
     #[test]
     fn get_type_dependencies_lists_hash_deps() {
         let nested_id = TypeIdentifier::TiCompleteConstructed([1; 14]);
-        let root = TypeObject::Complete(StructureType {
-            name: "Root".to_string(),
-            extensibility: ExtensibilityKind::Final,
-            members: vec![Member {
-                name: "child".to_string(),
-                type_id: nested_id.clone(),
-                is_key: false,
-                is_optional: false,
-            }],
-        });
-        let root_id = root.get_identifier();
+        let root = TypeObject::Complete(StructureType::new(
+            "Root".to_string(),
+            ExtensibilityKind::Final,
+            vec![Member::new(
+                "child".to_string(),
+                nested_id.clone(),
+                false,
+                false,
+            )],
+        ));
+        let root_id = root.get_identifier().expect("type id");
         let mut db = HashMap::new();
         db.insert(root_id.clone(), root);
 
@@ -915,7 +915,7 @@ mod tests {
             header: RequestHeader {
                 request_id: SampleIdentity {
                     writer_guid: Guid::new(GuidPrefix::new([1; 12]), EntityId::PARTICIPANT),
-                    sequence_number: SequenceNumber(1),
+                    sequence_number: SequenceNumber::new(1),
                 },
                 instance_name: type_lookup_instance_name(&GuidPrefix::new([1; 12])),
             },

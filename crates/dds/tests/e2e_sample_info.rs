@@ -63,7 +63,6 @@ fn e2e_wire_sample_has_valid_data_sample_info() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

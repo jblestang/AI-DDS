@@ -92,7 +92,6 @@ fn e2e_publication_matched_listener_on_wire_match() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &default_wire(TOPIC, TYPE),

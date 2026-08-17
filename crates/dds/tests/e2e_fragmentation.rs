@@ -63,7 +63,6 @@ fn e2e_large_payload_fragmentation_over_wire() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,
@@ -126,7 +125,6 @@ fn e2e_multiple_large_samples_over_wire() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,

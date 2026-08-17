@@ -185,6 +185,16 @@ pub fn localhost_locator(port: u32) -> Locator {
     Locator::udpv4(std::net::Ipv4Addr::LOCALHOST, port)
 }
 
+/// User-traffic locator for a participant (correct IP + user unicast port).
+pub fn user_data_locator(participant: &dds::core::DomainParticipant) -> Locator {
+    participant.user_data_locator()
+}
+
+/// Metatraffic locator for discovery and TypeLookup to a participant.
+pub fn metatraffic_locator(participant: &dds::core::DomainParticipant) -> Locator {
+    participant.metatraffic_locator()
+}
+
 pub fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
@@ -232,10 +242,29 @@ pub fn read_next_wire(reader: &dds::core::DataReader, timeout: Duration) -> Opti
 pub struct DiscoveryWire {
     pub topic: String,
     pub type_name: String,
+    /// Default partition for both endpoints when `writer_partition` / `reader_partition` are unset.
     pub partition: Vec<String>,
+    /// Partition advertised on the injected remote writer (publisher side).
+    pub writer_partition: Option<Vec<String>>,
+    /// Partition advertised on the injected remote reader (subscriber side).
+    pub reader_partition: Option<Vec<String>>,
     pub type_info: Option<TypeInformation>,
     pub writer_qos: Option<DataWriterQos>,
     pub reader_qos: Option<DataReaderQos>,
+}
+
+impl DiscoveryWire {
+    pub fn writer_partitions(&self) -> Vec<String> {
+        self.writer_partition
+            .clone()
+            .unwrap_or_else(|| self.partition.clone())
+    }
+
+    pub fn reader_partitions(&self) -> Vec<String> {
+        self.reader_partition
+            .clone()
+            .unwrap_or_else(|| self.partition.clone())
+    }
 }
 
 pub fn inject_remote_participant(
@@ -285,13 +314,12 @@ pub fn inject_remote_endpoint(
 pub fn wire_bidirectional_discovery(
     pub_participant: &dds::core::DomainParticipant,
     sub_participant: &dds::core::DomainParticipant,
-    sub_subscriber_port: u32,
     writer_guid: Guid,
     reader_guid: Guid,
     wire: &DiscoveryWire,
 ) {
-    let pub_locator = localhost_locator(pub_participant.unicast_port());
-    let sub_locator = localhost_locator(sub_subscriber_port);
+    let pub_locator = user_data_locator(pub_participant);
+    let sub_locator = user_data_locator(sub_participant);
 
     inject_remote_endpoint(
         sub_participant,
@@ -303,7 +331,7 @@ pub fn wire_bidirectional_discovery(
             type_name: wire.type_name.clone(),
             qos_writer: wire.writer_qos.clone(),
             qos_reader: None,
-            partition: wire.partition.clone(),
+            partition: wire.writer_partitions(),
             unicast_locators: vec![pub_locator],
             metatraffic_unicast_locators: vec![pub_locator],
             multicast_locators: vec![],
@@ -322,7 +350,7 @@ pub fn wire_bidirectional_discovery(
             type_name: wire.type_name.clone(),
             qos_writer: None,
             qos_reader: wire.reader_qos.clone(),
-            partition: wire.partition.clone(),
+            partition: wire.reader_partitions(),
             unicast_locators: vec![sub_locator],
             metatraffic_unicast_locators: vec![sub_locator],
             multicast_locators: vec![],
@@ -335,17 +363,19 @@ pub fn wire_bidirectional_discovery(
     pub_participant.run_matchmaking();
 }
 
-/// Inject remote reader into publisher's discovery view (pub → sub direction).
+/// Inject remote reader into publisher's discovery view and remote writer into
+/// subscriber's discovery view (late-joiner / pub → sub data path).
 pub fn wire_pub_to_sub_reader(
     pub_participant: &dds::core::DomainParticipant,
-    sub_prefix: GuidPrefix,
+    sub_participant: &dds::core::DomainParticipant,
     sub_locator: Locator,
+    writer_guid: Guid,
     reader_guid: Guid,
     wire: &DiscoveryWire,
 ) {
     inject_remote_endpoint(
         pub_participant,
-        sub_prefix,
+        sub_participant.guid_prefix(),
         sub_locator,
         dds::discovery::DiscoveredEndpoint {
             guid: reader_guid,
@@ -353,7 +383,7 @@ pub fn wire_pub_to_sub_reader(
             type_name: wire.type_name.clone(),
             qos_writer: None,
             qos_reader: wire.reader_qos.clone(),
-            partition: wire.partition.clone(),
+            partition: wire.reader_partitions(),
             unicast_locators: vec![sub_locator],
             metatraffic_unicast_locators: vec![sub_locator],
             multicast_locators: vec![],
@@ -362,6 +392,13 @@ pub fn wire_pub_to_sub_reader(
         },
     );
     pub_participant.run_matchmaking();
+    wire_sub_from_pub_writer(
+        sub_participant,
+        pub_participant.guid_prefix(),
+        user_data_locator(pub_participant),
+        writer_guid,
+        wire,
+    );
 }
 
 /// Inject remote writer into subscriber's discovery view (sub ← pub direction).
@@ -382,7 +419,7 @@ pub fn wire_sub_from_pub_writer(
             type_name: wire.type_name.clone(),
             qos_writer: wire.writer_qos.clone(),
             qos_reader: None,
-            partition: wire.partition.clone(),
+            partition: wire.writer_partitions(),
             unicast_locators: vec![pub_locator],
             metatraffic_unicast_locators: vec![pub_locator],
             multicast_locators: vec![],
@@ -418,6 +455,8 @@ pub fn default_wire(topic: &str, type_name: &str) -> DiscoveryWire {
         topic: topic.to_string(),
         type_name: type_name.to_string(),
         partition: vec![],
+        writer_partition: None,
+        reader_partition: None,
         type_info: None,
         writer_qos: Some(DataWriterQos::default()),
         reader_qos: Some(DataReaderQos::default()),

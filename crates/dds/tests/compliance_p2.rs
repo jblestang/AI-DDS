@@ -109,16 +109,14 @@ fn test_durability_retransmit_on_late_joiner() {
     writer.register_instance(&sample).unwrap();
     writer.write(&sample).unwrap();
 
-    let reader_locator = dds::types::locator::Locator::udpv4(
-        std::net::Ipv4Addr::LOCALHOST,
-        subscriber.unicast_port(),
-    );
+    let reader_locator = participant_sub.user_data_locator();
+    let writer_locator = participant_pub.user_data_locator();
     {
         let mut disc = participant_pub.discovery.lock().unwrap();
         disc.process_spdp_packet(dds_discovery::DiscoveredParticipant {
             guid_prefix: participant_sub.guid_prefix(),
             unicast_locators: vec![reader_locator],
-            metatraffic_unicast_locators: vec![reader_locator],
+            metatraffic_unicast_locators: vec![participant_sub.user_data_locator()],
             multicast_locators: vec![],
             lease_duration: dds::types::time::Duration::from_secs(100),
             last_contact: std::time::Instant::now(),
@@ -138,6 +136,31 @@ fn test_durability_retransmit_on_late_joiner() {
         });
     }
     participant_pub.run_matchmaking();
+    {
+        let mut disc = participant_sub.discovery.lock().unwrap();
+        disc.process_spdp_packet(dds_discovery::DiscoveredParticipant {
+            guid_prefix: participant_pub.guid_prefix(),
+            unicast_locators: vec![writer_locator],
+            metatraffic_unicast_locators: vec![participant_pub.user_data_locator()],
+            multicast_locators: vec![],
+            lease_duration: dds::types::time::Duration::from_secs(100),
+            last_contact: std::time::Instant::now(),
+        });
+        disc.process_sedp_endpoint(dds_discovery::DiscoveredEndpoint {
+            guid: writer.guid(),
+            topic_name: "DurabilityTopic".to_string(),
+            type_name: "KeyedMessage".to_string(),
+            qos_writer: Some(writer.qos().clone()),
+            qos_reader: None,
+            partition: vec![],
+            unicast_locators: vec![writer_locator],
+            metatraffic_unicast_locators: vec![],
+            multicast_locators: vec![],
+            type_info: None,
+            type_information_wire: None,
+        });
+    }
+    participant_sub.run_matchmaking();
 
     let start = std::time::Instant::now();
     let mut received = None;

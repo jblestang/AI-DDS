@@ -635,7 +635,17 @@ impl EncapsulationHeader {
 
     /// Read encapsulation header from raw byte stream.
     pub fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        let kind_val = deserializer.deserialize_u16()?;
+        deserializer.align(2)?;
+        if deserializer.offset + 2 > deserializer.buf.len() {
+            return Err(CdrError::RemainingBytesMismatch {
+                expected: 2,
+                found: deserializer.remaining(),
+            });
+        }
+        let slice = &deserializer.buf[deserializer.offset..deserializer.offset + 2];
+        // Encapsulation kind is always big-endian on the wire (RTPS §10.2).
+        let kind_val = BigEndian::read_u16(slice);
+        deserializer.offset += 2;
         let kind = match kind_val {
             0x0000 => EncapsulationKind::CdrBe,
             0x0001 => EncapsulationKind::CdrLe,

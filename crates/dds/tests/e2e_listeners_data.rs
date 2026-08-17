@@ -82,7 +82,6 @@ fn e2e_on_data_available_fires_over_wire() {
     wire_bidirectional_discovery(
         &pair.pub_participant,
         &pair.sub_participant,
-        subscriber.unicast_port(),
         writer.guid(),
         reader.guid(),
         &wire,
