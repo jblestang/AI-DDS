@@ -3,10 +3,66 @@
 //! Implements the Extensible and Dynamic Topic Types specification:
 //! `TypeObject`, `TypeIdentifier`, type compatibility rules, and extensibility.
 //!
-//! Reference: `XTypes` §7
+//! Reference: `XTypes` §7.
 
 #![forbid(unsafe_code)]
-#![allow(warnings)] // Simplified for the exercise
+#![warn(
+    rust_2018_idioms,
+    nonstandard_style,
+    future_incompatible,
+    clippy::all,
+    clippy::restriction,
+    clippy::pedantic,
+    clippy::nursery
+)]
+#![allow(
+    clippy::blanket_clippy_restriction_lints,
+    clippy::implicit_return,
+    clippy::pub_use,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::absolute_paths,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::missing_inline_in_public_items,
+    clippy::shadow_reuse,
+    clippy::shadow_same,
+    clippy::shadow_unrelated,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::wildcard_imports,
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    clippy::single_call_fn,
+    clippy::default_numeric_fallback,
+    clippy::arithmetic_side_effects,
+    clippy::std_instead_of_core,
+    clippy::std_instead_of_alloc,
+    clippy::alloc_instead_of_core,
+    clippy::arbitrary_source_item_ordering,
+    clippy::min_ident_chars,
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    clippy::module_name_repetitions,
+    clippy::question_mark_used,
+    clippy::single_char_lifetime_names,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_used,
+    clippy::unwrap_in_result,
+    clippy::cognitive_complexity,
+    clippy::tests_outside_test_module,
+    clippy::missing_docs_in_private_items,
+    clippy::pattern_type_mismatch,
+    clippy::redundant_pub_crate,
+    clippy::similar_names,
+    clippy::else_if_without_else,
+    clippy::unseparated_literal_suffix,
+    clippy::separated_literal_suffix,
+    reason = "XTypes type system requires standard library conversions, CDR serialization patterns, and spec-defined extensible structures."
+)]
 
 use dds_cdr::{CdrDeserialize, CdrDeserializer, CdrResult, CdrSerialize, CdrSerializer};
 use sha2::{Digest as _, Sha256};
@@ -15,7 +71,7 @@ use std::collections::HashMap;
 pub mod dynamic;
 pub use dynamic::{DynamicData, DynamicType};
 
-/// OMG `XTypes` §7.2.2 Extensibility Kinds
+/// OMG `XTypes` §7.2.2 Extensibility Kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExtensibilityKind {
     Final = 0,
@@ -31,7 +87,7 @@ impl CdrSerialize for ExtensibilityKind {
 }
 
 impl CdrDeserialize for ExtensibilityKind {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         match deserializer.deserialize_u8()? {
             0 => Ok(Self::Final),
             1 => Ok(Self::Appendable),
@@ -68,7 +124,7 @@ pub const TI_PLAIN_ARRAY_LARGE: u8 = 0x92;
 pub const TI_MINIMAL_CONSTRUCTED: u8 = 0xF1;
 pub const TI_COMPLETE_CONSTRUCTED: u8 = 0xF2;
 
-/// OMG `XTypes` §7.3.1 `TypeIdentifier` representation
+/// OMG `XTypes` §7.3.1 `TypeIdentifier` representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeIdentifier {
     TkNone,
@@ -89,10 +145,10 @@ pub enum TypeIdentifier {
     TiString8Large { bound: u32 },
     TiString16Small { bound: u8 },
     TiString16Large { bound: u32 },
-    TiPlainSequenceSmall { bound: u8, element_identifier: Box<TypeIdentifier> },
-    TiPlainSequenceLarge { bound: u32, element_identifier: Box<TypeIdentifier> },
-    TiPlainArraySmall { bound: u8, element_identifier: Box<TypeIdentifier> },
-    TiPlainArrayLarge { bound: u32, element_identifier: Box<TypeIdentifier> },
+    TiPlainSequenceSmall { bound: u8, element_identifier: Box<Self> },
+    TiPlainSequenceLarge { bound: u32, element_identifier: Box<Self> },
+    TiPlainArraySmall { bound: u8, element_identifier: Box<Self> },
+    TiPlainArrayLarge { bound: u32, element_identifier: Box<Self> },
     TiMinimalConstructed([u8; 14]),
     TiCompleteConstructed([u8; 14]),
 }
@@ -191,27 +247,27 @@ impl CdrDeserialize for TypeIdentifier {
             TI_STRING16_LARGE => Ok(Self::TiString16Large { bound: deserializer.deserialize_u32()? }),
             TI_PLAIN_SEQUENCE_SMALL => Ok(Self::TiPlainSequenceSmall {
                 bound: deserializer.deserialize_u8()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
+                element_identifier: Box::new(Self::deserialize(deserializer)?),
             }),
             TI_PLAIN_SEQUENCE_LARGE => Ok(Self::TiPlainSequenceLarge {
                 bound: deserializer.deserialize_u32()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
+                element_identifier: Box::new(Self::deserialize(deserializer)?),
             }),
             TI_PLAIN_ARRAY_SMALL => Ok(Self::TiPlainArraySmall {
                 bound: deserializer.deserialize_u8()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
+                element_identifier: Box::new(Self::deserialize(deserializer)?),
             }),
             TI_PLAIN_ARRAY_LARGE => Ok(Self::TiPlainArrayLarge {
                 bound: deserializer.deserialize_u32()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
+                element_identifier: Box::new(Self::deserialize(deserializer)?),
             }),
             TI_MINIMAL_CONSTRUCTED => {
-                let mut hash = [0u8; 14];
+                let mut hash = [u8::default(); 14];
                 for b in &mut hash { *b = deserializer.deserialize_u8()?; }
                 Ok(Self::TiMinimalConstructed(hash))
             }
             TI_COMPLETE_CONSTRUCTED => {
-                let mut hash = [0u8; 14];
+                let mut hash = [u8::default(); 14];
                 for b in &mut hash { *b = deserializer.deserialize_u8()?; }
                 Ok(Self::TiCompleteConstructed(hash))
             }
@@ -220,7 +276,7 @@ impl CdrDeserialize for TypeIdentifier {
     }
 }
 
-/// A member field within a structured `TypeObject`
+/// A member field within a structured `TypeObject`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Member {
     pub name: String,
@@ -250,7 +306,7 @@ impl CdrDeserialize for Member {
     }
 }
 
-/// A structured `TypeObject` containing member fields
+/// A structured `TypeObject` containing member fields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructureType {
     pub name: String,
@@ -283,7 +339,7 @@ impl CdrDeserialize for StructureType {
     }
 }
 
-/// OMG `XTypes` §7.3.2 `TypeObject` definition
+/// OMG `XTypes` §7.3.2 `TypeObject` definition.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeObject {
     Minimal(StructureType),
@@ -317,7 +373,7 @@ impl CdrDeserialize for TypeObject {
 }
 
 impl TypeObject {
-    /// Compute the `TypeIdentifier` for this `TypeObject` using SHA-256 (first 14 bytes)
+    /// Compute the `TypeIdentifier` for this `TypeObject` using SHA-256 (first 14 bytes).
     #[must_use]
     pub fn get_identifier(&self) -> TypeIdentifier {
         let bytes = dds_cdr::serialize_to_bytes(self, dds_cdr::Endianness::LittleEndian).unwrap();
@@ -325,7 +381,7 @@ impl TypeObject {
         hasher.update(&bytes);
         let hash_result: [u8; 32] = hasher.finalize().into();
         
-        let mut eq_hash = [0u8; 14];
+        let mut eq_hash = [u8::default(); 14];
         eq_hash.copy_from_slice(&hash_result[0..14]);
 
         match self {
@@ -335,7 +391,7 @@ impl TypeObject {
     }
 }
 
-/// OMG `XTypes` §7.6.3 `TypeInformation` container
+/// OMG `XTypes` §7.6.3 `TypeInformation` container.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeInformation {
     pub type_name: String,
@@ -359,7 +415,7 @@ impl CdrDeserialize for TypeInformation {
     }
 }
 
-/// OMG `XTypes` §7.2.4 compatibility check
+/// OMG `XTypes` §7.2.4 compatibility check.
 #[must_use]
 pub fn is_assignable_from(receiver: &TypeObject, sender: &TypeObject) -> bool {
     let r_struct = match receiver {

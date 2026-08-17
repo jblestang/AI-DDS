@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-/// Represents a dynamically reflected type in the XTypes type system.
+/// Represents a dynamically reflected type in the `XTypes` type system.
 pub trait DynamicType: Send + Sync {
     /// Get the name of this type.
     fn name(&self) -> &str;
@@ -23,20 +23,21 @@ pub enum DynamicData {
     Float64(f64),
     Boolean(bool),
     String(String),
-    Struct(HashMap<String, DynamicData>),
-    Sequence(Vec<DynamicData>),
-    Array(Vec<DynamicData>),
+    Struct(HashMap<String, Self>),
+    Sequence(Vec<Self>),
+    Array(Vec<Self>),
 }
 
 impl DynamicData {
-    /// Create a new empty struct DynamicData.
+    /// Create a new empty struct `DynamicData`.
+    #[must_use]
     pub fn new_struct() -> Self {
-        DynamicData::Struct(HashMap::new())
+        Self::Struct(HashMap::new())
     }
 
     /// Insert a field into a struct. Returns false if not a struct.
-    pub fn set_field(&mut self, name: &str, value: DynamicData) -> bool {
-        if let DynamicData::Struct(map) = self {
+    pub fn set_field(&mut self, name: &str, value: Self) -> bool {
+        if let Self::Struct(map) = self {
             map.insert(name.to_owned(), value);
             true
         } else {
@@ -45,8 +46,9 @@ impl DynamicData {
     }
 
     /// Retrieve a field from a struct.
-    pub fn get_field(&self, name: &str) -> Option<&DynamicData> {
-        if let DynamicData::Struct(map) = self {
+    #[must_use]
+    pub fn get_field(&self, name: &str) -> Option<&Self> {
+        if let Self::Struct(map) = self {
             map.get(name)
         } else {
             None
