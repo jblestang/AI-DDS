@@ -5,9 +5,9 @@
 //!
 //! Each variant maps to a return code from the DDS specification.
 //!
-//! Reference: DCPS §2.2.1.1 — Return Codes
+//! Reference: DCPS §2.2.1.1 — Return Codes.
 
-use std::fmt;
+use core::fmt;
 
 /// Alias for `Result<T, DdsError>` — used throughout the DDS stack.
 pub type DdsResult<T> = Result<T, DdsError>;
@@ -17,34 +17,21 @@ pub type DdsResult<T> = Result<T, DdsError>;
 /// Successful operations return `Ok(T)` rather than a `ReturnCode::OK`
 /// variant — we use Rust's `Result` idiom instead.
 ///
-/// Reference: DCPS §2.2.1.1, Table 2.1
+/// Reference: DCPS §2.2.1.1, Table 2.1.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DdsError {
-    /// Generic, unspecified error.
-    #[error("unspecified error: {0}")]
-    Error(String),
-
-    /// Unsupported operation or `QoS` policy.
-    #[error("operation not supported: {0}")]
-    Unsupported(String),
-
     /// Invalid parameter passed to a DDS operation.
     #[error("bad parameter: {0}")]
     BadParameter(String),
 
-    /// A precondition for the operation was not met.
-    /// E.g., attempting to delete an entity that still has dependents.
-    #[error("precondition not met: {0}")]
-    PreconditionNotMet(String),
+    /// Generic, unspecified error.
+    #[error("unspecified error: {0}")]
+    Error(String),
 
-    /// The middleware ran out of a resource governed by `QoS`
-    /// (e.g., `ResourceLimits` exceeded).
-    #[error("out of resources: {0}")]
-    OutOfResources(String),
-
-    /// The entity has not been enabled yet (see `EntityFactory` `QoS`).
-    #[error("entity not enabled")]
-    NotEnabled,
+    /// An illegal operation was attempted (programming error).
+    #[error("illegal operation: {0}")]
+    IllegalOperation(String),
 
     /// An immutable `QoS` policy was changed, or an incompatible
     /// `QoS` change was attempted on an enabled entity.
@@ -60,25 +47,40 @@ pub enum DdsError {
     #[error("no data available")]
     NoData,
 
+    /// A security-related error (DDS-Security §8).
+    #[error("security error: {0}")]
+    NotAllowedBySecurity(String),
+
+    /// The entity has not been enabled yet (see `EntityFactory` `QoS`).
+    #[error("entity not enabled")]
+    NotEnabled,
+
+    /// The middleware ran out of a resource governed by `QoS`
+    /// (e.g., `ResourceLimits` exceeded).
+    #[error("out of resources: {0}")]
+    OutOfResources(String),
+
+    /// A precondition for the operation was not met.
+    /// E.g., attempting to delete an entity that still has dependents.
+    #[error("precondition not met: {0}")]
+    PreconditionNotMet(String),
+
     /// An operation timed out (e.g., `wait_for_acknowledgments`).
     #[error("timeout")]
     Timeout,
 
-    /// An illegal operation was attempted (programming error).
-    #[error("illegal operation: {0}")]
-    IllegalOperation(String),
-
-    /// A security-related error (DDS-Security §8).
-    #[error("security error: {0}")]
-    NotAllowedBySecurity(String),
+    /// Unsupported operation or `QoS` policy.
+    #[error("operation not supported: {0}")]
+    Unsupported(String),
 }
 
 /// Numeric return code values matching the OMG spec's `ReturnCode_t`.
 /// Provided for interoperability and debugging; the Rust API uses `Result`.
 ///
-/// Reference: DCPS §2.2.1.1
+/// Reference: DCPS §2.2.1.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
+#[non_exhaustive]
 pub enum ReturnCode {
     /// Operation completed successfully.
     Ok = 0,
@@ -111,41 +113,43 @@ pub enum ReturnCode {
 }
 
 impl fmt::Display for ReturnCode {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Ok => write!(f, "OK"),
-            Self::Error => write!(f, "ERROR"),
-            Self::Unsupported => write!(f, "UNSUPPORTED"),
-            Self::BadParameter => write!(f, "BAD_PARAMETER"),
-            Self::PreconditionNotMet => write!(f, "PRECONDITION_NOT_MET"),
-            Self::OutOfResources => write!(f, "OUT_OF_RESOURCES"),
-            Self::NotEnabled => write!(f, "NOT_ENABLED"),
-            Self::ImmutablePolicy => write!(f, "IMMUTABLE_POLICY"),
-            Self::InconsistentPolicy => write!(f, "INCONSISTENT_POLICY"),
-            Self::AlreadyDeleted => write!(f, "ALREADY_DELETED"),
-            Self::Timeout => write!(f, "TIMEOUT"),
-            Self::NoData => write!(f, "NO_DATA"),
-            Self::IllegalOperation => write!(f, "ILLEGAL_OPERATION"),
-            Self::NotAllowedBySecurity => write!(f, "NOT_ALLOWED_BY_SECURITY"),
+        match *self {
+            Self::BadParameter => return write!(f, "BAD_PARAMETER"),
+            Self::Error => return write!(f, "ERROR"),
+            Self::IllegalOperation => return write!(f, "ILLEGAL_OPERATION"),
+            Self::ImmutablePolicy => return write!(f, "IMMUTABLE_POLICY"),
+            Self::InconsistentPolicy => return write!(f, "INCONSISTENT_POLICY"),
+            Self::NoData => return write!(f, "NO_DATA"),
+            Self::NotAllowedBySecurity => return write!(f, "NOT_ALLOWED_BY_SECURITY"),
+            Self::NotEnabled => return write!(f, "NOT_ENABLED"),
+            Self::Ok => return write!(f, "OK"),
+            Self::OutOfResources => return write!(f, "OUT_OF_RESOURCES"),
+            Self::PreconditionNotMet => return write!(f, "PRECONDITION_NOT_MET"),
+            Self::AlreadyDeleted => return write!(f, "ALREADY_DELETED"),
+            Self::Timeout => return write!(f, "TIMEOUT"),
+            Self::Unsupported => return write!(f, "UNSUPPORTED"),
         }
     }
 }
 
 impl From<&DdsError> for ReturnCode {
+    #[inline]
     fn from(err: &DdsError) -> Self {
-        match err {
-            DdsError::Error(_) => Self::Error,
-            DdsError::Unsupported(_) => Self::Unsupported,
-            DdsError::BadParameter(_) => Self::BadParameter,
-            DdsError::PreconditionNotMet(_) => Self::PreconditionNotMet,
-            DdsError::OutOfResources(_) => Self::OutOfResources,
-            DdsError::NotEnabled => Self::NotEnabled,
-            DdsError::ImmutablePolicy(_) => Self::ImmutablePolicy,
-            DdsError::InconsistentPolicy(_) => Self::InconsistentPolicy,
-            DdsError::NoData => Self::NoData,
-            DdsError::Timeout => Self::Timeout,
-            DdsError::IllegalOperation(_) => Self::IllegalOperation,
-            DdsError::NotAllowedBySecurity(_) => Self::NotAllowedBySecurity,
+        match *err {
+            DdsError::BadParameter(_) => return Self::BadParameter,
+            DdsError::Error(_) => return Self::Error,
+            DdsError::IllegalOperation(_) => return Self::IllegalOperation,
+            DdsError::ImmutablePolicy(_) => return Self::ImmutablePolicy,
+            DdsError::InconsistentPolicy(_) => return Self::InconsistentPolicy,
+            DdsError::NoData => return Self::NoData,
+            DdsError::NotAllowedBySecurity(_) => return Self::NotAllowedBySecurity,
+            DdsError::NotEnabled => return Self::NotEnabled,
+            DdsError::OutOfResources(_) => return Self::OutOfResources,
+            DdsError::PreconditionNotMet(_) => return Self::PreconditionNotMet,
+            DdsError::Timeout => return Self::Timeout,
+            DdsError::Unsupported(_) => return Self::Unsupported,
         }
     }
 }
@@ -160,23 +164,23 @@ mod tests {
 
     #[test]
     fn dds_error_display_messages() {
-        let err = DdsError::BadParameter("null pointer".into());
+        let err = &DdsError::BadParameter("null pointer".into());
         assert_eq!(err.to_string(), "bad parameter: null pointer");
     }
 
     #[test]
     fn dds_error_no_data_display() {
-        assert_eq!(DdsError::NoData.to_string(), "no data available");
+        assert_eq!(&DdsError::NoData.to_string(), "no data available");
     }
 
     #[test]
     fn dds_error_timeout_display() {
-        assert_eq!(DdsError::Timeout.to_string(), "timeout");
+        assert_eq!(&DdsError::Timeout.to_string(), "timeout");
     }
 
     #[test]
     fn dds_error_not_enabled_display() {
-        assert_eq!(DdsError::NotEnabled.to_string(), "entity not enabled");
+        assert_eq!(&DdsError::NotEnabled.to_string(), "entity not enabled");
     }
 
     #[test]

@@ -3,10 +3,10 @@
 //! A `Locator` encodes a transport-specific address: a kind (UDP, TCP, etc.),
 //! a port number, and a 16-byte address field (IPv4 uses the last 4 bytes).
 //!
-//! Reference: RTPS §8.2.4.3 — `Locator_t`
+//! Reference: RTPS §8.2.4.3 — `Locator_t`.
 
-use std::fmt;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use core::fmt;
+use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Locator Kind constants (RTPS §8.2.4.3)
@@ -15,7 +15,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 /// Transport kind for the locator. Values defined by the RTPS spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
-pub enum LocatorKind {
+#[non_exhaustive]
+pub enum Kind {
     /// Invalid/unknown locator.
     Invalid = -1,
     /// UDP over IPv4 transport.
@@ -24,14 +25,15 @@ pub enum LocatorKind {
     UdpV6 = 2,
 }
 
-impl LocatorKind {
+impl Kind {
     /// Parse a locator kind from its wire representation.
     #[must_use]
+    #[inline]
     pub const fn from_i32(value: i32) -> Self {
         match value {
-            1 => Self::UdpV4,
-            2 => Self::UdpV6,
-            _ => Self::Invalid,
+            1 => return Self::UdpV4,
+            2 => return Self::UdpV6,
+            _ => return Self::Invalid,
         }
     }
 }
@@ -46,58 +48,43 @@ impl LocatorKind {
 /// - For `UDPv4`: bytes 12..16 hold the IPv4 address, bytes 0..12 are zero
 /// - For `UDPv6`: all 16 bytes hold the IPv6 address
 ///
-/// Reference: RTPS §8.2.4.3
+/// Reference: RTPS §8.2.4.3.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Locator {
-    /// The transport kind (`UDPv4`, `UDPv6`, etc.).
-    pub kind: LocatorKind,
-    /// The port number. 0 indicates "not specified".
-    pub port: u32,
     /// The 16-byte address field.
     pub address: [u8; 16],
+    /// The transport kind (`UDPv4`, `UDPv6`, etc.).
+    pub kind: Kind,
+    /// The port number. 0 indicates "not specified".
+    pub port: u32,
 }
 
 impl Locator {
     /// An invalid/unset locator — sentinel value.
     pub const INVALID: Self = Self {
-        kind: LocatorKind::Invalid,
+        kind: Kind::Invalid,
         port: 0,
         address: [0; 16],
     };
 
-    /// Create a `UDPv4` locator from an IPv4 address and port.
-    ///
-    /// The IPv4 address is stored in bytes 12..16 of the address field,
-    /// per the RTPS spec convention.
+    /// Create a Locator from a `std::net::SocketAddr`.
     #[must_use]
-    pub fn udpv4(addr: Ipv4Addr, port: u32) -> Self {
-        let mut address = [0u8; 16];
-        let octets = addr.octets();
-        address[12..16].copy_from_slice(&octets);
-        Self {
-            kind: LocatorKind::UdpV4,
-            port,
-            address,
+    #[inline]
+    pub fn from_socket_addr(addr: SocketAddr) -> Self {
+        match addr {
+            SocketAddr::V4(v4) => return Self::udpv4(*v4.ip(), u32::from(v4.port())),
+            SocketAddr::V6(v6) => return Self::udpv6(*v6.ip(), u32::from(v6.port())),
         }
     }
-
-    /// Create a `UDPv6` locator from an IPv6 address and port.
-    #[must_use]
-    pub const fn udpv6(addr: Ipv6Addr, port: u32) -> Self {
-        Self {
-            kind: LocatorKind::UdpV6,
-            port,
-            address: addr.octets(),
-        }
-    }
-
     /// Extract the IPv4 address if this is a `UDPv4` locator.
     #[must_use]
+    #[inline]
     pub fn to_ipv4(&self) -> Option<Ipv4Addr> {
-        if self.kind != LocatorKind::UdpV4 {
+        if self.kind != Kind::UdpV4 {
             return None;
         }
-        Some(Ipv4Addr::new(
+        return Some(Ipv4Addr::new(
             self.address[12],
             self.address[13],
             self.address[14],
@@ -107,71 +94,98 @@ impl Locator {
 
     /// Extract the IPv6 address if this is a `UDPv6` locator.
     #[must_use]
+    #[inline]
     pub fn to_ipv6(&self) -> Option<Ipv6Addr> {
-        if self.kind != LocatorKind::UdpV6 {
+        if self.kind != Kind::UdpV6 {
             return None;
         }
-        Some(Ipv6Addr::from(self.address))
+        return Some(Ipv6Addr::from(self.address))
     }
 
     /// Convert to a `std::net::SocketAddr` if possible.
     #[must_use]
+    #[inline]
     pub fn to_socket_addr(&self) -> Option<SocketAddr> {
+        let port = match u16::try_from(self.port) {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
         match self.kind {
-            LocatorKind::UdpV4 => {
-                let ip = self.to_ipv4()?;
-                Some(SocketAddr::V4(SocketAddrV4::new(ip, self.port as u16)))
+            Kind::UdpV4 => {
+                let ip = match self.to_ipv4() {
+                    Some(value) => value,
+                    None => return None,
+                };
+                return Some(SocketAddr::V4(SocketAddrV4::new(ip, port)));
             }
-            LocatorKind::UdpV6 => {
-                let ip = self.to_ipv6()?;
-                Some(SocketAddr::V6(SocketAddrV6::new(
-                    ip,
-                    self.port as u16,
-                    0,
-                    0,
-                )))
+            Kind::UdpV6 => {
+                let ip = match self.to_ipv6() {
+                    Some(value) => value,
+                    None => return None,
+                };
+                return Some(SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)));
             }
-            LocatorKind::Invalid => None,
+            Kind::Invalid => return None,
         }
     }
 
-    /// Create a Locator from a `std::net::SocketAddr`.
+    /// Create a `UDPv4` locator from an IPv4 address and port.
+    ///
+    /// The IPv4 address is stored in bytes 12..16 of the address field,
+    /// per the RTPS spec convention.
     #[must_use]
-    pub fn from_socket_addr(addr: SocketAddr) -> Self {
-        match addr {
-            SocketAddr::V4(v4) => Self::udpv4(*v4.ip(), u32::from(v4.port())),
-            SocketAddr::V6(v6) => Self::udpv6(*v6.ip(), u32::from(v6.port())),
+    #[inline]
+    pub fn udpv4(addr: Ipv4Addr, port: u32) -> Self {
+        let mut address = [u8::default(); 16];
+        let octets = addr.octets();
+        address[12..16].copy_from_slice(&octets);
+        return Self {
+            kind: Kind::UdpV4,
+            port,
+            address,
         }
     }
+
+    /// Create a `UDPv6` locator from an IPv6 address and port.
+    #[must_use]
+    #[inline]
+    pub const fn udpv6(addr: Ipv6Addr, port: u32) -> Self {
+        return Self {
+            kind: Kind::UdpV6,
+            port,
+            address: addr.octets(),
+        }
+    }
+
 }
 
 impl fmt::Debug for Locator {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
-            LocatorKind::UdpV4 => {
+            Kind::UdpV4 => {
                 if let Some(ip) = self.to_ipv4() {
-                    write!(f, "Locator(UDPv4 {ip}:{})", self.port)
-                } else {
-                    write!(f, "Locator(UDPv4 ???:{})", self.port)
+                    return write!(f, "Locator(UDPv4 {ip}:{})", self.port);
                 }
+                return write!(f, "Locator(UDPv4 ???:{})", self.port);
             }
-            LocatorKind::UdpV6 => {
+            Kind::UdpV6 => {
                 if let Some(ip) = self.to_ipv6() {
-                    write!(f, "Locator(UDPv6 [{ip}]:{})", self.port)
-                } else {
-                    write!(f, "Locator(UDPv6 ???:{})", self.port)
+                    return write!(f, "Locator(UDPv6 [{ip}]:{})", self.port);
                 }
+                return write!(f, "Locator(UDPv6 ???:{})", self.port);
             }
-            LocatorKind::Invalid => write!(f, "Locator(INVALID)"),
+            Kind::Invalid => return write!(f, "Locator(INVALID)"),
         }
     }
 }
 
 impl fmt::Display for Locator {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.to_socket_addr() {
-            Some(addr) => write!(f, "{addr}"),
-            None => write!(f, "INVALID"),
+            Some(addr) => return write!(f, "{addr}"),
+            None => return write!(f, "INVALID"),
         }
     }
 }
@@ -187,7 +201,7 @@ mod tests {
     #[test]
     fn locator_invalid_sentinel() {
         let loc = Locator::INVALID;
-        assert_eq!(loc.kind, LocatorKind::Invalid);
+        assert_eq!(loc.kind, Kind::Invalid);
         assert!(loc.to_socket_addr().is_none());
     }
 
@@ -195,7 +209,7 @@ mod tests {
     fn locator_udpv4_round_trip() {
         let addr = Ipv4Addr::new(192, 168, 1, 100);
         let loc = Locator::udpv4(addr, 7400);
-        assert_eq!(loc.kind, LocatorKind::UdpV4);
+        assert_eq!(loc.kind, Kind::UdpV4);
         assert_eq!(loc.port, 7400);
         assert_eq!(loc.to_ipv4(), Some(addr));
         assert!(loc.to_ipv6().is_none());
@@ -205,7 +219,7 @@ mod tests {
     fn locator_udpv6_round_trip() {
         let addr = Ipv6Addr::LOCALHOST;
         let loc = Locator::udpv6(addr, 7401);
-        assert_eq!(loc.kind, LocatorKind::UdpV6);
+        assert_eq!(loc.kind, Kind::UdpV6);
         assert_eq!(loc.to_ipv6(), Some(addr));
         assert!(loc.to_ipv4().is_none());
     }
@@ -228,7 +242,7 @@ mod tests {
     fn locator_from_socket_addr_v4() {
         let sock: SocketAddr = "10.0.0.1:5000".parse().unwrap();
         let loc = Locator::from_socket_addr(sock);
-        assert_eq!(loc.kind, LocatorKind::UdpV4);
+        assert_eq!(loc.kind, Kind::UdpV4);
         assert_eq!(loc.to_ipv4(), Some(Ipv4Addr::new(10, 0, 0, 1)));
         assert_eq!(loc.port, 5000);
     }
@@ -237,7 +251,7 @@ mod tests {
     fn locator_from_socket_addr_v6() {
         let sock: SocketAddr = "[::1]:5000".parse().unwrap();
         let loc = Locator::from_socket_addr(sock);
-        assert_eq!(loc.kind, LocatorKind::UdpV6);
+        assert_eq!(loc.kind, Kind::UdpV6);
         assert_eq!(loc.to_ipv6(), Some(Ipv6Addr::LOCALHOST));
     }
 
@@ -245,7 +259,7 @@ mod tests {
     fn locator_ipv4_address_byte_layout() {
         // RTPS spec: IPv4 stored in bytes 12..16, rest is zero
         let loc = Locator::udpv4(Ipv4Addr::new(10, 20, 30, 40), 0);
-        assert_eq!(&loc.address[..12], &[0u8; 12]);
+        assert_eq!(&loc.address[..12], &[u8::default(); 12]);
         assert_eq!(&loc.address[12..], &[10, 20, 30, 40]);
     }
 
@@ -260,10 +274,10 @@ mod tests {
 
     #[test]
     fn locator_kind_from_i32() {
-        assert_eq!(LocatorKind::from_i32(1), LocatorKind::UdpV4);
-        assert_eq!(LocatorKind::from_i32(2), LocatorKind::UdpV6);
-        assert_eq!(LocatorKind::from_i32(99), LocatorKind::Invalid);
-        assert_eq!(LocatorKind::from_i32(-1), LocatorKind::Invalid);
+        assert_eq!(Kind::from_i32(1), Kind::UdpV4);
+        assert_eq!(Kind::from_i32(2), Kind::UdpV6);
+        assert_eq!(Kind::from_i32(99), Kind::Invalid);
+        assert_eq!(Kind::from_i32(-1), Kind::Invalid);
     }
 
     #[test]
