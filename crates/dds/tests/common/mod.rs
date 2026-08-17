@@ -133,48 +133,49 @@ impl TypeSupport for PlainMessageTypeSupport {
 // ── Type objects ──────────────────────────────────────────────────────────────
 
 pub fn wire_message_type_object() -> TypeObject {
-    TypeObject::Complete(StructureType {
-        name: "WireMessage".to_string(),
-        extensibility: ExtensibilityKind::Appendable,
-        members: vec![
-            Member {
-                name: "id".to_string(),
-                type_id: TypeIdentifier::TkUint32,
-                is_key: true,
-                is_optional: false,
-            },
-            Member {
-                name: "payload".to_string(),
-                type_id: TypeIdentifier::TiString8Large { bound: 0 },
-                is_key: false,
-                is_optional: false,
-            },
+    TypeObject::Complete(StructureType::new(
+        "WireMessage".to_string(),
+        ExtensibilityKind::Appendable,
+        vec![
+            Member::new(
+                "id".to_string(),
+                TypeIdentifier::TkUint32,
+                true,
+                false,
+            ),
+            Member::new(
+                "payload".to_string(),
+                TypeIdentifier::TiString8Large { bound: 0 },
+                false,
+                false,
+            ),
         ],
-    })
+    ))
 }
 
 pub fn type_info_for(obj: &TypeObject) -> TypeInformation {
-    TypeInformation {
-        type_name: match obj {
+    TypeInformation::new(
+        match obj {
             TypeObject::Complete(s) => s.name.clone(),
             TypeObject::Minimal(_) => String::new(),
+            _ => String::new(),
         },
-        type_id: obj.get_identifier(),
-    }
+        obj.get_identifier().expect("type object identifier"),
+    )
 }
 
 pub fn type_with_nested_dependency() -> (TypeObject, TypeIdentifier) {
     let nested_dep = TypeIdentifier::TiCompleteConstructed([0xAB; 14]);
-    let obj = TypeObject::Complete(StructureType {
-        name: "WithNestedDep".to_string(),
-        extensibility: ExtensibilityKind::Final,
-        members: vec![Member {
-            name: "nested".to_string(),
-            type_id: nested_dep.clone(),
-            is_key: false,
-            is_optional: false,
-        }],
-    });
+    let obj = TypeObject::Complete(StructureType::new(
+        "WithNestedDep".to_string(),
+        ExtensibilityKind::Final,
+        vec![Member::new(
+            "nested".to_string(),
+            nested_dep.clone(),
+            false,
+            false,
+        )],
+    ));
     (obj, nested_dep)
 }
 

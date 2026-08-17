@@ -1,55 +1,105 @@
 //! # Time — Duration and Timestamp types for DDS
 //!
 //! DDS uses two time-related types throughout its APIs:
-//! - `Duration` — a relative time interval (used in QoS policies, timeouts)
+//! - `Duration` — a relative time interval (used in `QoS` policies, timeouts)
 //! - `Timestamp` — an absolute wall-clock time (used in sample metadata)
 //!
 //! Both are represented as (seconds, fraction) pairs on the wire, matching
-//! the RTPS Time_t structure.
+//! the RTPS `Time_t` structure.
 //!
-//! Reference: DCPS §2.2.1, RTPS §8.2.4.5
+//! Reference: DCPS §2.2.1, RTPS §8.2.4.5.
 
-use std::fmt;
-use std::ops::{Add, Sub};
+use core::fmt;
+use core::ops::{Add, Sub};
 use std::time;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Duration — Relative time interval (DCPS §2.2.1)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// A relative time interval, used in QoS policies and timeouts.
-///
-/// Stored as seconds + nanoseconds, where nanoseconds is always < 1_000_000_000.
-/// Special sentinel values `INFINITE` and `ZERO` are provided.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Duration {
-    /// Whole seconds component.
-    pub seconds: i32,
-    /// Sub-second component in nanoseconds (0..999_999_999).
-    pub nanoseconds: u32,
-}
-
 /// Maximum valid nanosecond value (exclusive bound).
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 
+/// A relative time interval, used in `QoS` policies and timeouts.
+///
+/// Stored as seconds + nanoseconds, where nanoseconds is always < `1_000_000_000`.
+/// Special sentinel values `INFINITE` and `ZERO` are provided.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub struct Duration {
+    /// Sub-second component in nanoseconds (`0..999_999_999`).
+    pub nanoseconds: u32,
+    /// Whole seconds component.
+    pub seconds: i32,
+}
+
 impl Duration {
-    /// An infinite duration — used as default for many QoS timeouts.
+    /// An infinite duration — used as default for many `QoS` timeouts.
     pub const INFINITE: Self = Self {
-        seconds: i32::MAX,
         nanoseconds: u32::MAX,
+        seconds: i32::MAX,
     };
 
     /// A zero-length duration.
     pub const ZERO: Self = Self {
-        seconds: 0,
         nanoseconds: 0,
+        seconds: 0,
     };
+
+    /// Create a duration from milliseconds.
+    #[must_use]
+    #[inline]
+    pub fn from_millis(millis: i64) -> Self {
+        let seconds = i32::try_from(millis.div_euclid(1000)).map_or(i32::MAX, |value| return value);
+        let nanoseconds = u32::try_from(millis.rem_euclid(1000).saturating_mul(1_000_000))
+            .map_or(u32::MAX, |value| return value);
+        return Self { nanoseconds, seconds };
+    }
+
+    /// Create a duration from whole seconds.
+    #[must_use]
+    #[inline]
+    pub const fn from_secs(seconds: i32) -> Self {
+        return Self {
+            seconds,
+            nanoseconds: 0,
+        }
+    }
+
+    /// Create from a `std::time::Duration`.
+    ///
+    /// Returns `INFINITE` if the std duration exceeds `i32::MAX` seconds.
+    #[must_use]
+    #[inline]
+    pub fn from_std(duration: time::Duration) -> Self {
+        if duration.as_secs() > u64::try_from(i32::MAX).map_or(u64::MAX, |value| return value) {
+            return Self::INFINITE;
+        }
+        return Self {
+            nanoseconds: duration.subsec_nanos(),
+            seconds: i32::try_from(duration.as_secs()).map_or(i32::MAX, |value| return value),
+        };
+    }
+    /// Check whether this is the infinite sentinel duration.
+    #[must_use]
+    #[inline]
+    pub const fn is_infinite(&self) -> bool {
+        return self.seconds == i32::MAX && self.nanoseconds == u32::MAX
+    }
+
+    /// Check whether this is a zero-length duration.
+    #[must_use]
+    #[inline]
+    pub const fn is_zero(&self) -> bool {
+        return self.seconds == 0 && self.nanoseconds == 0
+    }
 
     /// Create a duration from seconds and nanoseconds.
     ///
     /// # Panics
     /// Panics if `nanoseconds >= 1_000_000_000` (except for `INFINITE`).
     #[must_use]
+    #[inline]
     pub fn new(seconds: i32, nanoseconds: u32) -> Self {
         // Allow the special INFINITE sentinel through
         if seconds == i32::MAX && nanoseconds == u32::MAX {
@@ -59,52 +109,21 @@ impl Duration {
             nanoseconds < NANOS_PER_SEC,
             "nanoseconds must be < 1_000_000_000, got {nanoseconds}"
         );
-        Self {
-            seconds,
-            nanoseconds,
-        }
-    }
-
-    /// Create a duration from whole seconds.
-    #[must_use]
-    pub const fn from_secs(seconds: i32) -> Self {
-        Self {
-            seconds,
-            nanoseconds: 0,
-        }
-    }
-
-    /// Create a duration from milliseconds.
-    #[must_use]
-    pub const fn from_millis(millis: i64) -> Self {
-        let seconds = (millis / 1000) as i32;
-        let nanoseconds = ((millis % 1000) * 1_000_000) as u32;
-        Self {
-            seconds,
-            nanoseconds,
-        }
-    }
-
-    /// Check whether this is the infinite sentinel duration.
-    #[must_use]
-    pub const fn is_infinite(&self) -> bool {
-        self.seconds == i32::MAX && self.nanoseconds == u32::MAX
-    }
-
-    /// Check whether this is a zero-length duration.
-    #[must_use]
-    pub const fn is_zero(&self) -> bool {
-        self.seconds == 0 && self.nanoseconds == 0
+        return Self { nanoseconds, seconds }
     }
 
     /// Convert to a `std::time::Duration`. Returns `None` for negative
     /// durations or the INFINITE sentinel.
     #[must_use]
+    #[inline]
     pub fn to_std(&self) -> Option<time::Duration> {
-        if self.is_infinite() || self.seconds < 0 {
+        if self.is_infinite() || self.seconds.is_negative() {
             return None;
         }
-        Some(time::Duration::new(self.seconds as u64, self.nanoseconds))
+        return Some(time::Duration::new(
+            u64::try_from(self.seconds).map_or(0, |value| return value),
+            self.nanoseconds,
+        ));
     }
 
     /// Convert to RTPS `Duration_t` wire form: `(seconds, fraction)`.
@@ -129,46 +148,33 @@ impl Duration {
             ((fraction as u64) * NANOS_PER_SEC as u64 + (1u64 << 31)) / (1u64 << 32);
         Self::new(seconds, nanoseconds as u32)
     }
-
-    /// Create from a `std::time::Duration`.
-    ///
-    /// Returns `INFINITE` if the std duration exceeds i32::MAX seconds.
-    #[must_use]
-    pub fn from_std(d: time::Duration) -> Self {
-        if d.as_secs() > i32::MAX as u64 {
-            return Self::INFINITE;
-        }
-        Self {
-            seconds: d.as_secs() as i32,
-            nanoseconds: d.subsec_nanos(),
-        }
-    }
 }
 
 impl fmt::Debug for Duration {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_infinite() {
-            write!(f, "Duration(INFINITE)")
-        } else {
-            write!(f, "Duration({}.{:09}s)", self.seconds, self.nanoseconds)
+            return write!(f, "Duration(INFINITE)");
         }
+        return write!(f, "Duration({}.{:09}s)", self.seconds, self.nanoseconds);
     }
 }
 
 impl fmt::Display for Duration {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_infinite() {
-            write!(f, "∞")
-        } else {
-            write!(f, "{}.{:09}s", self.seconds, self.nanoseconds)
+            return write!(f, "\u{221e}");
         }
+        return write!(f, "{}.{:09}s", self.seconds, self.nanoseconds);
     }
 }
 
 impl Default for Duration {
-    /// Default duration is INFINITE (matches most DDS QoS defaults).
+    /// Default duration is INFINITE (matches most DDS `QoS` defaults).
+    #[inline]
     fn default() -> Self {
-        Self::INFINITE
+        return Self::INFINITE;
     }
 }
 
@@ -182,33 +188,42 @@ impl Default for Duration {
 /// with `u32` seconds representing seconds since the Unix epoch (or a
 /// middleware-defined epoch).
 ///
-/// Reference: RTPS §8.2.4.5 (Time_t)
+/// Reference: RTPS §8.2.4.5 (`Time_t`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct Timestamp {
+    /// Sub-second component in nanoseconds (`0..999_999_999`).
+    pub nanoseconds: u32,
     /// Seconds since epoch.
     pub seconds: u32,
-    /// Sub-second component in nanoseconds (0..999_999_999).
-    pub nanoseconds: u32,
 }
 
 impl Timestamp {
     /// Invalid/unknown timestamp — sentinel value.
     pub const INVALID: Self = Self {
-        seconds: u32::MAX,
         nanoseconds: u32::MAX,
+        seconds: u32::MAX,
     };
 
     /// The epoch itself (time zero).
     pub const ZERO: Self = Self {
-        seconds: 0,
         nanoseconds: 0,
+        seconds: 0,
     };
+
+    /// Check whether this is the invalid sentinel timestamp.
+    #[must_use]
+    #[inline]
+    pub const fn is_invalid(&self) -> bool {
+        return self.seconds == u32::MAX && self.nanoseconds == u32::MAX
+    }
 
     /// Create a timestamp from seconds and nanoseconds.
     ///
     /// # Panics
     /// Panics if `nanoseconds >= 1_000_000_000` (except for INVALID).
     #[must_use]
+    #[inline]
     pub fn new(seconds: u32, nanoseconds: u32) -> Self {
         if seconds == u32::MAX && nanoseconds == u32::MAX {
             return Self::INVALID;
@@ -217,57 +232,50 @@ impl Timestamp {
             nanoseconds < NANOS_PER_SEC,
             "nanoseconds must be < 1_000_000_000, got {nanoseconds}"
         );
-        Self {
-            seconds,
-            nanoseconds,
-        }
-    }
-
-    /// Check whether this is the invalid sentinel timestamp.
-    #[must_use]
-    pub const fn is_invalid(&self) -> bool {
-        self.seconds == u32::MAX && self.nanoseconds == u32::MAX
+        return Self { nanoseconds, seconds }
     }
 
     /// Get the current wall-clock time as a `Timestamp`.
     ///
     /// Uses `std::time::SystemTime::now()` internally.
     #[must_use]
+    #[inline]
     pub fn now() -> Self {
         let since_epoch = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .unwrap_or_default();
-        Self {
-            seconds: since_epoch.as_secs() as u32,
+        return Self {
             nanoseconds: since_epoch.subsec_nanos(),
-        }
+            seconds: u32::try_from(since_epoch.as_secs()).map_or(u32::MAX, |value| return value),
+        };
     }
 }
 
 impl fmt::Debug for Timestamp {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_invalid() {
-            write!(f, "Timestamp(INVALID)")
-        } else {
-            write!(f, "Timestamp({}.{:09})", self.seconds, self.nanoseconds)
+            return write!(f, "Timestamp(INVALID)");
         }
+        return write!(f, "Timestamp({}.{:09})", self.seconds, self.nanoseconds);
     }
 }
 
 impl fmt::Display for Timestamp {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_invalid() {
-            write!(f, "INVALID")
-        } else {
-            write!(f, "{}.{:09}", self.seconds, self.nanoseconds)
+            return write!(f, "INVALID");
         }
+        return write!(f, "{}.{:09}", self.seconds, self.nanoseconds);
     }
 }
 
 impl Default for Timestamp {
     /// Default timestamp is INVALID (no timestamp set).
+    #[inline]
     fn default() -> Self {
-        Self::INVALID
+        return Self::INVALID;
     }
 }
 
@@ -275,21 +283,27 @@ impl Default for Timestamp {
 impl Add<Duration> for Timestamp {
     type Output = Self;
 
+    #[inline]
     fn add(self, rhs: Duration) -> Self {
         if self.is_invalid() || rhs.is_infinite() {
             return Self::INVALID;
         }
-        let total_nanos = self.nanoseconds + rhs.nanoseconds;
-        let carry = total_nanos / NANOS_PER_SEC;
-        let nanos = total_nanos % NANOS_PER_SEC;
+        let total_nanos = self.nanoseconds.wrapping_add(rhs.nanoseconds);
+        let carry = total_nanos.div_euclid(NANOS_PER_SEC);
+        let nanos = total_nanos.rem_euclid(NANOS_PER_SEC);
+        let rhs_seconds = if rhs.seconds.is_negative() {
+            0
+        } else {
+            u32::try_from(rhs.seconds).map_or(0, |value| return value)
+        };
         let secs = self
             .seconds
-            .wrapping_add(rhs.seconds as u32)
+            .wrapping_add(rhs_seconds)
             .wrapping_add(carry);
-        Self {
-            seconds: secs,
+        return Self {
             nanoseconds: nanos,
-        }
+            seconds: secs,
+        };
     }
 }
 
@@ -297,19 +311,24 @@ impl Add<Duration> for Timestamp {
 impl Sub for Timestamp {
     type Output = Duration;
 
+    #[inline]
     fn sub(self, rhs: Self) -> Duration {
         if self.is_invalid() || rhs.is_invalid() {
             return Duration::INFINITE;
         }
-        let secs_diff = self.seconds as i64 - rhs.seconds as i64;
-        let nanos_diff = self.nanoseconds as i64 - rhs.nanoseconds as i64;
-        let total_nanos = secs_diff * NANOS_PER_SEC as i64 + nanos_diff;
-        let seconds = (total_nanos / NANOS_PER_SEC as i64) as i32;
-        let nanoseconds = (total_nanos.rem_euclid(NANOS_PER_SEC as i64)) as u32;
-        Duration {
-            seconds,
+        let secs_diff = i64::from(self.seconds).saturating_sub(i64::from(rhs.seconds));
+        let nanos_diff = i64::from(self.nanoseconds).saturating_sub(i64::from(rhs.nanoseconds));
+        let total_nanos = secs_diff
+            .saturating_mul(i64::from(NANOS_PER_SEC))
+            .saturating_add(nanos_diff);
+        let seconds = i32::try_from(total_nanos.div_euclid(i64::from(NANOS_PER_SEC)))
+            .map_or(i32::MAX, |value| return value);
+        let nanoseconds = u32::try_from(total_nanos.rem_euclid(i64::from(NANOS_PER_SEC)))
+            .map_or(u32::MAX, |value| return value);
+        return Duration {
             nanoseconds,
-        }
+            seconds,
+        };
     }
 }
 

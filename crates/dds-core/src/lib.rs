@@ -80,7 +80,7 @@ use dds_types::qos::{
 };
 use dds_types::return_code::{DdsError, DdsResult};
 use dds_types::sync::lock;
-use dds_security::{Authentication, Cryptography};
+use dds_security::{Authentication as _, Cryptography as _};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
@@ -230,7 +230,7 @@ pub struct DataWriter {
     topic: Topic,
     qos: DataWriterQos,
     type_support: Arc<dyn TypeSupport>,
-    /// Backing RTPS writer shared with RtpsEngine.
+    /// Backing RTPS writer shared with `RtpsEngine`.
     rtps_writer: Arc<Mutex<StatefulWriter>>,
     listener: Mutex<Option<Arc<dyn DataWriterListener>>>,
     /// Monotonic sequence number counter.
@@ -252,8 +252,8 @@ enum InstanceState {
 }
 
 impl DataWriter {
-    /// Serialize the sample, push it into the RTPS HistoryCache as a CacheChange.
-    /// The RtpsEngine loop picks it up and sends it via UDP.
+    /// Serialize the sample, push it into the RTPS `HistoryCache` as a `CacheChange`.
+    /// The `RtpsEngine` loop picks it up and sends it via UDP.
     pub fn write(&self, value: &dyn core::any::Any) -> DdsResult<()> {
         if !self.is_enabled.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(DdsError::NotEnabled);
@@ -275,7 +275,7 @@ impl DataWriter {
         let sn = {
             let mut sn = lock(&self.next_sn);
             let current = *sn;
-            *sn = SequenceNumber(sn.0 + 1);
+            *sn = SequenceNumber::new(sn.value() + 1);
             current
         };
 
@@ -352,13 +352,10 @@ impl DataWriter {
             let mut lost_count = lock(&self.liveliness_lost_count);
             *lost_count += 1;
             if let Some(listener) = lock(&self.listener).as_ref() {
-                listener.on_liveliness_lost(
-                    self,
-                    dds_types::status::LivelinessLostStatus {
-                        total_count: *lost_count,
-                        total_count_change: 1,
-                    },
-                );
+                let mut status = dds_types::status::LivelinessLostStatus::default();
+                status.total_count = *lost_count;
+                status.total_count_change = 1;
+                listener.on_liveliness_lost(self, status);
             }
             *lock(&self.last_liveliness_assertion) = std::time::Instant::now();
         }
@@ -426,7 +423,7 @@ impl DataWriter {
         self.type_support.type_information_wire()
     }
 
-    /// Enables the DataWriter.
+    /// Enables the `DataWriter`.
     pub fn enable(&self) -> DdsResult<()> {
         self.is_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -552,19 +549,14 @@ impl DataReader {
             *alive_count += 1;
             let not_alive_count = alive_map.values().filter(|alive| !**alive).count() as i32;
             if let Some(listener) = lock(&self.listener).as_ref() {
-                listener.on_liveliness_changed(
-                    self,
-                    dds_types::status::LivelinessChangedStatus {
-                        alive_count: *alive_count,
-                        not_alive_count,
-                        alive_count_change: 1,
-                        not_alive_count_change: 0,
-                        last_publication_handle:
-                            dds_types::instance::InstanceHandle::from_key_bytes(
-                                &writer_guid.to_bytes(),
-                            ),
-                    },
-                );
+                let mut status = dds_types::status::LivelinessChangedStatus::default();
+                status.alive_count = *alive_count;
+                status.not_alive_count = not_alive_count;
+                status.alive_count_change = 1;
+                status.not_alive_count_change = 0;
+                status.last_publication_handle =
+                    dds_types::instance::InstanceHandle::from_key_bytes(&writer_guid.to_bytes());
+                listener.on_liveliness_changed(self, status);
             }
         }
     }
@@ -602,19 +594,14 @@ impl DataReader {
                 *alive_count = (*alive_count - 1).max(0);
                 let not_alive_count = alive_map.values().filter(|alive| !**alive).count() as i32;
                 if let Some(listener) = lock(&self.listener).as_ref() {
-                    listener.on_liveliness_changed(
-                        self,
-                        dds_types::status::LivelinessChangedStatus {
-                            alive_count: *alive_count,
-                            not_alive_count,
-                            alive_count_change: -1,
-                            not_alive_count_change: 1,
-                            last_publication_handle:
-                                dds_types::instance::InstanceHandle::from_key_bytes(
-                                    &writer_guid.to_bytes(),
-                                ),
-                        },
-                    );
+                    let mut status = dds_types::status::LivelinessChangedStatus::default();
+                    status.alive_count = *alive_count;
+                    status.not_alive_count = not_alive_count;
+                    status.alive_count_change = -1;
+                    status.not_alive_count_change = 1;
+                    status.last_publication_handle =
+                        dds_types::instance::InstanceHandle::from_key_bytes(&writer_guid.to_bytes());
+                    listener.on_liveliness_changed(self, status);
                 }
             }
         }
@@ -647,7 +634,7 @@ impl DataReader {
                     }
                 }
             }
-            *last_rx = Some(now);
+            *last_rx = Some(now);;
         }
 
         {
@@ -664,7 +651,7 @@ impl DataReader {
 
             let sample_info = SampleInfo {
                 instance_handle: key,
-                sequence_number: SequenceNumber(0),
+                sequence_number: SequenceNumber::new(0),
                 valid_data: true,
             };
             samples.push(ReaderSample {
@@ -709,7 +696,7 @@ impl DataReader {
         self.type_support.type_information_wire()
     }
 
-    /// Enables the DataReader.
+    /// Enables the `DataReader`.
     pub fn enable(&self) -> DdsResult<()> {
         self.is_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -799,7 +786,7 @@ pub struct Publisher {
     guid: Guid,
     qos: PublisherQos,
     writers: Mutex<HashMap<Guid, Arc<DataWriter>>>,
-    /// Transport shared with all DataWriters created by this Publisher.
+    /// Transport shared with all `DataWriters` created by this Publisher.
     transport: Arc<UdpTransport>,
     /// Central writer registry for matched remote participant lookup.
     writer_registry: Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
@@ -822,7 +809,7 @@ impl Publisher {
         Ok(())
     }
 
-    /// Deletes a DataWriter created by this Publisher.
+    /// Deletes a `DataWriter` created by this Publisher.
     pub fn delete_datawriter(&self, guid: &Guid) -> DdsResult<()> {
         let mut writers = lock(&self.writers);
         if writers.remove(guid).is_some() {
@@ -842,13 +829,12 @@ impl Publisher {
         qos: DataWriterQos,
         type_support: Arc<dyn TypeSupport>,
     ) -> DdsResult<Arc<DataWriter>> {
-        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast {
-            if qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
+        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast
+            && qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && qos.resource_limits.max_samples_per_instance < qos.history.depth
             {
                 return Err(DdsError::InconsistentPolicy("max_samples_per_instance < history depth".into()));
             }
-        }
 
         let mut writers = lock(&self.writers);
         let entity_kind = if type_support.is_keyless() {
@@ -910,7 +896,7 @@ impl Publisher {
             type_support,
             rtps_writer,
             listener: Mutex::new(None),
-            next_sn: Mutex::new(SequenceNumber(1)),
+            next_sn: Mutex::new(SequenceNumber::new(1)),
             durability_cache: Mutex::new(Vec::new()),
             registered_instances: Mutex::new(std::collections::HashMap::new()),
             publication_matched_count: Mutex::new(0),
@@ -924,8 +910,8 @@ impl Publisher {
         Ok(writer)
     }
 
-    /// Add a reader locator to all DataWriters owned by this Publisher.
-    /// Used by DomainParticipant to wire newly created readers to existing writers.
+    /// Add a reader locator to all `DataWriters` owned by this Publisher.
+    /// Used by `DomainParticipant` to wire newly created readers to existing writers.
     pub fn add_reader_proxy_to_all(
         &self,
         reader_guid: dds_types::guid::Guid,
@@ -935,12 +921,12 @@ impl Publisher {
     ) {
         // Enforce Partition matching
         let pub_partitions = if self.qos.partition.name.is_empty() {
-            vec!["".to_string()]
+            vec![String::new()]
         } else {
             self.qos.partition.name.clone()
         };
         let sub_partitions = if subscriber_partition.name.is_empty() {
-            vec!["".to_string()]
+            vec![String::new()]
         } else {
             subscriber_partition.name.clone()
         };
@@ -964,7 +950,7 @@ impl Publisher {
                     remote_reader_guid: reader_guid,
                     unicast_locator_list: vec![reader_locator],
                     multicast_locator_list: vec![],
-                    next_unsent_sn: SequenceNumber(1),
+                    next_unsent_sn: SequenceNumber::new(1),
                 };
                 lock(&writer.rtps_writer).matched_reader_add(proxy);
             }
@@ -986,7 +972,7 @@ pub struct Subscriber {
     guid: Guid,
     qos: SubscriberQos,
     readers: Mutex<HashMap<Guid, Arc<DataReader>>>,
-    /// Shared registry: topic_name -> DataReader, used by receive loop.
+    /// Shared registry: `topic_name` -> `DataReader`, used by receive loop.
     reader_registry: Arc<Mutex<HashMap<String, Arc<DataReader>>>>,
     hooks: Arc<ParticipantHooks>,
     /// Unicast port this participant's readers listen on.
@@ -1008,7 +994,7 @@ impl Subscriber {
         Ok(())
     }
 
-    /// Deletes a DataReader created by this Subscriber.
+    /// Deletes a `DataReader` created by this Subscriber.
     pub fn delete_datareader(&self, guid: &Guid) -> DdsResult<()> {
         let mut readers = lock(&self.readers);
         if readers.remove(guid).is_some() {
@@ -1028,13 +1014,12 @@ impl Subscriber {
         qos: DataReaderQos,
         type_support: Arc<dyn TypeSupport>,
     ) -> DdsResult<Arc<DataReader>> {
-        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast {
-            if qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
+        if qos.history.kind == dds_types::qos::HistoryKind::KeepLast
+            && qos.resource_limits.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
                 && qos.resource_limits.max_samples_per_instance < qos.history.depth
             {
                 return Err(DdsError::InconsistentPolicy("max_samples_per_instance < history depth".into()));
             }
-        }
 
         let mut readers = lock(&self.readers);
         let entity_kind = if type_support.is_keyless() {
@@ -1128,7 +1113,7 @@ fn send_durability_to_proxy(
             let _ = transport.send(&msg, loc);
         }
         if sn >= max_sn {
-            max_sn = SequenceNumber(sn.0 + 1);
+            max_sn = SequenceNumber::new(sn.value() + 1);
         }
     }
     max_sn
@@ -1431,7 +1416,7 @@ impl ParticipantHooks {
                             remote_reader_guid: *remote_guid,
                             unicast_locator_list: remote_locators.clone(),
                             multicast_locator_list: vec![],
-                            next_unsent_sn: dds_types::guid::SequenceNumber(1),
+                            next_unsent_sn: dds_types::guid::SequenceNumber::new(1),
                         };
                         rtps_writer.matched_reader_add(proxy);
                         let proxy_idx = rtps_writer.reader_proxies.len() - 1;
@@ -1447,16 +1432,16 @@ impl ParticipantHooks {
                         let mut matched_count = lock(&writer.publication_matched_count);
                         *matched_count += 1;
                         if let Some(listener) = lock(&writer.listener).as_ref() {
-                            listener.on_publication_matched(
-                                writer,
-                                dds_types::status::PublicationMatchedStatus {
-                                    total_count: *matched_count,
-                                    total_count_change: 1,
-                                    current_count: *matched_count,
-                                    current_count_change: 1,
-                                    last_subscription_handle: dds_types::instance::InstanceHandle::from_key_bytes(&remote_guid.to_bytes()),
-                                },
-                            );
+                            let mut status = dds_types::status::PublicationMatchedStatus::default();
+                            status.total_count = *matched_count;
+                            status.total_count_change = 1;
+                            status.current_count = *matched_count;
+                            status.current_count_change = 1;
+                            status.last_subscription_handle =
+                                dds_types::instance::InstanceHandle::from_key_bytes(
+                                    &remote_guid.to_bytes(),
+                                );
+                            listener.on_publication_matched(writer, status);
                         }
                     }
                 }
@@ -1488,16 +1473,16 @@ impl ParticipantHooks {
                     let mut sub_count = lock(&reader.publication_matched_count);
                     *sub_count += 1;
                     if let Some(listener) = lock(&reader.listener).as_ref() {
-                        listener.on_subscription_matched(
-                            reader,
-                            dds_types::status::SubscriptionMatchedStatus {
-                                total_count: *sub_count,
-                                total_count_change: 1,
-                                current_count: *sub_count,
-                                current_count_change: 1,
-                                last_publication_handle: dds_types::instance::InstanceHandle::from_key_bytes(&remote_guid.to_bytes()),
-                            },
-                        );
+                        let mut status = dds_types::status::SubscriptionMatchedStatus::default();
+                        status.total_count = *sub_count;
+                        status.total_count_change = 1;
+                        status.current_count = *sub_count;
+                        status.current_count_change = 1;
+                        status.last_publication_handle =
+                            dds_types::instance::InstanceHandle::from_key_bytes(
+                                &remote_guid.to_bytes(),
+                            );
+                        listener.on_subscription_matched(reader, status);
                     }
                 }
             }
@@ -1529,19 +1514,17 @@ impl ParticipantHooks {
                                     lock(&writer.publication_matched_count);
                                 *matched_count = (*matched_count - 1).max(0);
                                 if let Some(listener) = lock(&writer.listener).as_ref() {
-                                    listener.on_publication_matched(
-                                        writer,
-                                        dds_types::status::PublicationMatchedStatus {
-                                            total_count: *matched_count,
-                                            total_count_change: -1,
-                                            current_count: *matched_count,
-                                            current_count_change: -1,
-                                            last_subscription_handle:
-                                                dds_types::instance::InstanceHandle::from_key_bytes(
-                                                    &remote_guid.to_bytes(),
-                                                ),
-                                        },
-                                    );
+                                    let mut status =
+                                        dds_types::status::PublicationMatchedStatus::default();
+                                    status.total_count = *matched_count;
+                                    status.total_count_change = -1;
+                                    status.current_count = *matched_count;
+                                    status.current_count_change = -1;
+                                    status.last_subscription_handle =
+                                        dds_types::instance::InstanceHandle::from_key_bytes(
+                                            &remote_guid.to_bytes(),
+                                        );
+                                    listener.on_publication_matched(writer, status);
                                 }
                             }
                         }
@@ -1568,19 +1551,17 @@ impl ParticipantHooks {
                             let mut sub_count = lock(&reader.publication_matched_count);
                             *sub_count = (*sub_count - 1).max(0);
                             if let Some(listener) = lock(&reader.listener).as_ref() {
-                                listener.on_subscription_matched(
-                                    reader,
-                                    dds_types::status::SubscriptionMatchedStatus {
-                                        total_count: *sub_count,
-                                        total_count_change: -1,
-                                        current_count: *sub_count,
-                                        current_count_change: -1,
-                                        last_publication_handle:
-                                            dds_types::instance::InstanceHandle::from_key_bytes(
-                                                &remote_guid.to_bytes(),
-                                            ),
-                                    },
-                                );
+                                let mut status =
+                                    dds_types::status::SubscriptionMatchedStatus::default();
+                                status.total_count = *sub_count;
+                                status.total_count_change = -1;
+                                status.current_count = *sub_count;
+                                status.current_count_change = -1;
+                                status.last_publication_handle =
+                                    dds_types::instance::InstanceHandle::from_key_bytes(
+                                        &remote_guid.to_bytes(),
+                                    );
+                                listener.on_subscription_matched(reader, status);
                             }
                         }
                     }
@@ -1679,7 +1660,7 @@ fn ingest_remote_sedp_endpoint(
 ///
 /// Owns the shared UDP transport and reader registry. Provides
 /// `spawn_receiver_loop()` which binds a UDP socket on the standard RTPS
-/// unicast port and routes incoming `DATA` submessages to matched DataReaders.
+/// unicast port and routes incoming `DATA` submessages to matched `DataReaders`.
 pub struct DomainParticipant {
     guid_prefix: GuidPrefix,
     domain_id: u32,
@@ -1687,14 +1668,14 @@ pub struct DomainParticipant {
     qos: DomainParticipantQos,
     topics: Mutex<HashMap<String, Topic>>,
     types: Mutex<HashMap<String, Arc<dyn TypeSupport>>>,
-    /// topic_name -> DataReader; populated when create_subscriber().create_datareader() is called.
+    /// `topic_name` -> `DataReader`; populated when `create_subscriber().create_datareader()` is called.
     reader_registry: Arc<Mutex<HashMap<String, Arc<DataReader>>>>,
-    /// guid -> StatefulWriter; populated when create_publisher().create_datawriter() is called.
+    /// guid -> `StatefulWriter`; populated when `create_publisher().create_datawriter()` is called.
     writer_registry: Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
     /// Shared UDP socket used by all Publishers/DataWriters in this participant.
     transport: Arc<UdpTransport>,
-    /// RTPS unicast port: PORT_BASE + DOMAIN_ID_GAIN * domain_id + SPDP_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * participantId
-    /// RTPS multicast port: PORT_BASE + DOMAIN_ID_GAIN * domain_id + SPDP_MULTICAST_OFFSET
+    /// RTPS unicast port: `PORT_BASE` + `DOMAIN_ID_GAIN` * `domain_id` + `SPDP_UNICAST_OFFSET` + `PARTICIPANT_ID_GAIN` * participantId
+    /// RTPS multicast port: `PORT_BASE` + `DOMAIN_ID_GAIN` * `domain_id` + `SPDP_MULTICAST_OFFSET`
     unicast_port: u32,
     pub security_auth: Arc<dds_security::BuiltinAuthentication>,
     pub security_access: Arc<dds_security::BuiltinAccessControl>,
@@ -1795,8 +1776,8 @@ impl DomainParticipant {
 
     /// Computes the unicast port for user traffic (DataWriter/DataReader)
     /// RTPS Formula: PB + DG * domainId + d1 + PG * participantId
-    /// where PB=PORT_BASE, DG=DOMAIN_ID_GAIN, d1=USER_UNICAST_OFFSET.
-    fn compute_user_unicast_port(&self) -> u16 {
+    /// where `PB=PORT_BASE`, `DG=DOMAIN_ID_GAIN`, `d1=USER_UNICAST_OFFSET`.
+    const fn compute_user_unicast_port(&self) -> u16 {
         let domain_id = self.domain_id as u16;
         PORT_BASE + DOMAIN_ID_GAIN * domain_id + USER_UNICAST_OFFSET + PARTICIPANT_ID_GAIN * self.participant_idx as u16
     }
@@ -1807,7 +1788,7 @@ impl DomainParticipant {
         self.domain_id
     }
 
-    /// Enables the DomainParticipant. If autoenable is false, this must be called explicitly.
+    /// Enables the `DomainParticipant`. If autoenable is false, this must be called explicitly.
     pub fn enable(&self) -> DdsResult<()> {
         let was_enabled = self.is_enabled.swap(true, std::sync::atomic::Ordering::SeqCst);
         if !was_enabled {
@@ -1839,17 +1820,17 @@ impl DomainParticipant {
         Ok(())
     }
 
-    /// Deletes a Topic created by this DomainParticipant.
+    /// Deletes a Topic created by this `DomainParticipant`.
     pub fn delete_topic(&self, name: &str) -> DdsResult<()> {
         let mut topics = lock(&self.topics);
         if topics.remove(name).is_some() {
             Ok(())
         } else {
-            Err(DdsError::Error(format!("Topic {} not found", name)))
+            Err(DdsError::Error(format!("Topic {name} not found")))
         }
     }
 
-    /// Deletes a Publisher created by this DomainParticipant.
+    /// Deletes a Publisher created by this `DomainParticipant`.
     pub fn delete_publisher(&self, publisher: &Arc<Publisher>) -> DdsResult<()> {
         let writers = lock(&publisher.writers);
         let mut reg = lock(&self.writer_registry);
@@ -1859,7 +1840,7 @@ impl DomainParticipant {
         Ok(())
     }
 
-    /// Deletes a Subscriber created by this DomainParticipant.
+    /// Deletes a Subscriber created by this `DomainParticipant`.
     pub fn delete_subscriber(&self, subscriber: &Subscriber) -> DdsResult<()> {
         let readers = lock(&subscriber.readers);
         let mut reg = lock(&self.reader_registry);
@@ -1929,7 +1910,7 @@ impl DomainParticipant {
         Ok(publisher)
     }
 
-    /// Create a Subscriber. DataReaders created from it are registered in the
+    /// Create a Subscriber. `DataReaders` created from it are registered in the
     /// shared `reader_registry` for UDP dispatch.
     pub fn create_subscriber(&self, qos: SubscriberQos) -> DdsResult<Subscriber> {
         let sub_guid = Guid::new(
@@ -2034,9 +2015,9 @@ impl DomainParticipant {
             .cloned()
             .unwrap_or_default();
         let mut missing = Vec::new();
-        if hb.last_sn.0 >= hb.first_sn.0 {
-            for sn_val in hb.first_sn.0..=hb.last_sn.0 {
-                let sn = dds_types::guid::SequenceNumber(sn_val);
+        if hb.last_sn.value() >= hb.first_sn.value() {
+            for sn_val in hb.first_sn.value()..=hb.last_sn.value() {
+                let sn = dds_types::guid::SequenceNumber::new(sn_val);
                 if !received_set.contains(&sn) {
                     missing.push(sn);
                 }
@@ -2312,8 +2293,8 @@ impl DomainParticipant {
                                             let mut missing = Vec::new();
                                             {
                                                 let received = lock(&reader.received_sns);
-                                                for sn_val in hb.first_sn.0..=hb.last_sn.0 {
-                                                    let sn = SequenceNumber(sn_val);
+                                                for sn_val in hb.first_sn.value()..=hb.last_sn.value() {
+                                                    let sn = SequenceNumber::new(sn_val);
                                                     if !received.contains(&sn) {
                                                         missing.push(sn);
                                                     }
@@ -2380,7 +2361,7 @@ impl DomainParticipant {
                 let mcast_socket = match bind_multicast_socket(multicast_port) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[SPDP Receiver] bind failed on port {}: {}", multicast_port, e);
+                        eprintln!("[SPDP Receiver] bind failed on port {multicast_port}: {e}");
                         return;
                     }
                 };
@@ -2483,7 +2464,6 @@ impl DomainParticipant {
                     Err(_) => continue,
                 };
                 let data = &buf[..len];
-
                 // Parse RTPS message
                 let (header, submessages) = match parse_rtps_message(data) {
                     Ok(r) => r,
@@ -2644,7 +2624,7 @@ impl DomainParticipant {
                                 _fragment_size: df.fragment_size as usize,
                                 received_bytes: 0,
                                 buffer: vec![0; df.data_size as usize],
-                                received_mask: vec![false; ((df.data_size + df.fragment_size as u32 - 1) / df.fragment_size as u32) as usize],
+                                received_mask: vec![false; df.data_size.div_ceil(df.fragment_size as u32) as usize],
                             }
                         });
 
@@ -2822,8 +2802,8 @@ impl DomainParticipant {
                                     let mut missing = Vec::new();
                                     {
                                         let received = lock(&reader.received_sns);
-                                        for sn_val in hb.first_sn.0..=hb.last_sn.0 {
-                                            let sn = SequenceNumber(sn_val);
+                                        for sn_val in hb.first_sn.value()..=hb.last_sn.value() {
+                                            let sn = SequenceNumber::new(sn_val);
                                             if !received.contains(&sn) {
                                                 missing.push(sn);
                                             }
@@ -2926,7 +2906,7 @@ impl DomainParticipantFactory {
     /// Binds a UDP socket for sending on a random ephemeral port, and
     /// computes the standard RTPS unicast receive port per RTPS §9.6.2:
     /// `PB + DG * domain_id + PO + 2 * participant_idx`
-    /// where PB=PORT_BASE, DG=DOMAIN_ID_GAIN, PO=SPDP_UNICAST_OFFSET.
+    /// where `PB=PORT_BASE`, `DG=DOMAIN_ID_GAIN`, `PO=SPDP_UNICAST_OFFSET`.
     pub fn create_participant(
         domain_id: u32,
         qos: DomainParticipantQos,
@@ -2971,7 +2951,7 @@ impl DomainParticipantFactory {
         Ok(DomainParticipant::new(
             GuidPrefix::new(prefix),
             domain_id,
-            participant_idx as u32,
+            participant_idx,
             qos,
             transport,
             unicast_port as u32,
@@ -3081,6 +3061,7 @@ pub fn check_type_compatibility(
         dds_types::qos::TypeConsistencyKind::AllowTypeCoercion => {
             dds_xtypes::is_assignable_from(requested_type, offered_type)
         }
+        _ => false,
     }
 }
 
@@ -3383,32 +3364,18 @@ mod tests {
         assert!(check_qos_compatibility(&offered, &requested));
 
         // Incompatible Durability: Offered Volatile, Requested TransientLocal
-        offered.durability = Durability {
-            kind: DurabilityKind::Volatile,
-        };
-        requested.durability = Durability {
-            kind: DurabilityKind::TransientLocal,
-        };
+        offered.durability.kind = DurabilityKind::Volatile;
+        requested.durability.kind = DurabilityKind::TransientLocal;
         assert!(!check_qos_compatibility(&offered, &requested));
 
         // Compatible Durability: Offered TransientLocal, Requested Volatile
-        offered.durability = Durability {
-            kind: DurabilityKind::TransientLocal,
-        };
-        requested.durability = Durability {
-            kind: DurabilityKind::Volatile,
-        };
+        offered.durability.kind = DurabilityKind::TransientLocal;
+        requested.durability.kind = DurabilityKind::Volatile;
         assert!(check_qos_compatibility(&offered, &requested));
 
         // Incompatible Reliability: Offered BestEffort, Requested Reliable
-        offered.reliability = Reliability {
-            kind: ReliabilityKind::BestEffort,
-            max_blocking_time: dds_types::time::Duration::ZERO,
-        };
-        requested.reliability = Reliability {
-            kind: ReliabilityKind::Reliable,
-            max_blocking_time: dds_types::time::Duration::ZERO,
-        };
+        offered.reliability.kind = ReliabilityKind::BestEffort;
+        requested.reliability.kind = ReliabilityKind::Reliable;
         assert!(!check_qos_compatibility(&offered, &requested));
 
         // Compatible Reliability again so we can test other things
@@ -3488,16 +3455,16 @@ mod tests {
         use dds_types::qos::{TypeConsistencyEnforcement, TypeConsistencyKind};
         use dds_xtypes::{ExtensibilityKind, StructureType, TypeObject};
 
-        let offered = TypeObject::Complete(StructureType {
-            name: "Point".to_string(),
-            extensibility: ExtensibilityKind::Appendable,
-            members: vec![],
-        });
-        let requested = TypeObject::Complete(StructureType {
-            name: "Point".to_string(),
-            extensibility: ExtensibilityKind::Final, // Incompatible
-            members: vec![],
-        });
+        let offered = TypeObject::Complete(StructureType::new(
+            "Point".to_string(),
+            ExtensibilityKind::Appendable,
+            vec![],
+        ));
+        let requested = TypeObject::Complete(StructureType::new(
+            "Point".to_string(),
+            ExtensibilityKind::Final,
+            vec![],
+        ));
 
         // 1. Kind: DisallowTypeCoercion -> Must match exactly
         let mut policy = TypeConsistencyEnforcement::default();

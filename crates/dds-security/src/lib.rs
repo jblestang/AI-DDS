@@ -391,7 +391,7 @@ pub trait Cryptography: Send + Sync {
 // ──────────────────────────────────────────────────────────────────────────────
 
 pub trait DataTagging: Send + Sync {
-    /// Retrieve data tags for a DomainParticipant
+    /// Retrieve data tags for a `DomainParticipant`
     fn get_data_tags(&self, qos: &dds_types::qos::DomainParticipantQos) -> SecurityResult<Vec<(String, String)>>;
     
     /// Retrieve data tags for an endpoint based on its Property

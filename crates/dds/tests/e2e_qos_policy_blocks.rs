@@ -57,9 +57,7 @@ fn e2e_ownership_mismatch_blocks_wire_delivery() {
         .unwrap();
     let mut reader_qos = DataReaderQos::default();
     reader_qos.reliability.kind = ReliabilityKind::Reliable;
-    reader_qos.ownership = Ownership {
-        kind: OwnershipKind::Shared,
-    };
+    reader_qos.ownership.kind = OwnershipKind::Shared;
     let reader = subscriber
         .create_datareader(&sub_topic, reader_qos.clone(), ts.clone())
         .unwrap();
@@ -72,9 +70,7 @@ fn e2e_ownership_mismatch_blocks_wire_delivery() {
         .unwrap();
     let mut writer_qos = DataWriterQos::default();
     writer_qos.reliability.kind = ReliabilityKind::Reliable;
-    writer_qos.ownership = Ownership {
-        kind: OwnershipKind::Exclusive,
-    };
+    writer_qos.ownership.kind = OwnershipKind::Exclusive;
     let writer = publisher
         .create_datawriter(&pub_topic, writer_qos.clone(), ts)
         .unwrap();
@@ -107,13 +103,9 @@ fn e2e_ownership_mismatch_blocks_wire_delivery() {
 #[test]
 fn e2e_deadline_mismatch_blocks_wire_delivery() {
     let mut writer_qos = DataWriterQos::default();
-    writer_qos.deadline = Deadline {
-        period: DdsDuration::from_secs(10),
-    };
+    writer_qos.deadline.period = DdsDuration::from_secs(10);
     let mut reader_qos = DataReaderQos::default();
-    reader_qos.deadline = Deadline {
-        period: DdsDuration::from_secs(1),
-    };
+    reader_qos.deadline.period = DdsDuration::from_secs(1);
     assert!(!check_qos_compatibility(&writer_qos, &reader_qos));
 
     let pair = create_participant_pair(DOMAIN + 1);
@@ -247,15 +239,11 @@ fn e2e_durability_upgrade_required_for_transient_local_reader() {
 #[test]
 fn e2e_liveliness_mismatch_blocks_wire_delivery() {
     let mut writer_qos = DataWriterQos::default();
-    writer_qos.liveliness = Liveliness {
-        kind: LivelinessKind::Automatic,
-        lease_duration: DdsDuration::INFINITE,
-    };
+    writer_qos.liveliness.kind = LivelinessKind::Automatic;
+    writer_qos.liveliness.lease_duration = DdsDuration::INFINITE;
     let mut reader_qos = DataReaderQos::default();
-    reader_qos.liveliness = Liveliness {
-        kind: LivelinessKind::ManualByTopic,
-        lease_duration: DdsDuration::INFINITE,
-    };
+    reader_qos.liveliness.kind = LivelinessKind::ManualByTopic;
+    reader_qos.liveliness.lease_duration = DdsDuration::INFINITE;
     assert!(!check_qos_compatibility(&writer_qos, &reader_qos));
 
     let pair = create_participant_pair(DOMAIN + 3);
@@ -321,13 +309,9 @@ fn e2e_liveliness_mismatch_blocks_wire_delivery() {
 #[test]
 fn e2e_destination_order_mismatch_blocks_wire_delivery() {
     let mut writer_qos = DataWriterQos::default();
-    writer_qos.destination_order = DestinationOrder {
-        kind: DestinationOrderKind::ByReceptionTimestamp,
-    };
+    writer_qos.destination_order.kind = DestinationOrderKind::ByReceptionTimestamp;
     let mut reader_qos = DataReaderQos::default();
-    reader_qos.destination_order = DestinationOrder {
-        kind: DestinationOrderKind::BySourceTimestamp,
-    };
+    reader_qos.destination_order.kind = DestinationOrderKind::BySourceTimestamp;
     assert!(!check_qos_compatibility(&writer_qos, &reader_qos));
 
     let pair = create_participant_pair(DOMAIN + 4);
@@ -393,13 +377,9 @@ fn e2e_destination_order_mismatch_blocks_wire_delivery() {
 #[test]
 fn e2e_latency_budget_mismatch_blocks_wire_delivery() {
     let mut writer_qos = DataWriterQos::default();
-    writer_qos.latency_budget = LatencyBudget {
-        duration: DdsDuration::from_millis(500),
-    };
+    writer_qos.latency_budget.duration = DdsDuration::from_millis(500);
     let mut reader_qos = DataReaderQos::default();
-    reader_qos.latency_budget = LatencyBudget {
-        duration: DdsDuration::from_millis(100),
-    };
+    reader_qos.latency_budget.duration = DdsDuration::from_millis(100);
     assert!(!check_qos_compatibility(&writer_qos, &reader_qos));
 
     let pair = create_participant_pair(DOMAIN + 5);

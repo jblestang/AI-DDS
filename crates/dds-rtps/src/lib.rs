@@ -73,7 +73,7 @@ use dds_types::locator::Locator;
 use dds_types::sync::lock;
 use dds_types::time::Timestamp;
 use dds_types::vendor::VendorId;
-use dds_cdr::{CdrDeserialize, CdrSerialize};
+use dds_cdr::{CdrDeserialize as _, CdrSerialize as _};
 use core::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -106,25 +106,25 @@ pub const RTPS_HEADER_SIZE: usize = 20;
 /// Fixed length of a submessage header (Kind, Flags, Length) in bytes.
 pub const SUBMESSAGE_HEADER_SIZE: usize = 4;
 
-/// Fixed length of the Data submessage fields before inline QoS and payload.
+/// Fixed length of the Data submessage fields before inline `QoS` and payload.
 pub const DATA_SUBMESSAGE_FIXED_SIZE: usize = 20;
 
-/// Fixed length of the DataFrag submessage fields before inline QoS and payload.
+/// Fixed length of the `DataFrag` submessage fields before inline `QoS` and payload.
 pub const DATA_FRAG_SUBMESSAGE_FIXED_SIZE: usize = 32;
 
 /// Fixed length of the Gap submessage base fields.
 pub const GAP_SUBMESSAGE_FIXED_SIZE: usize = 16;
 
-/// Fixed length of the AckNack submessage base fields.
+/// Fixed length of the `AckNack` submessage base fields.
 pub const ACKNACK_SUBMESSAGE_FIXED_SIZE: usize = 24;
 
-/// Fixed length of the InfoTs submessage timestamp field.
+/// Fixed length of the `InfoTs` submessage timestamp field.
 pub const INFOTS_TIMESTAMP_SIZE: usize = 8;
 
 /// Submessage flag indicating little-endian byte order.
 pub const FLAG_LITTLE_ENDIAN: u8 = 0x01;
 
-/// Submessage flag indicating the presence of Inline QoS.
+/// Submessage flag indicating the presence of Inline `QoS`.
 pub const FLAG_INLINE_QOS: u8 = 0x02;
 
 /// Submessage flag indicating the presence of a serialized Data payload.
@@ -159,7 +159,7 @@ pub const NANOS_PER_SEC: u64 = 1_000_000_000;
 pub const UDP_MAX_PAYLOAD_SIZE: usize = 65535;
 
 
-/// Submessage flag for Multicast flag in InfoReply.
+/// Submessage flag for Multicast flag in `InfoReply`.
 pub const FLAG_MULTICAST: u8 = 0x02;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ pub struct Data {
     pub writer_id: EntityId,
     /// Sequence number of the cache change.
     pub writer_sn: SequenceNumber,
-    /// Optional inline QoS parameters.
+    /// Optional inline `QoS` parameters.
     pub inline_qos: Option<dds_cdr::ParameterList>,
     /// Serialized payload data representation.
     pub serialized_payload: Bytes,
@@ -783,8 +783,8 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             } else {
                                 BigEndian::read_u32(&sub_payload[16..20])
                             };
-                            if num_bits == 0 && base.0 > 0 {
-                                Some(SequenceNumber(base.0 - 1))
+                            if num_bits == 0 && base.value() > 0 {
+                                Some(SequenceNumber::new(base.value() - 1))
                             } else {
                                 None
                             }
@@ -792,7 +792,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             None
                         };
                         if let Ok(reader_sn_state) = deserialize_sequence_number_set(
-                            &sub_payload,
+                            sub_payload,
                             &mut set_offset,
                             little_endian,
                         ) {
@@ -807,8 +807,8 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             };
 
                             submessages.push(Submessage::AckNack(AckNack {
-                                reader_id,
                                 writer_id,
+                                reader_id,
                                 reader_sn_state,
                                 ack_through,
                                 count,
@@ -840,7 +840,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
 
                         let mut set_offset = 16;
                         let gap_list = deserialize_sequence_number_set(
-                            &sub_payload,
+                            sub_payload,
                             &mut set_offset,
                             little_endian,
                         )
@@ -979,7 +979,7 @@ pub fn serialize_rtps_message(
     buf.put_slice(b"RTPS");
     buf.put_u8(header.version.0);
     buf.put_u8(header.version.1);
-    buf.put_slice(&header.vendor_id.0);
+    buf.put_slice(header.vendor_id.as_bytes());
     buf.put_slice(header.guid_prefix.as_bytes());
 
     // 2. Write Submessages
@@ -1375,10 +1375,10 @@ impl RtpsEngine {
         })
     }
 
-    /// Single dispatch tick: send all pending CacheChanges to matched readers.
+    /// Single dispatch tick: send all pending `CacheChanges` to matched readers.
     ///
-    /// For each reader proxy: find CacheChanges with SN >= proxy.next_unsent_sn,
-    /// build RTPS messages (Header + InfoTs + Data), send them, then advance SN.
+    /// For each reader proxy: find `CacheChanges` with SN >= `proxy.next_unsent_sn`,
+    /// build RTPS messages (Header + `InfoTs` + Data), send them, then advance SN.
     pub fn tick(
         writer: &Arc<Mutex<StatefulWriter>>,
         transport: &UdpTransport,
@@ -1425,7 +1425,7 @@ impl RtpsEngine {
                 .unicast_locator_list
                 .iter()
                 .chain(w.reader_proxies[idx].multicast_locator_list.iter())
-                .cloned()
+                .copied()
                 .collect();
 
             let header = RtpsHeader::new(guid_prefix);
@@ -1450,7 +1450,7 @@ impl RtpsEngine {
                 });
                 if payload_bytes.len() > max_payload {
                     let total_size = payload_bytes.len();
-                    let num_frags = (total_size + max_payload - 1) / max_payload;
+                    let num_frags = total_size.div_ceil(max_payload);
                     for f in 0..num_frags {
                         let start = f * max_payload;
                         let end = (start + max_payload).min(total_size);
@@ -1518,8 +1518,8 @@ impl RtpsEngine {
         }
 
         // Send Heartbeat to all matched reader proxies to drive reliable transfer state
-        let first_sn = w.writer_cache.get_seq_num_min().unwrap_or(SequenceNumber(1));
-        let last_sn = w.writer_cache.get_seq_num_max().unwrap_or(SequenceNumber(0));
+        let first_sn = w.writer_cache.get_seq_num_min().unwrap_or(SequenceNumber::new(1));
+        let last_sn = w.writer_cache.get_seq_num_max().unwrap_or(SequenceNumber::new(0));
         w.heartbeat_count += 1;
         let count = w.heartbeat_count;
 
@@ -1530,7 +1530,7 @@ impl RtpsEngine {
                 .unicast_locator_list
                 .iter()
                 .chain(w.reader_proxies[idx].multicast_locator_list.iter())
-                .cloned()
+                .copied()
                 .collect();
 
             let hb = Heartbeat {
@@ -1688,7 +1688,7 @@ impl StatefulWriter {
             guid,
             reader_proxies: Vec::new(),
             writer_cache: HistoryCache::new(history_kind, history_depth, max_samples_per_instance),
-            last_change_sequence_number: SequenceNumber(0),
+            last_change_sequence_number: SequenceNumber::new(0),
             heartbeat_count: 0,
         }
     }
@@ -1717,7 +1717,7 @@ impl StatefulWriter {
                 continue;
             }
             if let Some(through) = ack.ack_through {
-                let new_sn = SequenceNumber(through.0 + 1);
+                let new_sn = SequenceNumber::new(through.value() + 1);
                 if new_sn > proxy.next_unsent_sn {
                     proxy.next_unsent_sn = new_sn;
                 }
@@ -1801,7 +1801,7 @@ impl StatefulReader {
                 if !received {
                     missing.push(sn);
                 }
-                sn = SequenceNumber(sn.0 + 1);
+                sn = SequenceNumber::new(sn.value() + 1);
             }
 
             if missing.is_empty() {
@@ -1852,7 +1852,7 @@ pub struct StatelessWriter {
 
 impl StatelessWriter {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         guid: Guid,
         history_kind: dds_types::qos::HistoryKind,
         history_depth: i32,
@@ -1862,7 +1862,7 @@ impl StatelessWriter {
             guid,
             writer_cache: HistoryCache::new(history_kind, history_depth, max_samples_per_instance),
             reader_locators: Vec::new(),
-            last_change_sequence_number: SequenceNumber(0),
+            last_change_sequence_number: SequenceNumber::new(0),
         }
     }
 
@@ -1994,14 +1994,14 @@ pub fn serialize_sequence_number_set_ack_through(
     }
 }
 
-/// Serialize a SequenceNumberSet to the byte buffer.
+/// Serialize a `SequenceNumberSet` to the byte buffer.
 pub fn serialize_sequence_number_set(
     buf: &mut BytesMut,
     sns: &[SequenceNumber],
     endian: Endianness,
 ) {
     let is_le = endian == Endianness::LittleEndian;
-    let base_sn = sns.first().copied().unwrap_or(SequenceNumber(1));
+    let base_sn = sns.first().copied().unwrap_or(SequenceNumber::new(1));
     let (base_high, base_low) = base_sn.to_high_low();
 
     // Serialize base
@@ -2023,7 +2023,7 @@ pub fn serialize_sequence_number_set(
     }
 
     let max_sn = sns.iter().max().copied().unwrap_or(base_sn);
-    let num_bits = ((max_sn.0 - base_sn.0 + 1).max(0).min(256)) as u32;
+    let num_bits = ((max_sn.value() - base_sn.value() + 1).max(0).min(256)) as u32;
 
     if is_le {
         buf.put_u32_le(num_bits);
@@ -2031,11 +2031,11 @@ pub fn serialize_sequence_number_set(
         buf.put_u32(num_bits);
     }
 
-    let num_longs = ((num_bits + 31) / 32) as usize;
+    let num_longs = num_bits.div_ceil(32) as usize;
     let mut bitmap = vec![0_u32; num_longs];
 
     for sn in sns {
-        let diff = sn.0 - base_sn.0;
+        let diff = sn.value() - base_sn.value();
         if diff >= 0 && diff < i64::from(num_bits) {
             let word_idx = (diff / 32) as usize;
             let bit_idx = 31 - (diff % 32) as u32;
@@ -2052,7 +2052,7 @@ pub fn serialize_sequence_number_set(
     }
 }
 
-/// Deserialize a SequenceNumberSet from a payload slice starting at offset.
+/// Deserialize a `SequenceNumberSet` from a payload slice starting at offset.
 /// Returns the list of sequence numbers.
 pub fn deserialize_sequence_number_set(
     payload: &[u8],
@@ -2083,7 +2083,7 @@ pub fn deserialize_sequence_number_set(
 
     *offset += 12;
 
-    let num_longs = ((num_bits + 31) / 32) as usize;
+    let num_longs = num_bits.div_ceil(32) as usize;
     if *offset + 4 * num_longs > payload.len() {
         return Err(RtpsError::InvalidMessage("SequenceNumberSet bitmap truncated".into()));
     }
@@ -2103,7 +2103,7 @@ pub fn deserialize_sequence_number_set(
         let word_idx = (i / 32) as usize;
         let bit_idx = 31 - (i % 32);
         if (bitmap[word_idx] & (1 << bit_idx)) != 0 {
-            sns.push(SequenceNumber(base_sn.0 + i64::from(i)));
+            sns.push(SequenceNumber::new(base_sn.value() + i64::from(i)));
         }
     }
 
@@ -2151,11 +2151,11 @@ pub fn parse_locator_list(
         };
         let mut address = [0_u8; 16];
         address.copy_from_slice(&payload[*offset + 8..*offset + 24]);
-        locators.push(Locator {
-            kind: dds_types::locator::LocatorKind::from_i32(kind),
+        locators.push(Locator::from_raw(
+            dds_types::locator::LocatorKind::from_i32(kind),
             port,
             address,
-        });
+        ));
         *offset += 24;
     }
     Ok(locators)
@@ -2334,7 +2334,7 @@ mod tests {
         let data = Data {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(15),
+            writer_sn: SequenceNumber::new(15),
             inline_qos: None,
             serialized_payload: payload.clone(),
         };
@@ -2375,7 +2375,7 @@ mod tests {
             kind: ChangeKind::Alive,
             writer_guid,
             instance_handle: instance,
-            sequence_number: SequenceNumber(1),
+            sequence_number: SequenceNumber::new(1),
             data_value: Bytes::copy_from_slice(b"one"),
             source_timestamp: None,
         };
@@ -2384,7 +2384,7 @@ mod tests {
             kind: ChangeKind::Alive,
             writer_guid,
             instance_handle: instance,
-            sequence_number: SequenceNumber(2),
+            sequence_number: SequenceNumber::new(2),
             data_value: Bytes::copy_from_slice(b"two"),
             source_timestamp: None,
         };
@@ -2392,12 +2392,12 @@ mod tests {
         cache.add_change(change2.clone());
         cache.add_change(change1.clone()); // Test insertion ordering
 
-        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber(1)));
-        assert_eq!(cache.get_seq_num_max(), Some(SequenceNumber(2)));
+        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber::new(1)));
+        assert_eq!(cache.get_seq_num_max(), Some(SequenceNumber::new(2)));
         assert_eq!(cache.get_changes().len(), 2);
 
-        cache.remove_change(SequenceNumber(1));
-        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber(2)));
+        cache.remove_change(SequenceNumber::new(1));
+        assert_eq!(cache.get_seq_num_min(), Some(SequenceNumber::new(2)));
         assert_eq!(cache.get_changes().len(), 1);
     }
 
@@ -2408,7 +2408,7 @@ mod tests {
         let ack = AckNack {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            reader_sn_state: vec![SequenceNumber(10)],
+            reader_sn_state: vec![SequenceNumber::new(10)],
             ack_through: None,
             count: 5,
         };
@@ -2431,7 +2431,7 @@ mod tests {
         let ack_complex = AckNack {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            reader_sn_state: vec![SequenceNumber(10), SequenceNumber(12)],
+            reader_sn_state: vec![SequenceNumber::new(10), SequenceNumber::new(12)],
             ack_through: None,
             count: 7,
         };
@@ -2440,7 +2440,7 @@ mod tests {
         let (_, parsed_subs_complex) = parse_rtps_message(&msg_complex).unwrap();
         assert_eq!(parsed_subs_complex.len(), 1);
         if let Submessage::AckNack(parsed_ack) = &parsed_subs_complex[0] {
-            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber(10), SequenceNumber(12)]);
+            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber::new(10), SequenceNumber::new(12)]);
             assert_eq!(parsed_ack.count, 7);
         } else {
             panic!("Expected complex AckNack");
@@ -2455,7 +2455,7 @@ mod tests {
         let ack = AckNack {
             reader_id: EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER,
             writer_id: EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER,
-            reader_sn_state: vec![SequenceNumber(1)],
+            reader_sn_state: vec![SequenceNumber::new(1)],
             ack_through: None,
             count: 1,
         };
@@ -2477,7 +2477,7 @@ mod tests {
             panic!("expected InfoDst");
         }
         if let Submessage::AckNack(parsed_ack) = &parsed[1] {
-            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber(1)]);
+            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber::new(1)]);
         } else {
             panic!("expected AckNack");
         }
@@ -2490,8 +2490,8 @@ mod tests {
         let gap = Gap {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            gap_start: SequenceNumber(20),
-            gap_list: vec![SequenceNumber(22), SequenceNumber(25)],
+            gap_start: SequenceNumber::new(20),
+            gap_list: vec![SequenceNumber::new(22), SequenceNumber::new(25)],
         };
 
         let subs = vec![Submessage::Gap(gap.clone())];
@@ -2516,7 +2516,7 @@ mod tests {
         let df = DataFrag {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(100),
+            writer_sn: SequenceNumber::new(100),
             fragment_starting_num: 5,
             fragments_in_submessage: 3,
             fragment_size: 1000,
@@ -2556,7 +2556,7 @@ mod tests {
         let data = Data {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(42),
+            writer_sn: SequenceNumber::new(42),
             inline_qos: Some(parameter_list),
             serialized_payload: Bytes::copy_from_slice(&[99, 100, 101]),
         };
@@ -2612,13 +2612,13 @@ mod tests {
             10,
             dds_types::qos::LENGTH_UNLIMITED,
         );
-        writer.last_change_sequence_number = SequenceNumber(5);
+        writer.last_change_sequence_number = SequenceNumber::new(5);
         for i in 1..=5 {
             writer.writer_cache.add_change(CacheChange {
                 kind: ChangeKind::Alive,
                 writer_guid,
                 instance_handle: dds_types::instance::InstanceHandle::NIL,
-                sequence_number: SequenceNumber(i),
+                sequence_number: SequenceNumber::new(i),
                 data_value: Bytes::copy_from_slice(b"sample"),
                 source_timestamp: None,
             });
@@ -2628,7 +2628,7 @@ mod tests {
             remote_reader_guid: Guid::new(GuidPrefix::new([2; 12]), EntityId::new([0, 0, 2, 7])),
             unicast_locator_list: vec![],
             multicast_locator_list: vec![],
-            next_unsent_sn: SequenceNumber(1),
+            next_unsent_sn: SequenceNumber::new(1),
         };
         writer.matched_reader_add(proxy);
 
@@ -2647,7 +2647,7 @@ mod tests {
             reader_id: EntityId::new([0, 0, 2, 7]),
             writer_id: EntityId::new([0, 0, 1, 2]),
             reader_sn_state: vec![],
-            ack_through: Some(SequenceNumber(5)),
+            ack_through: Some(SequenceNumber::new(5)),
             count: 1,
         };
         w.apply_reader_acknack(&ack, GuidPrefix::new([2; 12]));
@@ -2661,7 +2661,7 @@ mod tests {
         let nf = NackFrag {
             reader_id: EntityId::new([1, 0, 0, 7]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(10),
+            writer_sn: SequenceNumber::new(10),
             fragment_starting_num: 1,
             fragment_state: vec![1, 3, 5],
             count: 2,
@@ -2685,7 +2685,7 @@ mod tests {
         let hbf = HeartbeatFrag {
             reader_id: EntityId::new([1, 0, 0, 7]),
             writer_id: EntityId::new([2, 0, 0, 3]),
-            writer_sn: SequenceNumber(10),
+            writer_sn: SequenceNumber::new(10),
             last_fragment_num: 8,
             count: 1,
         };
@@ -2693,7 +2693,7 @@ mod tests {
         let (_, parsed) = parse_rtps_message(&msg).unwrap();
         if let Submessage::HeartbeatFrag(parsed_hbf) = &parsed[0] {
             assert_eq!(parsed_hbf.last_fragment_num, 8);
-            assert_eq!(parsed_hbf.writer_sn, SequenceNumber(10));
+            assert_eq!(parsed_hbf.writer_sn, SequenceNumber::new(10));
         } else {
             panic!("Expected HeartbeatFrag");
         }
@@ -2725,8 +2725,8 @@ mod tests {
         let hb = Heartbeat {
             reader_id: EntityId::new([0, 0, 0, 4]),
             writer_id: EntityId::new([0, 0, 1, 3]),
-            first_sn: SequenceNumber(1),
-            last_sn: SequenceNumber(1),
+            first_sn: SequenceNumber::new(1),
+            last_sn: SequenceNumber::new(1),
             count: 1,
             flags: FLAG_LIVELINESS,
         };
@@ -2755,29 +2755,29 @@ mod tests {
             remote_writer_guid: Guid::new(GuidPrefix::new([2; 12]), writer_id),
             unicast_locator_list: vec![],
             multicast_locator_list: vec![],
-            highest_sn_received: SequenceNumber(0),
+            highest_sn_received: SequenceNumber::new(0),
             last_heartbeat_count: 0,
         });
         reader.reader_cache.add_change(CacheChange {
             kind: ChangeKind::Alive,
             writer_guid: Guid::new(GuidPrefix::new([2; 12]), writer_id),
             instance_handle: dds_types::instance::InstanceHandle::NIL,
-            sequence_number: SequenceNumber(1),
+            sequence_number: SequenceNumber::new(1),
             data_value: Bytes::from_static(b"a"),
             source_timestamp: None,
         });
         let hb = Heartbeat {
             reader_id: reader_guid.entity_id,
             writer_id,
-            first_sn: SequenceNumber(1),
-            last_sn: SequenceNumber(3),
+            first_sn: SequenceNumber::new(1),
+            last_sn: SequenceNumber::new(3),
             count: 1,
             flags: 0,
         };
         let ack = reader.process_heartbeat(&hb);
         assert!(ack.is_some());
         let ack = ack.unwrap();
-        assert!(ack.reader_sn_state.contains(&SequenceNumber(2)));
-        assert!(ack.reader_sn_state.contains(&SequenceNumber(3)));
+        assert!(ack.reader_sn_state.contains(&SequenceNumber::new(2)));
+        assert!(ack.reader_sn_state.contains(&SequenceNumber::new(3)));
     }
 }

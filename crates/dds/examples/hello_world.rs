@@ -53,8 +53,6 @@
     clippy::min_ident_chars,
     clippy::little_endian_bytes,
     clippy::unused_trait_names,
-    clippy::separated_literal_suffix,
-    clippy::unseparated_literal_suffix,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
 use dds::core::{DomainParticipantFactory, TypeSupport, LOCALHOST_IP};
@@ -101,7 +99,7 @@ impl TypeSupport for HelloWorldTypeSupport {
         if bytes.len() < 4 {
             return Err(DdsError::Error("Payload too short".into()));
         }
-        let mut id_bytes = [0_u8; 4];
+        let mut id_bytes = [u8::default(); 4];
         id_bytes.copy_from_slice(&bytes[0..4]);
         let id = u32::from_le_bytes(id_bytes);
         let msg =
@@ -168,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket.set_read_timeout(Some(Duration::from_secs(RECV_TIMEOUT_SECS)))?;
             println!("[Subscriber] Listening on UDP port {SUBSCRIBER_PORT}...");
 
-            let mut buf = [0_u8; RECV_BUFFER_SIZE];
+            let mut buf = vec![u8::default(); RECV_BUFFER_SIZE];
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Subscriber] Received sample packet over UDP (len = {}).", len);
 

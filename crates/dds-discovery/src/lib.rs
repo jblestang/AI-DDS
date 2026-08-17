@@ -84,13 +84,13 @@ pub const PID_TOPIC_NAME: u16 = 0x0005;
 /// PID for Type Name
 pub const PID_TYPE_NAME: u16 = 0x0007;
 
-/// PID for Reliability QoS
+/// PID for Reliability `QoS`
 pub const PID_RELIABILITY: u16 = 0x001A;
 
-/// PID for Durability QoS
+/// PID for Durability `QoS`
 pub const PID_DURABILITY: u16 = 0x001D;
 
-/// PID for History QoS
+/// PID for History `QoS`
 pub const PID_HISTORY: u16 = 0x0040;
 
 /// PID for Liveliness QoS
@@ -310,11 +310,11 @@ impl DiscoveryManager {
             local_endpoints: HashMap::new(),
             builtin_mappings: HashMap::new(),
             type_object_db: HashMap::new(),
-            type_lookup_reply_sn: dds_types::guid::SequenceNumber(1),
+            type_lookup_reply_sn: dds_types::guid::SequenceNumber::new(1),
             type_lookup_replies: Vec::new(),
             sedp_endpoint_sn: HashMap::new(),
-            next_sedp_publication_sn: SequenceNumber(1),
-            next_sedp_subscription_sn: SequenceNumber(1),
+            next_sedp_publication_sn: SequenceNumber::new(1),
+            next_sedp_subscription_sn: SequenceNumber::new(1),
         }
     }
 
@@ -326,11 +326,11 @@ impl DiscoveryManager {
             .push(endpoint.guid);
         if endpoint.qos_writer.is_some() {
             let sn = self.next_sedp_publication_sn;
-            self.next_sedp_publication_sn = SequenceNumber(sn.0 + 1);
+            self.next_sedp_publication_sn = SequenceNumber::new(sn.value() + 1);
             self.sedp_endpoint_sn.insert(endpoint.guid, sn);
         } else if endpoint.qos_reader.is_some() {
             let sn = self.next_sedp_subscription_sn;
-            self.next_sedp_subscription_sn = SequenceNumber(sn.0 + 1);
+            self.next_sedp_subscription_sn = SequenceNumber::new(sn.value() + 1);
             self.sedp_endpoint_sn.insert(endpoint.guid, sn);
         }
         self.local_endpoints.insert(endpoint.guid, endpoint);
@@ -552,7 +552,7 @@ impl DiscoveryManager {
             let ack = AckNack {
                 reader_id,
                 writer_id,
-                reader_sn_state: vec![dds_types::guid::SequenceNumber(1)],
+                reader_sn_state: vec![dds_types::guid::SequenceNumber::new(1)],
                 ack_through: None,
                 count: 1,
             };
@@ -603,7 +603,7 @@ impl DiscoveryManager {
         let data_sub = dds_rtps::Data {
             reader_id: EntityId::UNKNOWN,
             writer_id: EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER,
-            writer_sn: dds_types::guid::SequenceNumber(1),
+            writer_sn: dds_types::guid::SequenceNumber::new(1),
             inline_qos: None,
             serialized_payload: bytes::Bytes::from(payload),
         };
@@ -619,6 +619,7 @@ impl DiscoveryManager {
     }
 
     /// Spawn SPDP announcer background thread.
+    #[must_use]
     pub fn spawn_spdp_announcer(
         &self,
         interval: core::time::Duration,
@@ -646,7 +647,7 @@ impl DiscoveryManager {
                     let data_sub = dds_rtps::Data {
                         reader_id: EntityId::UNKNOWN,
                         writer_id: EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER,
-                        writer_sn: dds_types::guid::SequenceNumber(1),
+                        writer_sn: dds_types::guid::SequenceNumber::new(1),
                         inline_qos: None,
                         serialized_payload: bytes::Bytes::from(payload),
                     };
@@ -820,7 +821,7 @@ impl DiscoveryManager {
         self.sedp_endpoint_sn
             .get(&endpoint.guid)
             .copied()
-            .unwrap_or(SequenceNumber(1))
+            .unwrap_or(SequenceNumber::new(1))
     }
 
     /// Re-send local SEDP endpoint samples in response to a built-in SEDP AckNack.
@@ -1024,12 +1025,12 @@ impl DiscoveryManager {
             .map(|ep| self.sedp_sn_for_endpoint(ep))
             .collect();
         if sns.is_empty() {
-            return (SequenceNumber(1), SequenceNumber(0));
+            return (SequenceNumber::new(1), SequenceNumber::new(0));
         }
         sns.sort_by_key(|sn| sn.0);
         match (sns.first(), sns.last()) {
             (Some(&first), Some(&last)) => (first, last),
-            _ => (SequenceNumber(1), SequenceNumber(0)),
+            _ => (SequenceNumber::new(1), SequenceNumber::new(0)),
         }
     }
 
@@ -1203,8 +1204,9 @@ impl DiscoveryManager {
 
     /// Register a complete TypeObject for wire TypeLookup responses.
     pub fn register_type_object(&mut self, type_object: dds_xtypes::TypeObject) {
-        let id = type_object.get_identifier();
-        self.type_object_db.insert(id, type_object);
+        if let Ok(id) = type_object.get_identifier() {
+            self.type_object_db.insert(id, type_object);
+        }
     }
 
     /// Return the local TypeObject database (for tests and monitor tools).
@@ -1247,7 +1249,8 @@ impl DiscoveryManager {
             inline_qos: None,
             serialized_payload: Bytes::from(payload),
         };
-        self.type_lookup_reply_sn = dds_types::guid::SequenceNumber(self.type_lookup_reply_sn.0 + 1);
+        self.type_lookup_reply_sn =
+            dds_types::guid::SequenceNumber::new(self.type_lookup_reply_sn.value() + 1);
         let header = RtpsHeader::new(self.local_prefix);
         let msg = serialize_rtps_message(
             &header,
@@ -1463,7 +1466,7 @@ fn append_protocol_vendor_domain(
 
 /// Serializes a `DiscoveredParticipant` to a PL-CDR parameter list.
 ///
-/// Reference: RTPS §9.6.3 — ParameterList values
+/// Reference: RTPS §9.6.3 — `ParameterList` values
 pub fn spdp_to_plcdr(
     participant: &DiscoveredParticipant,
     domain_id: u32,
@@ -1564,17 +1567,18 @@ fn parse_locator_param(value: &[u8]) -> Option<Locator> {
         let port = u32::from_le_bytes(value[4..8].try_into().ok()?);
         let mut address = [0u8; 16];
         address.copy_from_slice(&value[8..24]);
-        Some(Locator {
-            kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+        Some(Locator::from_raw(
+            dds_types::locator::LocatorKind::from_i32(kind_val),
             port,
             address,
-        })
+        ))
     } else {
         None
     }
 }
 
 /// Parses a `DiscoveredParticipant` from a PL-CDR parameter list byte buffer.
+#[must_use]
 pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
     use dds_cdr::ParameterList;
 
@@ -1664,6 +1668,7 @@ fn append_reliability_qos(parameters: &mut Vec<(u16, Vec<u8>)>, qos: &dds_types:
     let reliability_val = match qos.kind {
         dds_types::qos::ReliabilityKind::BestEffort => 1u32,
         dds_types::qos::ReliabilityKind::Reliable => 2,
+        _ => 1,
     };
     let mut rel_bytes = Vec::new();
     rel_bytes.extend_from_slice(&reliability_val.to_le_bytes());
@@ -1677,6 +1682,7 @@ fn append_durability_qos(parameters: &mut Vec<(u16, Vec<u8>)>, kind: dds_types::
         dds_types::qos::DurabilityKind::TransientLocal => 1,
         dds_types::qos::DurabilityKind::Transient => 2,
         dds_types::qos::DurabilityKind::Persistent => 3,
+        _ => 0,
     };
     parameters.push((PID_DURABILITY, durability_val.to_le_bytes().to_vec()));
 }
@@ -1685,6 +1691,7 @@ fn append_history_qos(parameters: &mut Vec<(u16, Vec<u8>)>, history: &dds_types:
     let kind_val = match history.kind {
         dds_types::qos::HistoryKind::KeepLast => 0u32,
         dds_types::qos::HistoryKind::KeepAll => 1,
+        _ => 0,
     };
     let mut hist_bytes = Vec::new();
     hist_bytes.extend_from_slice(&kind_val.to_le_bytes());
@@ -1697,6 +1704,7 @@ fn append_liveliness_qos(parameters: &mut Vec<(u16, Vec<u8>)>, liveliness: &dds_
         dds_types::qos::LivelinessKind::Automatic => 0u32,
         dds_types::qos::LivelinessKind::ManualByParticipant => 1,
         dds_types::qos::LivelinessKind::ManualByTopic => 2,
+        _ => 0,
     };
     let mut live_bytes = Vec::new();
     live_bytes.extend_from_slice(&kind_val.to_le_bytes());
@@ -1723,6 +1731,7 @@ fn append_ownership_qos(parameters: &mut Vec<(u16, Vec<u8>)>, ownership: &dds_ty
     let kind_val = match ownership.kind {
         dds_types::qos::OwnershipKind::Shared => 0u32,
         dds_types::qos::OwnershipKind::Exclusive => 1,
+        _ => 0,
     };
     parameters.push((PID_OWNERSHIP, kind_val.to_le_bytes().to_vec()));
 }
@@ -1734,6 +1743,7 @@ fn append_destination_order_qos(
     let kind_val = match destination_order.kind {
         dds_types::qos::DestinationOrderKind::ByReceptionTimestamp => 0u32,
         dds_types::qos::DestinationOrderKind::BySourceTimestamp => 1,
+        _ => 0,
     };
     parameters.push((PID_DESTINATION_ORDER, kind_val.to_le_bytes().to_vec()));
 }
@@ -1973,6 +1983,7 @@ pub fn sedp_to_plcdr(
 }
 
 /// Parses an SEDP PL-CDR parameter list into a `DiscoveredEndpoint`.
+#[must_use]
 pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
     use dds_cdr::ParameterList;
     let plist: ParameterList = decode_discovery_plcdr(bytes)?;
@@ -2391,14 +2402,10 @@ mod tests {
     #[test]
     fn test_sedp_roundtrip_history_and_liveliness() {
         let mut writer_qos = dds_types::qos::DataWriterQos::default();
-        writer_qos.history = dds_types::qos::History {
-            kind: dds_types::qos::HistoryKind::KeepAll,
-            depth: 7,
-        };
-        writer_qos.liveliness = dds_types::qos::Liveliness {
-            kind: dds_types::qos::LivelinessKind::ManualByTopic,
-            lease_duration: Duration::from_secs(5),
-        };
+        writer_qos.history.kind = dds_types::qos::HistoryKind::KeepAll;
+        writer_qos.history.depth = 7;
+        writer_qos.liveliness.kind = dds_types::qos::LivelinessKind::ManualByTopic;
+        writer_qos.liveliness.lease_duration = Duration::from_secs(5);
         let endpoint = DiscoveredEndpoint {
             guid: Guid::new(
                 GuidPrefix::new([3; 12]),
@@ -2526,12 +2533,12 @@ mod tests {
         };
         manager.process_spdp_packet(remote_participant);
 
-        let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType {
-            name: "Dummy".to_string(),
-            extensibility: dds_xtypes::ExtensibilityKind::Final,
-            members: vec![],
-        });
-        let r_id = r_obj.get_identifier();
+        let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType::new(
+            "Dummy".to_string(),
+            dds_xtypes::ExtensibilityKind::Final,
+            vec![],
+        ));
+        let r_id = r_obj.get_identifier().unwrap();
         manager.register_type_object(r_obj.clone());
 
         let endpoint_guid = Guid::new(remote_prefix, EntityId::new([0, 0, 1, 4]));
@@ -2545,10 +2552,10 @@ mod tests {
             unicast_locators: vec![],
             metatraffic_unicast_locators: vec![],
             multicast_locators: vec![],
-            type_info: Some(dds_xtypes::TypeInformation {
-                type_name: "MyInt".to_string(),
-                type_id: r_id.clone(),
-            }),
+            type_info: Some(dds_xtypes::TypeInformation::new(
+                "MyInt".to_string(),
+                r_id.clone(),
+            )),
             type_information_wire: None,
         };
         manager.process_sedp_endpoint(endpoint);
@@ -2558,7 +2565,7 @@ mod tests {
 
         let request = dds_xtypes::make_get_types_request(
             Guid::new(remote_prefix, EntityId::BUILTIN_TYPE_LOOKUP_REQUEST_DATA_WRITER),
-            dds_types::guid::SequenceNumber(1),
+            dds_types::guid::SequenceNumber::new(1),
             dds_xtypes::type_lookup_instance_name(&local_prefix),
             vec![r_id.clone()],
         );

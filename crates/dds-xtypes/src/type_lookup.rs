@@ -741,15 +741,18 @@ pub fn handle_get_types(
         if matches!(type_id, TypeIdentifier::TiMinimalConstructed(_))
             && matches!(obj, TypeObject::Complete(_))
         {
-            let minimal_id = TypeObject::Minimal(match obj {
+            let minimal_obj = TypeObject::Minimal(match obj {
                 TypeObject::Complete(s) => s.clone(),
                 TypeObject::Minimal(s) => s.clone(),
-            })
-            .get_identifier();
-            complete_to_minimal.push(TypeIdentifierPair {
-                type_identifier1: obj.get_identifier(),
-                type_identifier2: minimal_id,
             });
+            if let (Ok(type_identifier1), Ok(type_identifier2)) =
+                (obj.get_identifier(), minimal_obj.get_identifier())
+            {
+                complete_to_minimal.push(TypeIdentifierPair {
+                    type_identifier1,
+                    type_identifier2,
+                });
+            }
         }
     }
 

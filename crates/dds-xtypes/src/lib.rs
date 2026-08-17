@@ -3,20 +3,23 @@
 //! Implements the Extensible and Dynamic Topic Types specification:
 //! `TypeObject`, `TypeIdentifier`, type compatibility rules, and extensibility.
 //!
-//! Reference: `XTypes` §7
+//! Reference: `XTypes` §7.
 
-#![forbid(unsafe_code)]
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![allow(warnings)] // Simplified for the exercise
-
-use dds_cdr::{CdrDeserialize, CdrDeserializer, CdrResult, CdrSerialize, CdrSerializer};
-use sha2::{Digest as _, Sha256};
-use std::collections::HashMap;
+#![warn(
+    rust_2018_idioms,
+    nonstandard_style,
+    future_incompatible
+)]
+#![allow(
+    clippy::blanket_clippy_restriction_lints,
+    reason = "restriction lints are enabled individually via workspace lint config"
+)]
 
 pub mod dynamic;
 pub mod hashid;
 pub mod type_lookup;
-pub use dynamic::{DynamicData, DynamicType};
+
+pub use dynamic::{Data, Reflect};
 pub use hashid::hashid;
 pub use type_lookup::{
     handle_get_type_dependencies, handle_get_types, make_get_types_request, serve_type_lookup_request,
@@ -27,32 +30,18 @@ pub use type_lookup::{
     TypeLookupGetTypesResult, TypeLookupReply, TypeLookupRequest, TypeLookupReturn,
 };
 
-/// OMG `XTypes` §7.2.2 Extensibility Kinds
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ExtensibilityKind {
-    Final = 0,
-    Appendable = 1,
-    Mutable = 2,
-}
+use dds_cdr::{CdrDeserialize, CdrDeserializer, CdrError, CdrResult, CdrSerialize, CdrSerializer};
+use sha2::{Digest as _, Sha256};
+use std::collections::HashMap;
 
-impl CdrSerialize for ExtensibilityKind {
-    fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
-        serializer.serialize_u8(*self as u8);
-        Ok(())
-    }
-}
-
-impl CdrDeserialize for ExtensibilityKind {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
-        match deserializer.deserialize_u8()? {
-            0 => Ok(Self::Final),
-            1 => Ok(Self::Appendable),
-            2 => Ok(Self::Mutable),
-            v => Err(dds_cdr::CdrError::InvalidHeader(format!(
-                "invalid ExtensibilityKind: {v}"
-            ))),
+/// Propagate a [`CdrResult`] value or return early on error.
+macro_rules! cdr {
+    ($expr:expr) => {
+        match $expr {
+            Ok(value) => value,
+            Err(error) => return Err(error),
         }
-    }
+    };
 }
 
 pub const TK_NONE: u8 = 0x00;
@@ -80,36 +69,97 @@ pub const TI_PLAIN_ARRAY_LARGE: u8 = 0x92;
 pub const TI_MINIMAL_CONSTRUCTED: u8 = 0xF1;
 pub const TI_COMPLETE_CONSTRUCTED: u8 = 0xF2;
 
-/// OMG `XTypes` §7.3.1 `TypeIdentifier` representation
+/// OMG `XTypes` §7.2.2 Extensibility Kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum ExtensibilityKind {
+    Appendable = 1,
+    Final = 0,
+    Mutable = 2,
+}
+
+impl ExtensibilityKind {
+    /// Return the wire-format discriminant for this extensibility kind.
+    #[inline]
+    const fn wire_value(self) -> u8 {
+        match self {
+            Self::Appendable => return 1,
+            Self::Final => return 0,
+            Self::Mutable => return 2,
+        }
+    }
+}
+
+impl CdrSerialize for ExtensibilityKind {
+    #[inline]
+    fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
+        serializer.serialize_u8(self.wire_value());
+        return Ok(());
+    }
+}
+
+impl CdrDeserialize for ExtensibilityKind {
+    #[inline]
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
+        let kind = cdr!(deserializer.deserialize_u8());
+        match kind {
+            0 => return Ok(Self::Final),
+            1 => return Ok(Self::Appendable),
+            2 => return Ok(Self::Mutable),
+            kind_value => {
+                return Err(CdrError::InvalidHeader(format!(
+                    "invalid ExtensibilityKind: {kind_value}"
+                )));
+            }
+        }
+    }
+}
+
+/// OMG `XTypes` §7.3.1 `TypeIdentifier` representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TypeIdentifier {
-    TkNone,
+    TiCompleteConstructed([u8; 14]),
+    TiMinimalConstructed([u8; 14]),
+    TiPlainArrayLarge {
+        bound: u32,
+        element_identifier: Box<Self>,
+    },
+    TiPlainArraySmall {
+        bound: u8,
+        element_identifier: Box<Self>,
+    },
+    TiPlainSequenceLarge {
+        bound: u32,
+        element_identifier: Box<Self>,
+    },
+    TiPlainSequenceSmall {
+        bound: u8,
+        element_identifier: Box<Self>,
+    },
+    TiString16Large { bound: u32 },
+    TiString16Small { bound: u8 },
+    TiString8Large { bound: u32 },
+    TiString8Small { bound: u8 },
     TkBoolean,
     TkByte,
+    TkChar16,
+    TkChar8,
+    TkFloat128,
+    TkFloat32,
+    TkFloat64,
     TkInt16,
     TkInt32,
     TkInt64,
+    TkNone,
     TkUint16,
     TkUint32,
     TkUint64,
-    TkFloat32,
-    TkFloat64,
-    TkFloat128,
-    TkChar8,
-    TkChar16,
-    TiString8Small { bound: u8 },
-    TiString8Large { bound: u32 },
-    TiString16Small { bound: u8 },
-    TiString16Large { bound: u32 },
-    TiPlainSequenceSmall { bound: u8, element_identifier: Box<TypeIdentifier> },
-    TiPlainSequenceLarge { bound: u32, element_identifier: Box<TypeIdentifier> },
-    TiPlainArraySmall { bound: u8, element_identifier: Box<TypeIdentifier> },
-    TiPlainArrayLarge { bound: u32, element_identifier: Box<TypeIdentifier> },
-    TiMinimalConstructed([u8; 14]),
-    TiCompleteConstructed([u8; 14]),
 }
 
 impl CdrSerialize for TypeIdentifier {
+    #[inline]
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         match self {
             Self::TkNone => serializer.serialize_u8(TK_NONE),
@@ -142,275 +192,449 @@ impl CdrSerialize for TypeIdentifier {
                 serializer.serialize_u8(TI_STRING16_LARGE);
                 serializer.serialize_u32(*bound);
             }
-            Self::TiPlainSequenceSmall { bound, element_identifier } => {
+            Self::TiPlainSequenceSmall {
+                bound,
+                element_identifier,
+            } => {
                 serializer.serialize_u8(TI_PLAIN_SEQUENCE_SMALL);
                 serializer.serialize_u8(*bound);
-                element_identifier.serialize(serializer)?;
+                cdr!(element_identifier.serialize(serializer));
             }
-            Self::TiPlainSequenceLarge { bound, element_identifier } => {
+            Self::TiPlainSequenceLarge {
+                bound,
+                element_identifier,
+            } => {
                 serializer.serialize_u8(TI_PLAIN_SEQUENCE_LARGE);
                 serializer.serialize_u32(*bound);
-                element_identifier.serialize(serializer)?;
+                cdr!(element_identifier.serialize(serializer));
             }
-            Self::TiPlainArraySmall { bound, element_identifier } => {
+            Self::TiPlainArraySmall {
+                bound,
+                element_identifier,
+            } => {
                 serializer.serialize_u8(TI_PLAIN_ARRAY_SMALL);
                 serializer.serialize_u8(*bound);
-                element_identifier.serialize(serializer)?;
+                cdr!(element_identifier.serialize(serializer));
             }
-            Self::TiPlainArrayLarge { bound, element_identifier } => {
+            Self::TiPlainArrayLarge {
+                bound,
+                element_identifier,
+            } => {
                 serializer.serialize_u8(TI_PLAIN_ARRAY_LARGE);
                 serializer.serialize_u32(*bound);
-                element_identifier.serialize(serializer)?;
+                cdr!(element_identifier.serialize(serializer));
             }
             Self::TiMinimalConstructed(hash) => {
                 serializer.serialize_u8(TI_MINIMAL_CONSTRUCTED);
-                for &b in hash {
-                    serializer.serialize_u8(b);
+                for byte in hash {
+                    serializer.serialize_u8(*byte);
                 }
             }
             Self::TiCompleteConstructed(hash) => {
                 serializer.serialize_u8(TI_COMPLETE_CONSTRUCTED);
-                for &b in hash {
-                    serializer.serialize_u8(b);
+                for byte in hash {
+                    serializer.serialize_u8(*byte);
                 }
             }
         }
-        Ok(())
+        return Ok(());
     }
 }
 
 impl CdrDeserialize for TypeIdentifier {
+    #[inline]
     fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        let kind = deserializer.deserialize_u8()?;
+        let kind = cdr!(deserializer.deserialize_u8());
         match kind {
-            TK_NONE => Ok(Self::TkNone),
-            TK_BOOLEAN => Ok(Self::TkBoolean),
-            TK_BYTE => Ok(Self::TkByte),
-            TK_INT16 => Ok(Self::TkInt16),
-            TK_INT32 => Ok(Self::TkInt32),
-            TK_INT64 => Ok(Self::TkInt64),
-            TK_UINT16 => Ok(Self::TkUint16),
-            TK_UINT32 => Ok(Self::TkUint32),
-            TK_UINT64 => Ok(Self::TkUint64),
-            TK_FLOAT32 => Ok(Self::TkFloat32),
-            TK_FLOAT64 => Ok(Self::TkFloat64),
-            TK_FLOAT128 => Ok(Self::TkFloat128),
-            TK_CHAR8 => Ok(Self::TkChar8),
-            TK_CHAR16 => Ok(Self::TkChar16),
-            TI_STRING8_SMALL => Ok(Self::TiString8Small { bound: deserializer.deserialize_u8()? }),
-            TI_STRING8_LARGE => Ok(Self::TiString8Large { bound: deserializer.deserialize_u32()? }),
-            TI_STRING16_SMALL => Ok(Self::TiString16Small { bound: deserializer.deserialize_u8()? }),
-            TI_STRING16_LARGE => Ok(Self::TiString16Large { bound: deserializer.deserialize_u32()? }),
-            TI_PLAIN_SEQUENCE_SMALL => Ok(Self::TiPlainSequenceSmall {
-                bound: deserializer.deserialize_u8()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
-            }),
-            TI_PLAIN_SEQUENCE_LARGE => Ok(Self::TiPlainSequenceLarge {
-                bound: deserializer.deserialize_u32()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
-            }),
-            TI_PLAIN_ARRAY_SMALL => Ok(Self::TiPlainArraySmall {
-                bound: deserializer.deserialize_u8()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
-            }),
-            TI_PLAIN_ARRAY_LARGE => Ok(Self::TiPlainArrayLarge {
-                bound: deserializer.deserialize_u32()?,
-                element_identifier: Box::new(TypeIdentifier::deserialize(deserializer)?),
-            }),
+            TK_NONE => return Ok(Self::TkNone),
+            TK_BOOLEAN => return Ok(Self::TkBoolean),
+            TK_BYTE => return Ok(Self::TkByte),
+            TK_INT16 => return Ok(Self::TkInt16),
+            TK_INT32 => return Ok(Self::TkInt32),
+            TK_INT64 => return Ok(Self::TkInt64),
+            TK_UINT16 => return Ok(Self::TkUint16),
+            TK_UINT32 => return Ok(Self::TkUint32),
+            TK_UINT64 => return Ok(Self::TkUint64),
+            TK_FLOAT32 => return Ok(Self::TkFloat32),
+            TK_FLOAT64 => return Ok(Self::TkFloat64),
+            TK_FLOAT128 => return Ok(Self::TkFloat128),
+            TK_CHAR8 => return Ok(Self::TkChar8),
+            TK_CHAR16 => return Ok(Self::TkChar16),
+            TI_STRING8_SMALL => {
+                return Ok(Self::TiString8Small {
+                    bound: cdr!(deserializer.deserialize_u8()),
+                });
+            }
+            TI_STRING8_LARGE => {
+                return Ok(Self::TiString8Large {
+                    bound: cdr!(deserializer.deserialize_u32()),
+                });
+            }
+            TI_STRING16_SMALL => {
+                return Ok(Self::TiString16Small {
+                    bound: cdr!(deserializer.deserialize_u8()),
+                });
+            }
+            TI_STRING16_LARGE => {
+                return Ok(Self::TiString16Large {
+                    bound: cdr!(deserializer.deserialize_u32()),
+                });
+            }
+            TI_PLAIN_SEQUENCE_SMALL => {
+                return Ok(Self::TiPlainSequenceSmall {
+                    bound: cdr!(deserializer.deserialize_u8()),
+                    element_identifier: Box::new(cdr!(Self::deserialize(deserializer))),
+                });
+            }
+            TI_PLAIN_SEQUENCE_LARGE => {
+                return Ok(Self::TiPlainSequenceLarge {
+                    bound: cdr!(deserializer.deserialize_u32()),
+                    element_identifier: Box::new(cdr!(Self::deserialize(deserializer))),
+                });
+            }
+            TI_PLAIN_ARRAY_SMALL => {
+                return Ok(Self::TiPlainArraySmall {
+                    bound: cdr!(deserializer.deserialize_u8()),
+                    element_identifier: Box::new(cdr!(Self::deserialize(deserializer))),
+                });
+            }
+            TI_PLAIN_ARRAY_LARGE => {
+                return Ok(Self::TiPlainArrayLarge {
+                    bound: cdr!(deserializer.deserialize_u32()),
+                    element_identifier: Box::new(cdr!(Self::deserialize(deserializer))),
+                });
+            }
             TI_MINIMAL_CONSTRUCTED => {
-                let mut hash = [0u8; 14];
-                for b in &mut hash { *b = deserializer.deserialize_u8()?; }
-                Ok(Self::TiMinimalConstructed(hash))
+                let mut hash = [u8::default(); 14];
+                for byte in &mut hash {
+                    *byte = cdr!(deserializer.deserialize_u8());
+                }
+                return Ok(Self::TiMinimalConstructed(hash));
             }
             TI_COMPLETE_CONSTRUCTED => {
-                let mut hash = [0u8; 14];
-                for b in &mut hash { *b = deserializer.deserialize_u8()?; }
-                Ok(Self::TiCompleteConstructed(hash))
+                let mut hash = [u8::default(); 14];
+                for byte in &mut hash {
+                    *byte = cdr!(deserializer.deserialize_u8());
+                }
+                return Ok(Self::TiCompleteConstructed(hash));
             }
-            _ => Err(dds_cdr::CdrError::InvalidHeader(format!("unknown TypeIdentifier kind: {kind}"))),
+            kind_value => {
+                return Err(CdrError::InvalidHeader(format!(
+                    "unknown TypeIdentifier kind: {kind_value}"
+                )));
+            }
         }
     }
 }
 
-/// A member field within a structured `TypeObject`
+/// A member field within a structured `TypeObject`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Member {
-    pub name: String,
-    pub type_id: TypeIdentifier,
     pub is_key: bool,
     pub is_optional: bool,
+    pub name: String,
+    pub type_id: TypeIdentifier,
+}
+
+impl Member {
+    /// Create a structure member with the given name, type, and key/optional flags.
+    #[must_use]
+    pub fn new(name: String, type_id: TypeIdentifier, is_key: bool, is_optional: bool) -> Self {
+        Self {
+            is_key,
+            is_optional,
+            name,
+            type_id,
+        }
+    }
 }
 
 impl CdrSerialize for Member {
+    #[inline]
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         serializer.serialize_str(&self.name);
-        self.type_id.serialize(serializer)?;
+        cdr!(self.type_id.serialize(serializer));
         serializer.serialize_bool(self.is_key);
         serializer.serialize_bool(self.is_optional);
-        Ok(())
+        return Ok(());
     }
 }
 
 impl CdrDeserialize for Member {
+    #[inline]
     fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        Ok(Self {
-            name: deserializer.deserialize_str()?,
-            type_id: TypeIdentifier::deserialize(deserializer)?,
-            is_key: deserializer.deserialize_bool()?,
-            is_optional: deserializer.deserialize_bool()?,
-        })
+        return Ok(Self {
+            name: cdr!(deserializer.deserialize_str()),
+            type_id: cdr!(TypeIdentifier::deserialize(deserializer)),
+            is_key: cdr!(deserializer.deserialize_bool()),
+            is_optional: cdr!(deserializer.deserialize_bool()),
+        });
     }
 }
 
-/// A structured `TypeObject` containing member fields
+/// A structured `TypeObject` containing member fields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct StructureType {
-    pub name: String,
     pub extensibility: ExtensibilityKind,
     pub members: Vec<Member>,
+    pub name: String,
+}
+
+impl Default for StructureType {
+    #[inline]
+    fn default() -> Self {
+        return Self {
+            extensibility: ExtensibilityKind::Final,
+            members: Vec::new(),
+            name: String::new(),
+        };
+    }
+}
+
+impl StructureType {
+    /// Create a structure type with the given name, extensibility, and members.
+    #[must_use]
+    #[inline]
+    pub fn new(name: String, extensibility: ExtensibilityKind, members: Vec<Member>) -> Self {
+        return Self {
+            extensibility,
+            members,
+            name,
+        };
+    }
 }
 
 impl CdrSerialize for StructureType {
+    #[inline]
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         serializer.serialize_str(&self.name);
-        self.extensibility.serialize(serializer)?;
-        serializer.serialize_u32(self.members.len() as u32);
-        for m in &self.members {
-            m.serialize(serializer)?;
+        cdr!(self.extensibility.serialize(serializer));
+        let member_count = match u32::try_from(self.members.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                return Err(CdrError::InvalidHeader(
+                    "StructureType member count exceeds u32::MAX".to_owned(),
+                ));
+            }
+        };
+        serializer.serialize_u32(member_count);
+        for member in &self.members {
+            cdr!(member.serialize(serializer));
         }
-        Ok(())
+        return Ok(());
     }
 }
 
 impl CdrDeserialize for StructureType {
+    #[inline]
     fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        let name = deserializer.deserialize_str()?;
-        let extensibility = ExtensibilityKind::deserialize(deserializer)?;
-        let len = deserializer.deserialize_u32()?;
-        let mut members = Vec::with_capacity(len as usize);
-        for _ in 0..len {
-            members.push(Member::deserialize(deserializer)?);
+        let name = cdr!(deserializer.deserialize_str());
+        let extensibility = cdr!(ExtensibilityKind::deserialize(deserializer));
+        let len = cdr!(deserializer.deserialize_u32());
+        let capacity = match usize::try_from(len) {
+            Ok(value) => value,
+            Err(_) => {
+                return Err(CdrError::InvalidHeader(
+                    "StructureType member count exceeds platform usize".to_owned(),
+                ));
+            }
+        };
+        let mut members = Vec::with_capacity(capacity);
+        for _index in 0..len {
+            members.push(cdr!(Member::deserialize(deserializer)));
         }
-        Ok(Self { name, extensibility, members })
+        return Ok(Self {
+            extensibility,
+            members,
+            name,
+        });
     }
 }
 
-/// OMG `XTypes` §7.3.2 `TypeObject` definition
+/// OMG `XTypes` §7.3.2 `TypeObject` definition.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TypeObject {
-    Minimal(StructureType),
     Complete(StructureType),
+    Minimal(StructureType),
 }
 
 impl CdrSerialize for TypeObject {
+    #[inline]
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         match self {
-            Self::Minimal(s) => {
+            Self::Minimal(structure) => {
                 serializer.serialize_u8(0);
-                s.serialize(serializer)?;
+                cdr!(structure.serialize(serializer));
             }
-            Self::Complete(s) => {
+            Self::Complete(structure) => {
                 serializer.serialize_u8(1);
-                s.serialize(serializer)?;
+                cdr!(structure.serialize(serializer));
             }
         }
-        Ok(())
+        return Ok(());
     }
 }
 
 impl CdrDeserialize for TypeObject {
+    #[inline]
     fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        match deserializer.deserialize_u8()? {
-            0 => Ok(Self::Minimal(StructureType::deserialize(deserializer)?)),
-            1 => Ok(Self::Complete(StructureType::deserialize(deserializer)?)),
-            v => Err(dds_cdr::CdrError::InvalidHeader(format!("invalid TypeObject kind: {v}"))),
+        let kind = cdr!(deserializer.deserialize_u8());
+        match kind {
+            0 => {
+                return Ok(Self::Minimal(cdr!(StructureType::deserialize(
+                    deserializer
+                ))));
+            }
+            1 => {
+                return Ok(Self::Complete(cdr!(StructureType::deserialize(
+                    deserializer
+                ))));
+            }
+            kind_value => {
+                return Err(CdrError::InvalidHeader(format!(
+                    "invalid TypeObject kind: {kind_value}"
+                )));
+            }
         }
     }
 }
 
 impl TypeObject {
-    /// Compute the `TypeIdentifier` for this `TypeObject` using SHA-256 (first 14 bytes)
-    #[must_use]
-    pub fn get_identifier(&self) -> TypeIdentifier {
-        let bytes = dds_cdr::serialize_to_bytes(self, dds_cdr::Endianness::LittleEndian)
-            .unwrap_or_default();
+    /// Compute the `TypeIdentifier` for this `TypeObject` using SHA-256 (first 14 bytes).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if CDR serialization of this type object fails.
+    #[inline]
+    pub fn get_identifier(&self) -> CdrResult<TypeIdentifier> {
+        let bytes = cdr!(dds_cdr::serialize_to_bytes(
+            self,
+            dds_cdr::Endianness::LittleEndian
+        ));
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let hash_result: [u8; 32] = hasher.finalize().into();
-        
-        let mut eq_hash = [0u8; 14];
-        eq_hash.copy_from_slice(&hash_result[0..14]);
 
-        match self {
-            Self::Minimal(_) => TypeIdentifier::TiMinimalConstructed(eq_hash),
-            Self::Complete(_) => TypeIdentifier::TiCompleteConstructed(eq_hash),
+        let mut eq_hash = [u8::default(); 14];
+        for (dest, &src) in eq_hash.iter_mut().zip(hash_result.iter().take(14)) {
+            *dest = src;
+        }
+
+        match *self {
+            Self::Minimal(_) => return Ok(TypeIdentifier::TiMinimalConstructed(eq_hash)),
+            Self::Complete(_) => return Ok(TypeIdentifier::TiCompleteConstructed(eq_hash)),
         }
     }
 }
 
-/// OMG `XTypes` §7.6.3 `TypeInformation` container
+/// OMG `XTypes` §7.6.3 `TypeInformation` container.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct TypeInformation {
-    pub type_name: String,
     pub type_id: TypeIdentifier,
+    pub type_name: String,
+}
+
+impl TypeInformation {
+    #[must_use]
+    #[inline]
+    pub fn new(type_name: String, type_id: TypeIdentifier) -> Self {
+        return Self { type_id, type_name };
+    }
 }
 
 impl CdrSerialize for TypeInformation {
+    #[inline]
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         serializer.serialize_str(&self.type_name);
-        self.type_id.serialize(serializer)?;
-        Ok(())
+        cdr!(self.type_id.serialize(serializer));
+        return Ok(());
     }
 }
 
 impl CdrDeserialize for TypeInformation {
+    #[inline]
     fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
-        Ok(Self {
-            type_name: deserializer.deserialize_str()?,
-            type_id: TypeIdentifier::deserialize(deserializer)?,
-        })
+        return Ok(Self {
+            type_name: cdr!(deserializer.deserialize_str()),
+            type_id: cdr!(TypeIdentifier::deserialize(deserializer)),
+        });
     }
 }
 
-/// OMG `XTypes` §7.2.4 compatibility check
+/// OMG `XTypes` §7.2.4 compatibility check.
 #[must_use]
+#[inline]
 pub fn is_assignable_from(receiver: &TypeObject, sender: &TypeObject) -> bool {
-    let r_struct = match receiver {
-        TypeObject::Minimal(s) | TypeObject::Complete(s) => s,
+    let receiver_structure = match receiver {
+        TypeObject::Minimal(structure) | TypeObject::Complete(structure) => structure,
     };
-    let s_struct = match sender {
-        TypeObject::Minimal(s) | TypeObject::Complete(s) => s,
+    let sender_structure = match sender {
+        TypeObject::Minimal(structure) | TypeObject::Complete(structure) => structure,
     };
 
-    if (s_struct.extensibility as u8) > (r_struct.extensibility as u8) {
+    if sender_structure.extensibility.wire_value()
+        > receiver_structure.extensibility.wire_value()
+    {
         return false;
     }
 
-    match r_struct.extensibility {
-        ExtensibilityKind::Final => {
-            if r_struct.members.len() != s_struct.members.len() { return false; }
-            for (r_m, s_m) in r_struct.members.iter().zip(s_struct.members.iter()) {
-                if r_m.name != s_m.name || r_m.type_id != s_m.type_id { return false; }
-            }
-            true
-        }
+    match receiver_structure.extensibility {
         ExtensibilityKind::Appendable => {
-            if s_struct.members.len() < r_struct.members.len() { return false; }
-            for (r_m, s_m) in r_struct.members.iter().zip(s_struct.members.iter()) {
-                if r_m.name != s_m.name || r_m.type_id != s_m.type_id { return false; }
+            if sender_structure.members.len() < receiver_structure.members.len() {
+                return false;
             }
-            true
-        }
-        ExtensibilityKind::Mutable => {
-            let sender_map: HashMap<&str, &Member> = s_struct.members.iter().map(|m| (m.name.as_str(), m)).collect();
-            for r_m in &r_struct.members {
-                if let Some(s_m) = sender_map.get(r_m.name.as_str()) {
-                    if r_m.type_id != s_m.type_id { return false; }
-                } else if r_m.is_key || !r_m.is_optional {
+            for (receiver_member, sender_member) in receiver_structure
+                .members
+                .iter()
+                .zip(sender_structure.members.iter())
+            {
+                if receiver_member.name != sender_member.name
+                    || receiver_member.type_id != sender_member.type_id
+                {
                     return false;
                 }
             }
-            true
+            return true;
+        }
+        ExtensibilityKind::Final => {
+            if receiver_structure.members.len() != sender_structure.members.len() {
+                return false;
+            }
+            for (receiver_member, sender_member) in receiver_structure
+                .members
+                .iter()
+                .zip(sender_structure.members.iter())
+            {
+                if receiver_member.name != sender_member.name
+                    || receiver_member.type_id != sender_member.type_id
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        ExtensibilityKind::Mutable => {
+            let sender_map: HashMap<&str, &Member> = sender_structure
+                .members
+                .iter()
+                .map(|member| return (member.name.as_str(), member))
+                .collect();
+            for receiver_member in &receiver_structure.members {
+                if let Some(sender_member) = sender_map.get(receiver_member.name.as_str()) {
+                    if receiver_member.type_id != sender_member.type_id {
+                        return false;
+                    }
+                } else if receiver_member.is_key || !receiver_member.is_optional {
+                    return false;
+                } else {
+                    // Optional members may be absent in the sender type.
+                }
+            }
+            return true;
         }
     }
 }
@@ -423,22 +647,23 @@ mod tests {
 
     #[test]
     fn test_type_identifier_and_object_serialization() {
-        let s = TypeObject::Complete(StructureType {
-            name: "Position".to_string(),
+        let type_object = TypeObject::Complete(StructureType {
+            name: "Position".to_owned(),
             extensibility: ExtensibilityKind::Appendable,
-            members: vec![
-                Member {
-                    name: "x".to_string(),
-                    type_id: TypeIdentifier::TkInt32,
-                    is_key: true,
-                    is_optional: false,
-                },
-            ],
+            members: vec![Member {
+                name: "x".to_owned(),
+                type_id: TypeIdentifier::TkInt32,
+                is_key: true,
+                is_optional: false,
+            }],
         });
 
-        let s_id = s.get_identifier();
-        match s_id {
-            TypeIdentifier::TiCompleteConstructed(_) => {}
+        let type_id = match type_object.get_identifier() {
+            Ok(identifier) => identifier,
+            Err(error) => panic!("get_identifier failed: {error}"),
+        };
+        match type_id {
+            TypeIdentifier::TiCompleteConstructed(_hash) => {}
             _ => panic!("Expected complete hashed identifier"),
         }
     }
