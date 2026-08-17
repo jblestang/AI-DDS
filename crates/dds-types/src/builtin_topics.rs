@@ -5,9 +5,9 @@
 //! Applications can subscribe to these topics to learn about the
 //! current state of the DDS domain.
 //!
-//! Reference: DCPS §2.2.5 — Builtin Topics
+//! Reference: DCPS §2.2.5 — Builtin Topics.
 
-use crate::instance::InstanceHandle;
+use crate::instance::Handle;
 use crate::qos;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -17,10 +17,10 @@ use crate::qos;
 /// Builtin topic name for participant discovery data.
 pub const PARTICIPANT_TOPIC_NAME: &str = "DCPSParticipant";
 
-/// Builtin topic name for publication (DataWriter) discovery data.
+/// Builtin topic name for publication (`DataWriter`) discovery data.
 pub const PUBLICATION_TOPIC_NAME: &str = "DCPSPublication";
 
-/// Builtin topic name for subscription (DataReader) discovery data.
+/// Builtin topic name for subscription (`DataReader`) discovery data.
 pub const SUBSCRIPTION_TOPIC_NAME: &str = "DCPSSubscription";
 
 /// Builtin topic name for topic discovery data.
@@ -31,13 +31,14 @@ pub const TOPIC_TOPIC_NAME: &str = "DCPSTopic";
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin participant discovery topic.
-/// Contains the key (handle) and QoS of discovered participants.
+/// Contains the key (handle) and `QoS` of discovered participants.
 ///
-/// Reference: DCPS §2.2.5.4
+/// Reference: DCPS §2.2.5.4.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ParticipantBuiltinTopicData {
     /// Instance handle identifying this participant (derived from GUID).
-    pub key: InstanceHandle,
+    pub key: Handle,
     /// Application-specific data attached to the participant.
     pub user_data: qos::UserData,
 }
@@ -47,41 +48,42 @@ pub struct ParticipantBuiltinTopicData {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin topic discovery topic.
-/// Contains the key, name, type name, and QoS of discovered topics.
+/// Contains the key, name, type name, and `QoS` of discovered topics.
 ///
-/// Reference: DCPS §2.2.5.2
+/// Reference: DCPS §2.2.5.2.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TopicBuiltinTopicData {
+    /// Deadline `QoS`.
+    pub deadline: qos::Deadline,
+    /// Destination order `QoS`.
+    pub destination_order: qos::DestinationOrder,
+    /// Topic `QoS` policies.
+    pub durability: qos::Durability,
+    /// History `QoS`.
+    pub history: qos::History,
     /// Instance handle identifying this topic.
-    pub key: InstanceHandle,
+    pub key: Handle,
+    /// Latency budget `QoS`.
+    pub latency_budget: qos::LatencyBudget,
+    /// Lifespan `QoS`.
+    pub lifespan: qos::Lifespan,
+    /// Liveliness `QoS`.
+    pub liveliness: qos::Liveliness,
     /// Name of the topic.
     pub name: String,
-    /// Fully qualified type name.
-    pub type_name: String,
-    /// Topic QoS policies.
-    pub durability: qos::Durability,
-    /// Deadline QoS.
-    pub deadline: qos::Deadline,
-    /// Latency budget QoS.
-    pub latency_budget: qos::LatencyBudget,
-    /// Liveliness QoS.
-    pub liveliness: qos::Liveliness,
-    /// Reliability QoS.
-    pub reliability: qos::Reliability,
-    /// Transport priority QoS.
-    pub transport_priority: qos::TransportPriority,
-    /// Lifespan QoS.
-    pub lifespan: qos::Lifespan,
-    /// Destination order QoS.
-    pub destination_order: qos::DestinationOrder,
-    /// History QoS.
-    pub history: qos::History,
-    /// Resource limits QoS.
-    pub resource_limits: qos::ResourceLimits,
-    /// Ownership QoS.
+    /// Ownership `QoS`.
     pub ownership: qos::Ownership,
+    /// Reliability `QoS`.
+    pub reliability: qos::Reliability,
+    /// Resource limits `QoS`.
+    pub resource_limits: qos::ResourceLimits,
     /// Topic metadata.
     pub topic_data: qos::TopicData,
+    /// Transport priority `QoS`.
+    pub transport_priority: qos::TransportPriority,
+    /// Fully qualified type name.
+    pub type_name: String,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -89,48 +91,48 @@ pub struct TopicBuiltinTopicData {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin publication discovery topic.
-/// Contains the key, topic info, and QoS of discovered DataWriters.
+/// Contains the key, topic info, and `QoS` of discovered `DataWriters`.
 ///
-/// Reference: DCPS §2.2.5.3
+/// Reference: DCPS §2.2.5.3.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PublicationBuiltinTopicData {
-    /// Instance handle identifying this publication (writer GUID).
-    pub key: InstanceHandle,
-    /// Handle of the participant owning this writer.
-    pub participant_key: InstanceHandle,
-    /// Name of the associated topic.
-    pub topic_name: String,
-    /// Fully qualified type name.
-    pub type_name: String,
-    // ── QoS policies ──
-    /// Durability offered by this writer.
-    pub durability: qos::Durability,
     /// Deadline offered.
     pub deadline: qos::Deadline,
+    /// Destination order.
+    pub destination_order: qos::DestinationOrder,
+    /// Durability offered by this writer.
+    pub durability: qos::Durability,
+    /// Group data of the parent publisher.
+    pub group_data: qos::GroupData,
+    /// Instance handle identifying this publication (writer GUID).
+    pub key: Handle,
     /// Latency budget offered.
     pub latency_budget: qos::LatencyBudget,
-    /// Liveliness offered.
-    pub liveliness: qos::Liveliness,
-    /// Reliability offered.
-    pub reliability: qos::Reliability,
     /// Lifespan offered.
     pub lifespan: qos::Lifespan,
-    /// Application-specific data.
-    pub user_data: qos::UserData,
+    /// Liveliness offered.
+    pub liveliness: qos::Liveliness,
     /// Ownership mode.
     pub ownership: qos::Ownership,
     /// Ownership strength.
     pub ownership_strength: qos::OwnershipStrength,
-    /// Destination order.
-    pub destination_order: qos::DestinationOrder,
-    /// Presentation QoS of the parent publisher.
-    pub presentation: qos::Presentation,
+    /// Handle of the participant owning this writer.
+    pub participant_key: Handle,
     /// Partition of the parent publisher.
     pub partition: qos::Partition,
+    /// Presentation `QoS` of the parent publisher.
+    pub presentation: qos::Presentation,
+    /// Reliability offered.
+    pub reliability: qos::Reliability,
     /// Topic metadata.
     pub topic_data: qos::TopicData,
-    /// Group data of the parent publisher.
-    pub group_data: qos::GroupData,
+    /// Name of the associated topic.
+    pub topic_name: String,
+    /// Fully qualified type name.
+    pub type_name: String,
+    /// Application-specific data.
+    pub user_data: qos::UserData,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -138,46 +140,46 @@ pub struct PublicationBuiltinTopicData {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Data type for the builtin subscription discovery topic.
-/// Contains the key, topic info, and QoS of discovered DataReaders.
+/// Contains the key, topic info, and `QoS` of discovered `DataReaders`.
 ///
-/// Reference: DCPS §2.2.5.4
+/// Reference: DCPS §2.2.5.4.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SubscriptionBuiltinTopicData {
-    /// Instance handle identifying this subscription (reader GUID).
-    pub key: InstanceHandle,
-    /// Handle of the participant owning this reader.
-    pub participant_key: InstanceHandle,
-    /// Name of the associated topic.
-    pub topic_name: String,
-    /// Fully qualified type name.
-    pub type_name: String,
-    // ── QoS policies ──
-    /// Durability requested by this reader.
-    pub durability: qos::Durability,
     /// Deadline requested.
     pub deadline: qos::Deadline,
+    /// Destination order.
+    pub destination_order: qos::DestinationOrder,
+    /// Durability requested by this reader.
+    pub durability: qos::Durability,
+    /// Group data of the parent subscriber.
+    pub group_data: qos::GroupData,
+    /// Instance handle identifying this subscription (reader GUID).
+    pub key: Handle,
     /// Latency budget requested.
     pub latency_budget: qos::LatencyBudget,
     /// Liveliness requested.
     pub liveliness: qos::Liveliness,
-    /// Reliability requested.
-    pub reliability: qos::Reliability,
     /// Ownership mode.
     pub ownership: qos::Ownership,
-    /// Destination order.
-    pub destination_order: qos::DestinationOrder,
-    /// Application-specific data.
-    pub user_data: qos::UserData,
-    /// Time-based filter.
-    pub time_based_filter: qos::TimeBasedFilter,
-    /// Presentation QoS of the parent subscriber.
-    pub presentation: qos::Presentation,
+    /// Handle of the participant owning this reader.
+    pub participant_key: Handle,
     /// Partition of the parent subscriber.
     pub partition: qos::Partition,
+    /// Presentation `QoS` of the parent subscriber.
+    pub presentation: qos::Presentation,
+    /// Reliability requested.
+    pub reliability: qos::Reliability,
+    /// Time-based filter.
+    pub time_based_filter: qos::TimeBasedFilter,
     /// Topic metadata.
     pub topic_data: qos::TopicData,
-    /// Group data of the parent subscriber.
-    pub group_data: qos::GroupData,
+    /// Name of the associated topic.
+    pub topic_name: String,
+    /// Fully qualified type name.
+    pub type_name: String,
+    /// Application-specific data.
+    pub user_data: qos::UserData,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -199,7 +201,7 @@ mod tests {
     #[test]
     fn participant_builtin_topic_data_construction() {
         let data = ParticipantBuiltinTopicData {
-            key: InstanceHandle::NIL,
+            key: Handle::NIL,
             user_data: qos::UserData::default(),
         };
         assert!(data.key.is_nil());
@@ -209,8 +211,8 @@ mod tests {
     #[test]
     fn publication_builtin_topic_data_fields() {
         let data = PublicationBuiltinTopicData {
-            key: InstanceHandle::NIL,
-            participant_key: InstanceHandle::NIL,
+            key: Handle::NIL,
+            participant_key: Handle::NIL,
             topic_name: "HelloWorldTopic".into(),
             type_name: "HelloWorld".into(),
             durability: qos::Durability::default(),
@@ -235,8 +237,8 @@ mod tests {
     #[test]
     fn subscription_builtin_topic_data_fields() {
         let data = SubscriptionBuiltinTopicData {
-            key: InstanceHandle::NIL,
-            participant_key: InstanceHandle::NIL,
+            key: Handle::NIL,
+            participant_key: Handle::NIL,
             topic_name: "SensorTopic".into(),
             type_name: "SensorData".into(),
             durability: qos::Durability::default(),

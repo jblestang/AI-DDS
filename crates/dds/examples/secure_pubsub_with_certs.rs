@@ -58,13 +58,12 @@
     clippy::unused_trait_names,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
-#![allow(clippy::allow_attributes, reason = "Allow attributes needed for buffer literals")]
 
 use dds::core::LOCALHOST_IP;
 use dds::cdr::{CdrDeserialize, CdrSerialize, Endianness};
 use dds::security::{
-    AccessControl, Authentication, BuiltinAccessControl, BuiltinAuthentication, BuiltinCryptography,
-    Cryptography, HandshakeHandle, HandshakeToken, IdentityHandle, PermissionsToken,
+    Authentication, BuiltinAuthentication, BuiltinCryptography,
+    Cryptography, HandshakeHandle, HandshakeToken, IdentityHandle,
 };
 use dds::types::qos::DomainParticipantQos;
 use std::net::UdpSocket;
@@ -160,8 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let req_bytes = dds::cdr::serialize_to_bytes(&token_req, Endianness::LittleEndian)?;
             socket.send_to(&req_bytes, format!("{LOCALHOST_IP}:{SUBSCRIBER_PORT}"))?;
 
-            #[allow(clippy::unseparated_literal_suffix, clippy::allow_attributes, reason = "Buffer literal format required")]
-            let mut buf = [0u8; RECV_BUFFER_SIZE];
+            let mut buf = vec![u8::default(); RECV_BUFFER_SIZE];
             let (len_reply, _) = socket.recv_from(&mut buf)?;
             let token_reply: HandshakeToken =
                 dds::cdr::deserialize_from_slice(&buf[..len_reply], Endianness::LittleEndian)?;
@@ -201,8 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (bob_id, _) = auth.validate_local_identity(0, &qos)?;
             let alice_id = IdentityHandle(1);
 
-            #[allow(clippy::separated_literal_suffix, clippy::allow_attributes, reason = "Buffer literal format required")]
-            let mut buf = [0_u8; RECV_BUFFER_SIZE];
+            let mut buf = vec![u8::default(); RECV_BUFFER_SIZE];
             let (len_req, _) = socket.recv_from(&mut buf)?;
             let token_req: HandshakeToken =
                 dds::cdr::deserialize_from_slice(&buf[..len_req], Endianness::LittleEndian)?;

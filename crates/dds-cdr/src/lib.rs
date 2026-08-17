@@ -9,64 +9,19 @@
 #![warn(
     rust_2018_idioms,
     nonstandard_style,
-    future_incompatible,
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery
+    future_incompatible
 )]
-#![allow(elided_lifetimes_in_paths)]
 #![allow(
     clippy::blanket_clippy_restriction_lints,
-    clippy::implicit_return,
-    clippy::pub_use,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::absolute_paths,
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_lossless,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::missing_inline_in_public_items,
-    clippy::shadow_reuse,
-    clippy::shadow_same,
-    clippy::shadow_unrelated,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::wildcard_imports,
-    clippy::integer_division,
-    clippy::integer_division_remainder_used,
-    clippy::single_call_fn,
-    clippy::default_numeric_fallback,
-    clippy::arithmetic_side_effects,
-    clippy::std_instead_of_core,
-    clippy::std_instead_of_alloc,
-    clippy::alloc_instead_of_core,
-    clippy::arbitrary_source_item_ordering,
-    clippy::min_ident_chars,
-    clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
-    clippy::module_name_repetitions,
-    clippy::question_mark_used,
-    clippy::single_char_lifetime_names,
-    clippy::panic_in_result_fn,
-    clippy::unwrap_used,
-    clippy::unwrap_in_result,
-    clippy::cognitive_complexity,
-    clippy::tests_outside_test_module,
-    clippy::missing_docs_in_private_items,
-    clippy::pattern_type_mismatch,
-    clippy::redundant_pub_crate,
-    clippy::similar_names,
-    clippy::else_if_without_else,
-    clippy::unseparated_literal_suffix,
-    clippy::separated_literal_suffix,
-    reason = "CDR Serializer implementation requires standard library conversions, standard returns, and binary layout manipulation."
+    reason = "restriction lints are enabled individually via crate lint config"
 )]
 
 use byteorder::{BigEndian, ByteOrder as _, LittleEndian};
 use bytes::{BufMut as _, Bytes, BytesMut};
+use dds_types::guid::{EntityId, Guid, Prefix as GuidPrefix};
+use dds_types::instance::Handle as InstanceHandle;
+use dds_types::locator::{Kind as LocatorKind, Locator};
+use dds_types::time::{Duration, Timestamp};
 
 /// Representation of CDR serialization/deserialization errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -164,7 +119,7 @@ pub trait CdrSerialize {
 /// Standard trait for deserializing types from CDR wire representation.
 pub trait CdrDeserialize: Sized {
     /// Deserialize an instance from the given deserializer.
-    fn deserialize<'a>(deserializer: &mut CdrDeserializer<'a>) -> CdrResult<Self>;
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self>;
 }
 
 
@@ -337,7 +292,7 @@ impl CdrSerializer {
     }
 
     /// XCDR2: Write an Extended Member Header (EMHEADER).
-    /// Format: [1 bit (MustUnderstand) | 1 bit (Reserved) | 14 bits (Length) | 16 bits (MemberId)]
+    /// Format: [1 bit (`MustUnderstand`) | 1 bit (Reserved) | 14 bits (Length) | 16 bits (`MemberId`)]
     /// Or a larger version if length > 7. We'll use the short version for simplicity (assuming len < 65536).
     pub fn serialize_emheader(&mut self, member_id: u32, length: u32) {
         self.align(4);
@@ -616,7 +571,7 @@ impl<'a> CdrDeserializer<'a> {
     }
 
     /// XCDR2: Read an Extended Member Header (EMHEADER)
-    /// Returns (member_id, length)
+    /// Returns (`member_id`, length)
     pub fn deserialize_emheader(&mut self) -> CdrResult<(u32, u32)> {
         let header = self.deserialize_u32()?;
         let length = (header >> 16) & 0x3FFF;
@@ -661,7 +616,7 @@ impl EncapsulationHeader {
     }
 
     /// Read encapsulation header from raw byte stream.
-    pub fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+    pub fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let kind_val = deserializer.deserialize_u16()?;
         let kind = match kind_val {
             0x0000 => EncapsulationKind::CdrBe,
@@ -787,7 +742,7 @@ impl CdrSerialize for ParameterList {
 }
 
 impl CdrDeserialize for ParameterList {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let mut plist = Self::new();
         loop {
             let pid = deserializer.deserialize_u16()?;
@@ -823,14 +778,14 @@ impl CdrDeserialize for ParameterList {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Convenience function to serialize any `CdrSerialize` value to a Bytes buffer.
-pub fn serialize_to_bytes<T: CdrSerialize>(value: &T, endian: Endianness) -> CdrResult<Bytes> {
+pub fn serialize_to_bytes<T>(value: &T, endian: Endianness) -> CdrResult<Bytes> where T: CdrSerialize {
     let mut serializer = CdrSerializer::new(endian);
     value.serialize(&mut serializer)?;
     Ok(serializer.into_bytes())
 }
 
 /// Convenience function to deserialize any `CdrDeserialize` value from a slice.
-pub fn deserialize_from_slice<T: CdrDeserialize>(slice: &[u8], endian: Endianness) -> CdrResult<T> {
+pub fn deserialize_from_slice<T>(slice: &[u8], endian: Endianness) -> CdrResult<T> where T: CdrDeserialize {
     let mut deserializer = CdrDeserializer::new(slice, endian);
     T::deserialize(&mut deserializer)
 }
@@ -849,7 +804,7 @@ macro_rules! impl_cdr_primitive {
         }
 
         impl CdrDeserialize for $type {
-            fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+            fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
                 deserializer.$deser()
             }
         }
@@ -876,7 +831,7 @@ impl CdrSerialize for String {
 }
 
 impl CdrDeserialize for String {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         deserializer.deserialize_str()
     }
 }
@@ -893,7 +848,7 @@ impl<T: CdrSerialize> CdrSerialize for Vec<T> {
 }
 
 impl<T: CdrDeserialize> CdrDeserialize for Vec<T> {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let len = deserializer.deserialize_u32()? as usize;
         let mut vec = Self::with_capacity(len);
         for _ in 0..len {
@@ -920,7 +875,7 @@ impl<T: CdrSerialize> CdrSerialize for Option<T> {
 }
 
 impl<T: CdrDeserialize> CdrDeserialize for Option<T> {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let has_value = deserializer.deserialize_bool()?;
         if has_value {
             Ok(Some(T::deserialize(deserializer)?))
@@ -941,7 +896,7 @@ impl<T: CdrSerialize, const N: usize> CdrSerialize for [T; N] {
 }
 
 impl<T: CdrDeserialize, const N: usize> CdrDeserialize for [T; N] {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         // Safe initialization since we build the array element by element
         let mut list = Vec::with_capacity(N);
         for _ in 0..N {
@@ -958,48 +913,48 @@ impl<T: CdrDeserialize, const N: usize> CdrDeserialize for [T; N] {
 // Manual implementations for dds-types builtin types
 // ──────────────────────────────────────────────────────────────────────────────
 
-impl CdrSerialize for dds_types::guid::GuidPrefix {
+impl CdrSerialize for GuidPrefix {
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
-        self.0.serialize(serializer)
+        self.as_bytes().serialize(serializer)
     }
 }
 
-impl CdrDeserialize for dds_types::guid::GuidPrefix {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+impl CdrDeserialize for GuidPrefix {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let bytes: [u8; 12] = CdrDeserialize::deserialize(deserializer)?;
-        Ok(Self(bytes))
+        Ok(Self::new(bytes))
     }
 }
 
-impl CdrSerialize for dds_types::guid::EntityId {
+impl CdrSerialize for EntityId {
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
-        self.0.serialize(serializer)
+        self.as_bytes().serialize(serializer)
     }
 }
 
-impl CdrDeserialize for dds_types::guid::EntityId {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+impl CdrDeserialize for EntityId {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let bytes: [u8; 4] = CdrDeserialize::deserialize(deserializer)?;
-        Ok(Self(bytes))
+        Ok(Self::new(bytes))
     }
 }
 
-impl CdrSerialize for dds_types::guid::Guid {
+impl CdrSerialize for Guid {
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         self.prefix.serialize(serializer)?;
         self.entity_id.serialize(serializer)
     }
 }
 
-impl CdrDeserialize for dds_types::guid::Guid {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
-        let prefix = dds_types::guid::GuidPrefix::deserialize(deserializer)?;
-        let entity_id = dds_types::guid::EntityId::deserialize(deserializer)?;
-        Ok(Self { prefix, entity_id })
+impl CdrDeserialize for Guid {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
+        let prefix = GuidPrefix::deserialize(deserializer)?;
+        let entity_id = EntityId::deserialize(deserializer)?;
+        Ok(Self::new(prefix, entity_id))
     }
 }
 
-impl CdrSerialize for dds_types::locator::Locator {
+impl CdrSerialize for Locator {
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         // LocatorKind is i32, port is u32, address is [u8; 16]
         let kind_val = self.kind as i32;
@@ -1009,21 +964,17 @@ impl CdrSerialize for dds_types::locator::Locator {
     }
 }
 
-impl CdrDeserialize for dds_types::locator::Locator {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+impl CdrDeserialize for Locator {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let kind_val = deserializer.deserialize_i32()?;
-        let kind = dds_types::locator::LocatorKind::from_i32(kind_val);
+        let kind = LocatorKind::from_i32(kind_val);
         let port = deserializer.deserialize_u32()?;
         let address: [u8; 16] = CdrDeserialize::deserialize(deserializer)?;
-        Ok(Self {
-            kind,
-            port,
-            address,
-        })
+        Ok(Locator::from_raw(kind, port, address))
     }
 }
 
-impl CdrSerialize for dds_types::time::Duration {
+impl CdrSerialize for Duration {
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         serializer.serialize_i32(self.seconds);
         serializer.serialize_u32(self.nanoseconds);
@@ -1031,18 +982,15 @@ impl CdrSerialize for dds_types::time::Duration {
     }
 }
 
-impl CdrDeserialize for dds_types::time::Duration {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+impl CdrDeserialize for Duration {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let seconds = deserializer.deserialize_i32()?;
         let nanoseconds = deserializer.deserialize_u32()?;
-        Ok(Self {
-            seconds,
-            nanoseconds,
-        })
+        Ok(Self::new(seconds, nanoseconds))
     }
 }
 
-impl CdrSerialize for dds_types::time::Timestamp {
+impl CdrSerialize for Timestamp {
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         serializer.serialize_u32(self.seconds);
         serializer.serialize_u32(self.nanoseconds);
@@ -1050,27 +998,24 @@ impl CdrSerialize for dds_types::time::Timestamp {
     }
 }
 
-impl CdrDeserialize for dds_types::time::Timestamp {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+impl CdrDeserialize for Timestamp {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let seconds = deserializer.deserialize_u32()?;
         let nanoseconds = deserializer.deserialize_u32()?;
-        Ok(Self {
-            seconds,
-            nanoseconds,
-        })
+        Ok(Self::new(seconds, nanoseconds))
     }
 }
 
-impl CdrSerialize for dds_types::instance::InstanceHandle {
+impl CdrSerialize for InstanceHandle {
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
         self.0.serialize(serializer)
     }
 }
 
-impl CdrDeserialize for dds_types::instance::InstanceHandle {
-    fn deserialize(deserializer: &mut CdrDeserializer) -> CdrResult<Self> {
+impl CdrDeserialize for InstanceHandle {
+    fn deserialize(deserializer: &mut CdrDeserializer<'_>) -> CdrResult<Self> {
         let bytes: [u8; 16] = CdrDeserialize::deserialize(deserializer)?;
-        Ok(Self(bytes))
+        Ok(Self::new(bytes))
     }
 }
 
@@ -1183,18 +1128,18 @@ mod tests {
 
     #[test]
     fn test_builtin_types_roundtrip() {
-        let prefix = dds_types::guid::GuidPrefix::new([5; 12]);
+        let prefix = dds_types::guid::Prefix::new([5; 12]);
         let ent = dds_types::guid::EntityId::new([0x00, 0x01, 0x00, 0xc2]);
         let guid = dds_types::guid::Guid::new(prefix, ent);
         let loc = dds_types::locator::Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), 7400);
         let dur = dds_types::time::Duration::from_secs(42);
         let ts = dds_types::time::Timestamp::new(100, 500_000_000);
-        let handle = dds_types::instance::InstanceHandle::new([0xAA; 16]);
+        let handle = dds_types::instance::Handle::new([0xAA; 16]);
 
         // 1. GuidPrefix
         let ser = serialize_to_bytes(&prefix, Endianness::LittleEndian).unwrap();
         assert_eq!(
-            deserialize_from_slice::<dds_types::guid::GuidPrefix>(&ser, Endianness::LittleEndian)
+            deserialize_from_slice::<dds_types::guid::Prefix>(&ser, Endianness::LittleEndian)
                 .unwrap(),
             prefix
         );
@@ -1242,7 +1187,7 @@ mod tests {
         // 7. InstanceHandle
         let ser = serialize_to_bytes(&handle, Endianness::LittleEndian).unwrap();
         assert_eq!(
-            deserialize_from_slice::<dds_types::instance::InstanceHandle>(
+            deserialize_from_slice::<dds_types::instance::Handle>(
                 &ser,
                 Endianness::LittleEndian
             )

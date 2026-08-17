@@ -83,13 +83,13 @@ pub const PID_TOPIC_NAME: u16 = 0x0005;
 /// PID for Type Name
 pub const PID_TYPE_NAME: u16 = 0x0007;
 
-/// PID for Reliability QoS
+/// PID for Reliability `QoS`
 pub const PID_RELIABILITY: u16 = 0x001A;
 
-/// PID for Durability QoS
+/// PID for Durability `QoS`
 pub const PID_DURABILITY: u16 = 0x001D;
 
-/// PID for History QoS
+/// PID for History `QoS`
 pub const PID_HISTORY: u16 = 0x0040;
 
 /// PID for Participant GUID
@@ -193,6 +193,7 @@ impl DiscoveryManager {
     }
 
     /// Spawn SPDP announcer background thread
+    #[must_use]
     pub fn spawn_spdp_announcer(
         &self,
         interval: core::time::Duration,
@@ -297,7 +298,7 @@ impl DiscoveryManager {
 
 /// Serializes a `DiscoveredParticipant` to a PL-CDR parameter list.
 ///
-/// Reference: RTPS §9.6.3 — ParameterList values
+/// Reference: RTPS §9.6.3 — `ParameterList` values
 pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<Vec<u8>> {
     use dds_cdr::{ParameterList, ParameterId, serialize_to_bytes, Endianness};
 
@@ -338,6 +339,7 @@ pub fn spdp_to_plcdr(participant: &DiscoveredParticipant) -> dds_cdr::CdrResult<
 }
 
 /// Parses a `DiscoveredParticipant` from a PL-CDR parameter list byte buffer.
+#[must_use]
 pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
     use dds_cdr::{ParameterList, deserialize_from_slice, Endianness};
 
@@ -370,26 +372,25 @@ pub fn parse_spdp_packet(bytes: &[u8]) -> Option<DiscoveredParticipant> {
                     let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
                     let mut address = [0u8; 16];
                     address.copy_from_slice(&param.value[8..24]);
-                    unicast_locators.push(Locator {
-                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+                    unicast_locators.push(Locator::from_raw(
+                        dds_types::locator::LocatorKind::from_i32(kind_val),
                         port,
                         address,
-                    });
+                    ));
                 }
             }
-            PID_DEFAULT_MULTICAST_LOCATOR => {
-                if param.value.len() >= 24 {
+            PID_DEFAULT_MULTICAST_LOCATOR
+                if param.value.len() >= 24 => {
                     let kind_val = i32::from_le_bytes(param.value[0..4].try_into().ok()?);
                     let port = u32::from_le_bytes(param.value[4..8].try_into().ok()?);
                     let mut address = [0u8; 16];
                     address.copy_from_slice(&param.value[8..24]);
-                    multicast_locators.push(Locator {
-                        kind: dds_types::locator::LocatorKind::from_i32(kind_val),
+                    multicast_locators.push(Locator::from_raw(
+                        dds_types::locator::LocatorKind::from_i32(kind_val),
                         port,
                         address,
-                    });
+                    ));
                 }
-            }
             _ => {}
         }
     }
@@ -416,7 +417,7 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
     let mut topic_name_bytes = endpoint.topic_name.as_bytes().to_vec();
     topic_name_bytes.push(0); // null terminator
     // Padding to 4 bytes
-    while topic_name_bytes.len() % 4 != 0 {
+    while !topic_name_bytes.len().is_multiple_of(4) {
         topic_name_bytes.push(0);
     }
     plist.parameters.push(Parameter {
@@ -427,7 +428,7 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
     // PID_TYPE_NAME (0x0007)
     let mut type_name_bytes = endpoint.type_name.as_bytes().to_vec();
     type_name_bytes.push(0);
-    while type_name_bytes.len() % 4 != 0 {
+    while !type_name_bytes.len().is_multiple_of(4) {
         type_name_bytes.push(0);
     }
     plist.parameters.push(Parameter {
@@ -448,6 +449,7 @@ pub fn sedp_to_plcdr(endpoint: &DiscoveredEndpoint) -> dds_cdr::CdrResult<Vec<u8
 }
 
 /// Parses an SEDP PL-CDR parameter list into a `DiscoveredEndpoint`.
+#[must_use]
 pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
     use dds_cdr::{ParameterList, deserialize_from_slice, Endianness};
     let plist: ParameterList = deserialize_from_slice(bytes, Endianness::LittleEndian).ok()?;
@@ -524,8 +526,8 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                     if let Some(ref mut qr) = qos_reader { qr.reliability.kind = kind; }
                 }
             }
-            PID_HISTORY => { // PID_HISTORY
-                if param.value.len() >= 4 {
+            PID_HISTORY // PID_HISTORY
+                if param.value.len() >= 4 => {
                     let kind_val = u32::from_le_bytes([param.value[0], param.value[1], param.value[2], param.value[3]]);
                     let kind = match kind_val {
                         0 => dds_types::qos::HistoryKind::KeepLast,
@@ -535,7 +537,6 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
                     if let Some(ref mut qw) = qos_writer { qw.history.kind = kind; }
                     if let Some(ref mut qr) = qos_reader { qr.history.kind = kind; }
                 }
-            }
             _ => {}
         }
     }
@@ -758,16 +759,13 @@ mod tests {
         manager.process_spdp_packet(remote_participant);
 
         // Define a type, compute type information and type_id
-        let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType {
-            name: "Dummy".to_string(),
-            extensibility: dds_xtypes::ExtensibilityKind::Final,
-            members: vec![],
-        });
-        let r_id = r_obj.get_identifier();
-        let type_info = dds_xtypes::TypeInformation {
-            type_name: "MyInt".to_string(),
-            type_id: r_id.clone(),
-        };
+        let r_obj = dds_xtypes::TypeObject::Complete(dds_xtypes::StructureType::new(
+            "Dummy".to_string(),
+            dds_xtypes::ExtensibilityKind::Final,
+            vec![],
+        ));
+        let r_id = r_obj.get_identifier().unwrap();
+        let type_info = dds_xtypes::TypeInformation::new("MyInt".to_string(), r_id.clone());
 
         let endpoint_guid = Guid::new(remote_prefix, EntityId::new([0, 0, 1, 4]));
         let endpoint = DiscoveredEndpoint {

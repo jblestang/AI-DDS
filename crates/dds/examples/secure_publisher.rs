@@ -4,7 +4,7 @@
 //! secure DDS setup. It performs the 3-step handshake with secure_subscriber,
 //! derives the key, encrypts a payload using AES-128-GCM, and transmits it.
 //!
-//! Spec Reference: OMG DDS Security 1.2 §8.4
+//! Spec Reference: OMG DDS Security 1.2 §8.4.
 
 #![forbid(unsafe_code)]
 #![warn(
@@ -57,8 +57,6 @@
     clippy::min_ident_chars,
     clippy::little_endian_bytes,
     clippy::unused_trait_names,
-    clippy::separated_literal_suffix,
-    clippy::unseparated_literal_suffix,
     clippy::missing_asserts_for_indexing,
     reason = "DDS examples require print logging, panic unwraps, and simplified structural configurations for demonstration purposes."
 )]
@@ -148,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[Publisher] Step 1: Request token sent to subscriber ({LOCALHOST_IP}:{SUBSCRIBER_PORT}).");
 
     // 5. STEP 2: Receive Handshake Reply.
-    let mut buf = [0_u8; RECV_BUFFER_SIZE];
+    let mut buf = vec![u8::default(); RECV_BUFFER_SIZE];
     let (len, _) = socket.recv_from(&mut buf)?;
     let token_reply: HandshakeToken =
         dds::cdr::deserialize_from_slice(&buf[..len], Endianness::LittleEndian)?;
