@@ -971,7 +971,7 @@ impl Cryptography for BuiltinCryptography {
 }
 
 fn from_hex(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
+    if s.len() % 2 != 0 {
         return Err("odd hex string length".into());
     }
     let mut res = Vec::with_capacity(s.len() / 2);

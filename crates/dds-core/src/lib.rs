@@ -1171,6 +1171,18 @@ fn send_reliable_reader_acknack_for_sn(
     let _ = transport.send(&msg, &dest);
 }
 
+/// Return true when user DATA from `writer_guid` may be delivered to `reader`.
+fn reader_accepts_remote_writer(
+    reader: &DataReader,
+    writer_guid: Guid,
+    local_prefix: GuidPrefix,
+) -> bool {
+    if writer_guid.prefix == local_prefix {
+        return true;
+    }
+    lock(&reader.matched_writers).contains(&writer_guid)
+}
+
 fn handle_user_data_writer_acknack(
     writer_registry: &Arc<Mutex<HashMap<Guid, Arc<Mutex<dds_rtps::StatefulWriter>>>>>,
     local_prefix: GuidPrefix,
@@ -2248,6 +2260,13 @@ impl DomainParticipant {
                                         }
                                     };
                                     for reader in candidate_readers {
+                                        if !reader_accepts_remote_writer(
+                                            &reader,
+                                            writer_guid,
+                                            user_guid_prefix,
+                                        ) {
+                                            continue;
+                                        }
                                         if reader.type_support.deserialize(&final_payload).is_ok() {
                                             reader.push_sample_sn(
                                                 dds_types::instance::InstanceHandle::NIL,
@@ -2594,6 +2613,9 @@ impl DomainParticipant {
                             }
                         };
                         for reader in candidate_readers {
+                            if !reader_accepts_remote_writer(&reader, writer_guid, guid_prefix) {
+                                continue;
+                            }
                             if reader.type_support.deserialize(&final_payload).is_ok() {
                                 reader.push_sample_sn(
                                     dds_types::instance::InstanceHandle::NIL,
@@ -2698,6 +2720,9 @@ impl DomainParticipant {
                                 }
                             };
                             for reader in candidate_readers {
+                                if !reader_accepts_remote_writer(&reader, writer_guid, guid_prefix) {
+                                    continue;
+                                }
                                 if reader.type_support.deserialize(&final_payload).is_ok() {
                                     reader.push_sample_sn(
                                         dds_types::instance::InstanceHandle::NIL,

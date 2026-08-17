@@ -46,12 +46,14 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | Standard Section | Concept | Status | Notes |
 |---|---|---|---|
 | RTPS §8.5.2 | SEDP partition QoS | `[x]` | PID 0x0029 encode/decode |
+| RTPS §8.5.2 | SEDP RxO QoS policies | `[x]` | PID 0x001F ownership, 0x0023 deadline, 0x0025 destination_order, 0x0027 latency_budget |
 | DCPS §2.2.5 | Builtin DCPS publication | `[x]` | `publish_builtin_endpoint()` + `enable_builtin_topics()` |
 | Internal | Monitor snapshot API | `[x]` | `DiscoveryManager::monitor_snapshot()` |
 | Interop | CycloneDDS wire fixture compliance | `[x]` | `interop/wire/` + `interop_wire` tests |
 | Interop | Standard PL-CDR SPDP/SEDP parse/emit | `[x]` | CycloneDDS-compatible discovery wire |
 | Interop | Live CycloneDDS pub/sub | `[x]` | `interop_cyclonedds` tests (optional, `#[ignore]`) |
 | Interop | Live Fast DDS pub/sub | `[x]` | `interop_fastdds` (optional, `#[ignore]`) |
+| Interop | Live OpenDDS pub/sub | `[x]` | `interop_opendds` tests (optional, `#[ignore]`) |
 
 ---
 
@@ -66,6 +68,7 @@ This document tracks the implementation status of each crate in the `AI-DDS` wor
 | DCPS §2.2.2.4.2 | Durability service | `[x]` | Cache + retransmit on late-joiner match |
 | DCPS §2.2.2.4.2 | Instance lifecycle | `[x]` | `register_instance`, `dispose`, `unregister_instance` |
 | DCPS §2.2.2.1.4 | Listener callbacks | `[x]` | publication/subscription matched, deadline, liveliness (optional defaults) |
+| DCPS §2.2.3 | QoS-gated user DATA delivery | `[x]` | Remote writers must be in `matched_writers` before sample delivery |
 | DCPS §2.2.5 | Builtin topic readers | `[x]` | `DomainParticipant::enable_builtin_topics()` |
 
 ---

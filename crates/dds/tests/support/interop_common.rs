@@ -350,7 +350,7 @@ mod interop_type_tests {
     }
 
     #[test]
-    fn deserialize_rejects_plcdr_encapsulation() {
+    fn deserialize_accepts_plcdr_encapsulation() {
         let ts = InteropTypeSupport;
         let mut ser = CdrSerializer::new(Endianness::LittleEndian);
         EncapsulationHeader::new(EncapsulationKind::PlCdrLe).serialize(&mut ser);
@@ -360,7 +360,9 @@ mod interop_type_tests {
         }
         .serialize(&mut ser)
         .unwrap();
-        assert!(ts.deserialize(ser.bytes()).is_err());
+        let boxed = ts.deserialize(ser.bytes()).expect("deserialize PlCdrLe wire");
+        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
+        assert_eq!(msg.id, 9001);
     }
 }
 

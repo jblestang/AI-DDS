@@ -44,7 +44,7 @@ cargo test -p dds --test interop_opendds -- --ignored --nocapture --test-threads
 
 OpenDDS peer apps use RTPS/UDP (`OpenDDS::Rtps`, `OpenDDS::Rtps_Udp`) via `interop/opendds/rtps.ini` (`DCPSDefaultDiscovery=DEFAULT_RTPS`). The install prefix omits ACE/TAO static libraries, so `build-opendds-apps.sh` points CMake at `$OPENDDS_SRC/build/ace_tao` for linking and at `$OPENDDS_SRC/build` for generated RTPS headers.
 
-**Known gap:** live OpenDDS interop tests are wired up but currently fail on endpoint matching in this environment; the DevGuide Messenger example built in-tree works, so further OpenDDS-specific QoS/type work is tracked separately.
+**Known gap:** live OpenDDS interop tests require building peer apps; all three directions pass when OpenDDS is installed (`interop_opendds`, `#[ignore]`).
 
 ## Quick start (CycloneDDS)
 
@@ -116,7 +116,7 @@ module AiDdsInterop {
 Topic: `AiDdsInteropMessage`  
 Type: `AiDdsInterop::Message`
 
-Rust tests use `InteropTypeSupport` with **CdrLe encapsulation** for outbound user data and accept **CdrLe/CdrBe** on deserialize.
+Rust tests use `InteropTypeSupport` with **CdrLe encapsulation** for outbound user data and accept **CdrLe/CdrBe/PlCdrLe/PlCdrBe** on deserialize.
 
 ## Environment variables
 
@@ -189,7 +189,7 @@ Keyed AI-DDS writers must call `register_instance()` before `write()` (handled i
 | Parse CycloneDDS RTPS framing | Pass |
 | Live CycloneDDS pub/sub | Pass (`interop_cyclonedds`, `#[ignore]`) |
 | Live Fast DDS pub/sub | Pass (`interop_fastdds`, `#[ignore]`) |
-| Live OpenDDS pub/sub | Known gap (`interop_opendds`, `#[ignore]`) — peer apps build; live matching under investigation |
+| Live OpenDDS pub/sub | Pass (`interop_opendds`, `#[ignore]`) |
 | Shapes Demo CycloneDDS (Square/Circle/Triangle) | Pass (`interop_shapes_cyclonedds`, `#[ignore]`) |
 | Shapes Demo Fast DDS (AI-DDS → vendor) | Pass (`interop_shapes_fastdds`, `#[ignore]`) |
 | Shapes Demo Fast DDS (vendor → AI-DDS keyed) | Known gap (tests `#[ignore]`) |

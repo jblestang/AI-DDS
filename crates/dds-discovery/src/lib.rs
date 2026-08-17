@@ -96,6 +96,18 @@ pub const PID_HISTORY: u16 = 0x0040;
 /// PID for Liveliness QoS
 pub const PID_LIVELINESS: u16 = 0x001B;
 
+/// PID for Ownership QoS
+pub const PID_OWNERSHIP: u16 = 0x001F;
+
+/// PID for Deadline QoS
+pub const PID_DEADLINE: u16 = 0x0023;
+
+/// PID for Destination order QoS
+pub const PID_DESTINATION_ORDER: u16 = 0x0025;
+
+/// PID for Latency budget QoS
+pub const PID_LATENCY_BUDGET: u16 = 0x0027;
+
 /// PID for Partition QoS
 pub const PID_PARTITION: u16 = 0x0029;
 
@@ -1379,7 +1391,7 @@ fn serialize_rtps_plcdr(parameters: &[(u16, Vec<u8>)]) -> Vec<u8> {
         out.extend_from_slice(&pid.to_le_bytes());
         out.extend_from_slice(&(padded as u16).to_le_bytes());
         out.extend_from_slice(value);
-        while !out.len().is_multiple_of(4) {
+        while out.len() % 4 != 0 {
             out.push(0);
         }
     }
@@ -1406,7 +1418,7 @@ fn append_plcdr_string_value(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(value.as_bytes());
     out.push(0);
-    while !out.len().is_multiple_of(4) {
+    while out.len() % 4 != 0 {
         out.push(0);
     }
 }
@@ -1692,6 +1704,62 @@ fn append_liveliness_qos(parameters: &mut Vec<(u16, Vec<u8>)>, liveliness: &dds_
     parameters.push((PID_LIVELINESS, live_bytes));
 }
 
+fn append_deadline_qos(parameters: &mut Vec<(u16, Vec<u8>)>, deadline: &dds_types::qos::Deadline) {
+    let mut bytes = Vec::new();
+    append_rtps_duration_bytes(&mut bytes, deadline.period);
+    parameters.push((PID_DEADLINE, bytes));
+}
+
+fn append_latency_budget_qos(
+    parameters: &mut Vec<(u16, Vec<u8>)>,
+    latency_budget: &dds_types::qos::LatencyBudget,
+) {
+    let mut bytes = Vec::new();
+    append_rtps_duration_bytes(&mut bytes, latency_budget.duration);
+    parameters.push((PID_LATENCY_BUDGET, bytes));
+}
+
+fn append_ownership_qos(parameters: &mut Vec<(u16, Vec<u8>)>, ownership: &dds_types::qos::Ownership) {
+    let kind_val = match ownership.kind {
+        dds_types::qos::OwnershipKind::Shared => 0u32,
+        dds_types::qos::OwnershipKind::Exclusive => 1,
+    };
+    parameters.push((PID_OWNERSHIP, kind_val.to_le_bytes().to_vec()));
+}
+
+fn append_destination_order_qos(
+    parameters: &mut Vec<(u16, Vec<u8>)>,
+    destination_order: &dds_types::qos::DestinationOrder,
+) {
+    let kind_val = match destination_order.kind {
+        dds_types::qos::DestinationOrderKind::ByReceptionTimestamp => 0u32,
+        dds_types::qos::DestinationOrderKind::BySourceTimestamp => 1,
+    };
+    parameters.push((PID_DESTINATION_ORDER, kind_val.to_le_bytes().to_vec()));
+}
+
+fn append_endpoint_qos_writer(parameters: &mut Vec<(u16, Vec<u8>)>, qos: &dds_types::qos::DataWriterQos) {
+    append_durability_qos(parameters, qos.durability.kind);
+    append_reliability_qos(parameters, &qos.reliability);
+    append_history_qos(parameters, &qos.history);
+    append_liveliness_qos(parameters, &qos.liveliness);
+    append_deadline_qos(parameters, &qos.deadline);
+    append_latency_budget_qos(parameters, &qos.latency_budget);
+    append_ownership_qos(parameters, &qos.ownership);
+    append_destination_order_qos(parameters, &qos.destination_order);
+}
+
+fn append_endpoint_qos_reader(parameters: &mut Vec<(u16, Vec<u8>)>, qos: &dds_types::qos::DataReaderQos) {
+    append_durability_qos(parameters, qos.durability.kind);
+    append_reliability_qos(parameters, &qos.reliability);
+    append_history_qos(parameters, &qos.history);
+    append_liveliness_qos(parameters, &qos.liveliness);
+    append_deadline_qos(parameters, &qos.deadline);
+    append_latency_budget_qos(parameters, &qos.latency_budget);
+    append_ownership_qos(parameters, &qos.ownership);
+    append_destination_order_qos(parameters, &qos.destination_order);
+}
+
 fn append_data_representation_qos(parameters: &mut Vec<(u16, Vec<u8>)>) {
     // OpenDDS interop writers often use XCDR2; advertise both XCDR1 and XCDR2 using
     // the DDS CDR layout for DataRepresentationIdSeq (length + uint16 ids, 4-byte aligned).
@@ -1796,6 +1864,62 @@ fn apply_liveliness_param(
     }
 }
 
+fn apply_deadline_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    value: &[u8],
+) {
+    if value.len() >= 8 {
+        let seconds = i32::from_le_bytes(value[0..4].try_into().unwrap_or([0; 4]));
+        let fraction = u32::from_le_bytes(value[4..8].try_into().unwrap_or([0; 4]));
+        let period = Duration::from_rtps_wire(seconds, fraction);
+        writer_qos.deadline.period = period;
+        reader_qos.deadline.period = period;
+    }
+}
+
+fn apply_latency_budget_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    value: &[u8],
+) {
+    if value.len() >= 8 {
+        let seconds = i32::from_le_bytes(value[0..4].try_into().unwrap_or([0; 4]));
+        let fraction = u32::from_le_bytes(value[4..8].try_into().unwrap_or([0; 4]));
+        let duration = Duration::from_rtps_wire(seconds, fraction);
+        writer_qos.latency_budget.duration = duration;
+        reader_qos.latency_budget.duration = duration;
+    }
+}
+
+fn apply_ownership_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    kind_val: u32,
+) {
+    let kind = match kind_val {
+        0 => dds_types::qos::OwnershipKind::Shared,
+        1 => dds_types::qos::OwnershipKind::Exclusive,
+        _ => dds_types::qos::OwnershipKind::Shared,
+    };
+    writer_qos.ownership.kind = kind;
+    reader_qos.ownership.kind = kind;
+}
+
+fn apply_destination_order_param(
+    writer_qos: &mut dds_types::qos::DataWriterQos,
+    reader_qos: &mut dds_types::qos::DataReaderQos,
+    kind_val: u32,
+) {
+    let kind = match kind_val {
+        0 => dds_types::qos::DestinationOrderKind::ByReceptionTimestamp,
+        1 => dds_types::qos::DestinationOrderKind::BySourceTimestamp,
+        _ => dds_types::qos::DestinationOrderKind::ByReceptionTimestamp,
+    };
+    writer_qos.destination_order.kind = kind;
+    reader_qos.destination_order.kind = kind;
+}
+
 /// Serializes a `DiscoveredEndpoint` to a PL-CDR parameter list.
 pub fn sedp_to_plcdr(
     endpoint: &DiscoveredEndpoint,
@@ -1810,15 +1934,9 @@ pub fn sedp_to_plcdr(
     append_plcdr_string(&mut parameters, PID_TYPE_NAME, &endpoint.type_name);
 
     if let Some(ref qos) = endpoint.qos_writer {
-        append_durability_qos(&mut parameters, qos.durability.kind);
-        append_reliability_qos(&mut parameters, &qos.reliability);
-        append_history_qos(&mut parameters, &qos.history);
-        append_liveliness_qos(&mut parameters, &qos.liveliness);
+        append_endpoint_qos_writer(&mut parameters, qos);
     } else if let Some(ref qos) = endpoint.qos_reader {
-        append_durability_qos(&mut parameters, qos.durability.kind);
-        append_reliability_qos(&mut parameters, &qos.reliability);
-        append_history_qos(&mut parameters, &qos.history);
-        append_liveliness_qos(&mut parameters, &qos.liveliness);
+        append_endpoint_qos_reader(&mut parameters, qos);
     }
 
     append_data_representation_qos(&mut parameters);
@@ -1915,6 +2033,34 @@ pub fn parse_sedp_packet(bytes: &[u8]) -> Option<DiscoveredEndpoint> {
             }
             PID_LIVELINESS => {
                 apply_liveliness_param(&mut writer_qos, &mut reader_qos, &param.value);
+            }
+            PID_DEADLINE => {
+                apply_deadline_param(&mut writer_qos, &mut reader_qos, &param.value);
+            }
+            PID_LATENCY_BUDGET => {
+                apply_latency_budget_param(&mut writer_qos, &mut reader_qos, &param.value);
+            }
+            PID_OWNERSHIP => {
+                if param.value.len() >= 4 {
+                    let kind_val = u32::from_le_bytes([
+                        param.value[0],
+                        param.value[1],
+                        param.value[2],
+                        param.value[3],
+                    ]);
+                    apply_ownership_param(&mut writer_qos, &mut reader_qos, kind_val);
+                }
+            }
+            PID_DESTINATION_ORDER => {
+                if param.value.len() >= 4 {
+                    let kind_val = u32::from_le_bytes([
+                        param.value[0],
+                        param.value[1],
+                        param.value[2],
+                        param.value[3],
+                    ]);
+                    apply_destination_order_param(&mut writer_qos, &mut reader_qos, kind_val);
+                }
             }
             PID_PARTITION => {
                 let mut offset = 0;
@@ -2279,6 +2425,42 @@ mod tests {
             dds_types::qos::LivelinessKind::ManualByTopic
         );
         assert_eq!(decoded_qos.liveliness.lease_duration.seconds, 5);
+    }
+
+    #[test]
+    fn test_sedp_roundtrip_rxo_qos_policies() {
+        let mut writer_qos = dds_types::qos::DataWriterQos::default();
+        writer_qos.deadline.period = Duration::from_secs(10);
+        writer_qos.latency_budget.duration = Duration::from_millis(500);
+        writer_qos.ownership.kind = dds_types::qos::OwnershipKind::Exclusive;
+        writer_qos.destination_order.kind =
+            dds_types::qos::DestinationOrderKind::BySourceTimestamp;
+        let endpoint = DiscoveredEndpoint {
+            guid: Guid::new(
+                GuidPrefix::new([4; 12]),
+                dds_types::guid::EntityId::new([0, 0, 1, 0x02]),
+            ),
+            topic_name: "RxoTopic".into(),
+            type_name: "RxoType".into(),
+            qos_writer: Some(writer_qos.clone()),
+            qos_reader: None,
+            partition: vec![],
+            unicast_locators: vec![],
+            metatraffic_unicast_locators: vec![],
+            multicast_locators: vec![],
+            type_info: None,
+            type_information_wire: None,
+        };
+        let bytes = sedp_to_plcdr(&endpoint, 0).unwrap();
+        let decoded = parse_sedp_packet(&bytes).unwrap();
+        let decoded_qos = decoded.qos_writer.expect("writer qos");
+        assert_eq!(decoded_qos.deadline.period.seconds, 10);
+        assert_eq!(decoded_qos.latency_budget.duration.nanoseconds, 500_000_000);
+        assert_eq!(decoded_qos.ownership.kind, dds_types::qos::OwnershipKind::Exclusive);
+        assert_eq!(
+            decoded_qos.destination_order.kind,
+            dds_types::qos::DestinationOrderKind::BySourceTimestamp
+        );
     }
 
     #[test]
