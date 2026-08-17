@@ -888,6 +888,8 @@ pub type DataReaderQos = DataReader;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     // ── Default value tests (all per-spec) ──

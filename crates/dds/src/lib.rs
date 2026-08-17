@@ -4,6 +4,7 @@
 //! Use feature flags to control which components are included.
 
 #![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(
     rust_2018_idioms,
     nonstandard_style,
@@ -46,6 +47,7 @@ pub use dds_security as security;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

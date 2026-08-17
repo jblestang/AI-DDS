@@ -23,7 +23,6 @@
     clippy::std_instead_of_core,
     clippy::std_instead_of_alloc,
     clippy::alloc_instead_of_core,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::missing_inline_in_public_items,
     clippy::question_mark_used,
@@ -78,10 +77,12 @@
     clippy::items_after_statements,
     reason = "DDS Security implementation uses standard library collections, standard returns, and common mathematical conversions."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use aes_gcm::aead::{Aead as _, KeyInit as _};
 use aes_gcm::{Aes128Gcm, Nonce};
 use dds_cdr::{CdrDeserialize, CdrDeserializer, CdrResult, CdrSerialize, CdrSerializer};
+use dds_types::sync::lock;
 use rand::RngCore as _;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -467,7 +468,7 @@ impl Authentication for BuiltinAuthentication {
         _remote_identity: &IdentityHandle,
     ) -> SecurityResult<(HandshakeHandle, HandshakeToken)> {
         let handle = {
-            let mut id = self.next_handle.lock().unwrap();
+            let mut id = lock(&self.next_handle);
             let ret = HandshakeHandle(*id);
             *id += 1;
             ret
@@ -478,20 +479,14 @@ impl Authentication for BuiltinAuthentication {
         let public_key = secret.public_key();
         let pub_bytes = public_key.to_sec1_bytes().to_vec();
 
-        self.handshake_states
-            .lock()
-            .unwrap()
-            .insert(handle, HandshakeState::SentRequest);
-        self.handshake_secrets
-            .lock()
-            .unwrap()
-            .insert(handle, secret);
+        lock(&self.handshake_states).insert(handle, HandshakeState::SentRequest);
+        lock(&self.handshake_secrets).insert(handle, secret);
 
         let mut properties = vec![
             ("step".to_owned(), "Request".to_owned()),
             ("pub_key".to_owned(), to_hex(&pub_bytes)),
         ];
-        if let Some(ref cert_bytes) = *self.identity_cert.lock().unwrap() {
+        if let Some(ref cert_bytes) = *lock(&self.identity_cert) {
             properties.push(("identity_certificate".to_owned(), to_hex(cert_bytes)));
         }
 
@@ -505,7 +500,7 @@ impl Authentication for BuiltinAuthentication {
 
     fn get_shared_secret(&self, handshake: &HandshakeHandle) -> SecurityResult<SharedSecretHandle> {
         let bytes = {
-            let secrets = self.shared_secrets.lock().unwrap();
+            let secrets = lock(&self.shared_secrets);
             secrets.get(handshake).ok_or_else(|| {
                 SecurityError::KeyExchangeFailed("shared secret not computed yet".into())
             })?.clone()
@@ -541,7 +536,7 @@ impl Authentication for BuiltinAuthentication {
                     .map_err(|e| SecurityError::AuthenticationFailed(e.to_string()))?;
 
                 // Verify remote certificate chain if CA is loaded
-                if let Some(ref ca_bytes) = *self.ca_cert.lock().unwrap() {
+                if let Some(ref ca_bytes) = *lock(&self.ca_cert) {
                     if let Some((_, remote_cert_hex)) = incoming_token.properties.iter().find(|(k, _)| k == "identity_certificate") {
                         let remote_cert_bytes = from_hex(remote_cert_hex).map_err(SecurityError::AuthenticationFailed)?;
                         verify_cert_chain(ca_bytes, &remote_cert_bytes)?;
@@ -550,7 +545,7 @@ impl Authentication for BuiltinAuthentication {
 
                 // Responder side generates its own handle
                 let new_handle = {
-                    let mut id = self.next_handle.lock().unwrap();
+                    let mut id = lock(&self.next_handle);
                     let ret = HandshakeHandle(*id);
                     *id += 1;
                     ret
@@ -565,20 +560,14 @@ impl Authentication for BuiltinAuthentication {
                 let shared = secret.diffie_hellman(&remote_pub);
                 let shared_bytes = shared.raw_secret_bytes().to_vec();
 
-                self.handshake_states
-                    .lock()
-                    .unwrap()
-                    .insert(new_handle, HandshakeState::Active);
-                self.shared_secrets
-                    .lock()
-                    .unwrap()
-                    .insert(new_handle, shared_bytes);
+                lock(&self.handshake_states).insert(new_handle, HandshakeState::Active);
+                lock(&self.shared_secrets).insert(new_handle, shared_bytes);
 
                 let mut reply_props = vec![
                     ("step".to_owned(), "Reply".to_owned()),
                     ("pub_key".to_owned(), to_hex(&pub_bytes)),
                 ];
-                if let Some(ref cert_bytes) = *self.identity_cert.lock().unwrap() {
+                if let Some(ref cert_bytes) = *lock(&self.identity_cert) {
                     reply_props.push(("identity_certificate".to_owned(), to_hex(cert_bytes)));
                 }
 
@@ -604,7 +593,7 @@ impl Authentication for BuiltinAuthentication {
                     .map_err(|e| SecurityError::AuthenticationFailed(e.to_string()))?;
 
                 // Verify remote certificate chain if CA is loaded
-                if let Some(ref ca_bytes) = *self.ca_cert.lock().unwrap() {
+                if let Some(ref ca_bytes) = *lock(&self.ca_cert) {
                     if let Some((_, remote_cert_hex)) = incoming_token.properties.iter().find(|(k, _)| k == "identity_certificate") {
                         let remote_cert_bytes = from_hex(remote_cert_hex).map_err(SecurityError::AuthenticationFailed)?;
                         verify_cert_chain(ca_bytes, &remote_cert_bytes)?;
@@ -613,7 +602,7 @@ impl Authentication for BuiltinAuthentication {
 
                 // Initiator side processes Responder's reply
                 let secret = {
-                    let mut states = self.handshake_states.lock().unwrap();
+                    let mut states = lock(&self.handshake_states);
 
                     let state = states.get(handshake).ok_or_else(|| {
                         SecurityError::AuthenticationFailed("invalid handshake handle".into())
@@ -626,7 +615,7 @@ impl Authentication for BuiltinAuthentication {
                     }
 
                     let secret = {
-                        let mut secrets = self.handshake_secrets.lock().unwrap();
+                        let mut secrets = lock(&self.handshake_secrets);
                         secrets.remove(handshake).ok_or_else(|| {
                             SecurityError::AuthenticationFailed("missing private secret".into())
                         })?
@@ -640,10 +629,7 @@ impl Authentication for BuiltinAuthentication {
                 let shared = secret.diffie_hellman(&remote_pub);
                 let shared_bytes = shared.raw_secret_bytes().to_vec();
 
-                self.shared_secrets
-                    .lock()
-                    .unwrap()
-                    .insert(*handshake, shared_bytes);
+                lock(&self.shared_secrets).insert(*handshake, shared_bytes);
 
                 // Final token confirming handshake completion
                 let token = HandshakeToken {
@@ -656,7 +642,7 @@ impl Authentication for BuiltinAuthentication {
             "Final" => {
                 // Responder processes Final handshake step
                 let state = {
-                    let states = self.handshake_states.lock().unwrap();
+                    let states = lock(&self.handshake_states);
                     *states.get(handshake).ok_or_else(|| {
                         SecurityError::AuthenticationFailed("invalid handshake handle".into())
                     })?
@@ -682,7 +668,7 @@ impl Authentication for BuiltinAuthentication {
         participant_qos: &dds_types::qos::DomainParticipantQos,
     ) -> SecurityResult<(IdentityHandle, IdentityToken)> {
         let handle = {
-            let mut id = self.next_handle.lock().unwrap();
+            let mut id = lock(&self.next_handle);
             let ret = IdentityHandle(*id);
             *id += 1;
             ret
@@ -705,7 +691,7 @@ impl Authentication for BuiltinAuthentication {
             };
             let der_bytes = parse_pem(&pem_content)?;
             subject = parse_x509_subject(&der_bytes)?;
-            *self.identity_cert.lock().unwrap() = Some(der_bytes);
+            *lock(&self.identity_cert) = Some(der_bytes);
         }
 
         if let Some(key_prop) = key_opt {
@@ -718,7 +704,7 @@ impl Authentication for BuiltinAuthentication {
                     .map_err(|e| SecurityError::AuthenticationFailed(format!("Read key file failed: {e}")))?
             };
             let der_bytes = parse_pem(&pem_content)?;
-            *self.private_key.lock().unwrap() = Some(der_bytes);
+            *lock(&self.private_key) = Some(der_bytes);
         }
         if let Some(ca_prop) = ca_opt {
             let pem_content = if let Some(raw) = ca_prop.strip_prefix("data:,") {
@@ -730,7 +716,7 @@ impl Authentication for BuiltinAuthentication {
                     .map_err(|e| SecurityError::AuthenticationFailed(format!("Read CA file failed: {e}")))?
             };
             let der_bytes = parse_pem(&pem_content)?;
-            *self.ca_cert.lock().unwrap() = Some(der_bytes);
+            *lock(&self.ca_cert) = Some(der_bytes);
         }
 
         let token = IdentityToken {
@@ -757,10 +743,7 @@ pub struct BuiltinAccessControl {
 impl BuiltinAccessControl {
     /// Load dummy CMS XML credentials mapping for tests
     pub fn grant_permissions(&self, handle: &PermissionsHandle, authorized_topics: Vec<String>) {
-        self.permissions
-            .lock()
-            .unwrap()
-            .insert(*handle, authorized_topics);
+        lock(&self.permissions).insert(*handle, authorized_topics);
     }
 
     #[must_use]
@@ -785,7 +768,7 @@ impl AccessControl for BuiltinAccessControl {
         topic_name: &str,
     ) -> SecurityResult<bool> {
         let authorized = {
-            let perms = self.permissions.lock().unwrap();
+            let perms = lock(&self.permissions);
             perms.get(permissions)
                 .ok_or_else(|| SecurityError::AccessDenied("permissions not loaded".into()))?
                 .clone()
@@ -800,7 +783,7 @@ impl AccessControl for BuiltinAccessControl {
         topic_name: &str,
     ) -> SecurityResult<bool> {
         let authorized = {
-            let perms = self.permissions.lock().unwrap();
+            let perms = lock(&self.permissions);
             perms.get(permissions)
                 .ok_or_else(|| SecurityError::AccessDenied("permissions not loaded".into()))?
                 .clone()
@@ -823,7 +806,7 @@ impl AccessControl for BuiltinAccessControl {
         }
 
         let handle = {
-            let mut id = self.next_handle.lock().unwrap();
+            let mut id = lock(&self.next_handle);
             let ret = PermissionsHandle(*id);
             *id += 1;
             ret
@@ -837,7 +820,7 @@ impl AccessControl for BuiltinAccessControl {
             .map(|(_, v)| v.clone())
             .collect();
 
-        self.permissions.lock().unwrap().insert(handle, topics);
+        lock(&self.permissions).insert(handle, topics);
 
         Ok(handle)
     }
@@ -880,7 +863,7 @@ impl Cryptography for BuiltinCryptography {
         remote_participant: &ParticipantCryptoHandle,
     ) -> SecurityResult<Vec<u8>> {
         let key_bytes = {
-            let keys = self.keys.lock().unwrap();
+            let keys = lock(&self.keys);
             *keys.get(remote_participant)
                 .ok_or_else(|| SecurityError::CryptoError("crypto key not registered".into()))?
         };
@@ -909,7 +892,7 @@ impl Cryptography for BuiltinCryptography {
         remote_participant: &ParticipantCryptoHandle,
     ) -> SecurityResult<(Vec<u8>, CryptoHeader, CryptoFooter)> {
         let key_bytes = {
-            let keys = self.keys.lock().unwrap();
+            let keys = lock(&self.keys);
             *keys.get(remote_participant)
                 .ok_or_else(|| SecurityError::CryptoError("crypto key not registered".into()))?
         };
@@ -953,13 +936,13 @@ impl Cryptography for BuiltinCryptography {
         _local_identity: &IdentityHandle,
     ) -> SecurityResult<ParticipantCryptoHandle> {
         let handle = {
-            let mut id = self.next_handle.lock().unwrap();
+            let mut id = lock(&self.next_handle);
             let ret = ParticipantCryptoHandle(*id);
             *id += 1;
             ret
         };
         // Local fallback key
-        self.keys.lock().unwrap().insert(handle, [0_u8; AES128_KEY_LENGTH]);
+        lock(&self.keys).insert(handle, [0_u8; AES128_KEY_LENGTH]);
         Ok(handle)
     }
 
@@ -970,7 +953,7 @@ impl Cryptography for BuiltinCryptography {
         shared_secret: &SharedSecretHandle,
     ) -> SecurityResult<ParticipantCryptoHandle> {
         let handle = {
-            let mut id = self.next_handle.lock().unwrap();
+            let mut id = lock(&self.next_handle);
             let ret = ParticipantCryptoHandle(*id);
             *id += 1;
             ret
@@ -982,13 +965,13 @@ impl Cryptography for BuiltinCryptography {
         let copy_len = std::cmp::min(key.len(), shared.len());
         key[..copy_len].copy_from_slice(&shared[..copy_len]);
         
-        self.keys.lock().unwrap().insert(handle, key);
+        lock(&self.keys).insert(handle, key);
         Ok(handle)
     }
 }
 
 fn from_hex(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
+    if s.len() % 2 != 0 {
         return Err("odd hex string length".into());
     }
     let mut res = Vec::with_capacity(s.len() / 2);
@@ -1030,7 +1013,7 @@ pub fn base64_decode(input: &str) -> SecurityResult<Vec<u8>> {
     }
     
     let clean: Vec<u8> = input.bytes().filter(|&b| !b.is_ascii_whitespace()).collect();
-    if !clean.len().is_multiple_of(4) {
+    if clean.len() % 4 != 0 {
         return Err(SecurityError::AuthenticationFailed("Invalid base64 length".into()));
     }
     
@@ -1133,6 +1116,8 @@ pub fn verify_cms_signature(doc: &SignedDocument) -> SecurityResult<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     #[test]

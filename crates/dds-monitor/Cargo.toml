@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 dds-types = { workspace = true }
+dds-discovery = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }

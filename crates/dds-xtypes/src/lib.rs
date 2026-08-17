@@ -16,6 +16,19 @@
 )]
 
 pub mod dynamic;
+pub mod hashid;
+pub mod type_lookup;
+
+pub use dynamic::{Data, Reflect};
+pub use hashid::hashid;
+pub use type_lookup::{
+    handle_get_type_dependencies, handle_get_types, make_get_types_request, serve_type_lookup_request,
+    type_lookup_instance_name, RequestHeader, SampleIdentity, TypeIdentifierPair,
+    TypeIdentifierTypeObjectPair, TypeIdentifierWithDependencies, TypeIdentifierWithSize,
+    TypeLookupCall, TypeLookupGetTypeDependenciesIn, TypeLookupGetTypeDependenciesOut,
+    TypeLookupGetTypeDependenciesResult, TypeLookupGetTypesIn, TypeLookupGetTypesOut,
+    TypeLookupGetTypesResult, TypeLookupReply, TypeLookupRequest, TypeLookupReturn,
+};
 
 use dds_cdr::{CdrDeserialize, CdrDeserializer, CdrError, CdrResult, CdrSerialize, CdrSerializer};
 use sha2::{Digest as _, Sha256};
@@ -324,6 +337,19 @@ pub struct Member {
     pub type_id: TypeIdentifier,
 }
 
+impl Member {
+    /// Create a structure member with the given name, type, and key/optional flags.
+    #[must_use]
+    pub fn new(name: String, type_id: TypeIdentifier, is_key: bool, is_optional: bool) -> Self {
+        Self {
+            is_key,
+            is_optional,
+            name,
+            type_id,
+        }
+    }
+}
+
 impl CdrSerialize for Member {
     #[inline]
     fn serialize(&self, serializer: &mut CdrSerializer) -> CdrResult<()> {
@@ -615,6 +641,8 @@ pub fn is_assignable_from(receiver: &TypeObject, sender: &TypeObject) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     #[test]

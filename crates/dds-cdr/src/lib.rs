@@ -182,6 +182,11 @@ impl CdrSerializer {
         }
     }
 
+    /// Append raw bytes without alignment.
+    pub fn append_bytes(&mut self, bytes: &[u8]) {
+        self.buf.put_slice(bytes);
+    }
+
     /// Serialize a single octet (u8/i8).
     pub fn serialize_u8(&mut self, val: u8) {
         self.buf.put_u8(val);
@@ -292,15 +297,17 @@ impl CdrSerializer {
     }
 
     /// XCDR2: Write an Extended Member Header (EMHEADER).
-    /// Format: [1 bit (`MustUnderstand`) | 1 bit (Reserved) | 14 bits (Length) | 16 bits (`MemberId`)]
-    /// Or a larger version if length > 7. We'll use the short version for simplicity (assuming len < 65536).
+    /// Uses short form when length fits in 14 bits and member_id fits in 16 bits; long form (LC=4) otherwise.
     pub fn serialize_emheader(&mut self, member_id: u32, length: u32) {
         self.align(4);
-        // Short EMHEADER:
-        // [ 0 | 0 | Length (14 bits) | MemberId (16 bits) ]
-        // We'll write it as a u32
-        let header = ((length & 0x3FFF) << 16) | (member_id & 0xFFFF);
-        self.serialize_u32(header);
+        if length <= 0x3FFF && member_id <= 0xFFFF {
+            let header = ((length & 0x3FFF) << 16) | (member_id & 0xFFFF);
+            self.serialize_u32(header);
+        } else {
+            let header = (4_u32 << 28) | (member_id & 0x0FFF_FFFF);
+            self.serialize_u32(header);
+            self.serialize_u32(length);
+        }
     }
 }
 
@@ -330,6 +337,11 @@ impl<'a> CdrDeserializer<'a> {
     #[must_use]
     pub const fn offset(&self) -> usize {
         self.offset
+    }
+
+    /// Override payload endianness after reading an encapsulation header.
+    pub fn set_endianness(&mut self, endianness: Endianness) {
+        self.endianness = endianness;
     }
 
     /// Get the remaining unread bytes in the buffer.
@@ -570,13 +582,20 @@ impl<'a> CdrDeserializer<'a> {
         self.deserialize_u32()
     }
 
-    /// XCDR2: Read an Extended Member Header (EMHEADER)
-    /// Returns (`member_id`, length)
+    /// XCDR2: Read an Extended Member Header (EMHEADER).
+    /// Returns (`member_id`, length).
     pub fn deserialize_emheader(&mut self) -> CdrResult<(u32, u32)> {
         let header = self.deserialize_u32()?;
-        let length = (header >> 16) & 0x3FFF;
-        let member_id = header & 0xFFFF;
-        Ok((member_id, length))
+        let lc = (header >> 28) & 0x0F;
+        if lc == 4 {
+            let member_id = header & 0x0FFF_FFFF;
+            let length = self.deserialize_u32()?;
+            Ok((member_id, length))
+        } else {
+            let length = (header >> 16) & 0x3FFF;
+            let member_id = header & 0xFFFF;
+            Ok((member_id, length))
+        }
     }
 }
 
@@ -607,10 +626,9 @@ impl EncapsulationHeader {
 
     /// Write this encapsulation header to the serializer.
     pub fn serialize(&self, serializer: &mut CdrSerializer) {
-        let val = self.kind as u16;
-        // The encapsulation kind is always serialized in the endianness that matches the header itself,
-        // or as specified by the standard. But we align it to 2.
-        serializer.serialize_u16(val);
+        serializer.align(2);
+        // The encapsulation identifier is always big-endian on the wire (DDS CDR §10.2).
+        serializer.buf.put_u16(self.kind as u16);
         serializer.serialize_u8(self.options[0]);
         serializer.serialize_u8(self.options[1]);
     }
@@ -635,6 +653,7 @@ impl EncapsulationHeader {
         };
         let o0 = deserializer.deserialize_u8()?;
         let o1 = deserializer.deserialize_u8()?;
+        deserializer.set_endianness(kind.endianness());
         Ok(Self {
             kind,
             options: [o0, o1],
@@ -1025,6 +1044,8 @@ impl CdrDeserialize for InstanceHandle {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     #[test]
@@ -1088,6 +1109,7 @@ mod tests {
         let header = EncapsulationHeader::new(EncapsulationKind::CdrLe);
         let mut serializer = CdrSerializer::new(Endianness::LittleEndian);
         header.serialize(&mut serializer);
+        assert_eq!(serializer.bytes(), &[0x00, 0x01, 0x00, 0x00]);
 
         let mut deserializer = CdrDeserializer::new(serializer.bytes(), Endianness::LittleEndian);
         let parsed = EncapsulationHeader::deserialize(&mut deserializer).unwrap();
@@ -1194,5 +1216,42 @@ mod tests {
             .unwrap(),
             handle
         );
+    }
+
+    #[test]
+    fn test_xcdr2_dheader_emheader_roundtrip() {
+        let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        let dheader_offset = ser.write_dheader_placeholder();
+        ser.serialize_emheader(1, 4);
+        ser.serialize_u32(42);
+        ser.serialize_emheader(2, 6);
+        ser.serialize_str("hi");
+        ser.patch_dheader(dheader_offset);
+        let bytes = ser.into_bytes();
+
+        let mut de = CdrDeserializer::new(&bytes, Endianness::LittleEndian);
+        let dlen = de.deserialize_dheader().unwrap();
+        assert!(dlen > 0);
+        let (id1, len1) = de.deserialize_emheader().unwrap();
+        assert_eq!(id1, 1);
+        assert_eq!(len1, 4);
+        assert_eq!(de.deserialize_u32().unwrap(), 42);
+        let (id2, _len2) = de.deserialize_emheader().unwrap();
+        assert_eq!(id2, 2);
+        assert_eq!(de.deserialize_str().unwrap(), "hi");
+    }
+
+    #[test]
+    fn test_xcdr2_long_emheader_roundtrip() {
+        let mut ser = CdrSerializer::new(Endianness::LittleEndian);
+        let long_len = 20_000_u32;
+        ser.serialize_emheader(5, long_len);
+        ser.serialize_u32(99);
+        let bytes = ser.into_bytes();
+        let mut de = CdrDeserializer::new(&bytes, Endianness::LittleEndian);
+        let (id, len) = de.deserialize_emheader().unwrap();
+        assert_eq!(id, 5);
+        assert_eq!(len, long_len);
+        assert_eq!(de.deserialize_u32().unwrap(), 99);
     }
 }

@@ -51,7 +51,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -65,11 +64,13 @@
     clippy::large_stack_arrays,
     reason = "RTPS Wire Protocol implementation requires standard library conversions, standard returns, and UDP socket structures."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use byteorder::{BigEndian, ByteOrder as _, LittleEndian};
 use bytes::{BufMut as _, Bytes, BytesMut};
 use dds_types::guid::{EntityId, Guid, GuidPrefix, SequenceNumber};
 use dds_types::locator::Locator;
+use dds_types::sync::lock;
 use dds_types::time::Timestamp;
 use dds_types::vendor::VendorId;
 use dds_cdr::{CdrDeserialize as _, CdrSerialize as _};
@@ -141,7 +142,11 @@ pub const FLAG_LIVELINESS: u8 = 0x04;
 /// Submessage flag indicating invalid time
 pub const FLAG_INVALID_TIME: u8 = 0x02;
 
-/// Fixed length of Data submessage header (octetsToInlineQos)
+/// Octets from after the `octetsToInlineQos` field to inline QoS (readerId + writerId + writerSN).
+/// CycloneDDS sets this to 16; using 20 shifts the payload pointer and breaks PL-CDR deserialization.
+pub const DATA_OCTETS_TO_INLINE_QOS: u16 = 16;
+
+/// Bytes in a Data submessage before inline QoS / serialized payload (extraFlags through writerSN).
 pub const DATA_SUBMESSAGE_HEADER_LENGTH: u16 = 20;
 
 /// Fixed length of Heartbeat submessage header
@@ -221,7 +226,8 @@ impl RtpsHeader {
     #[must_use]
     pub const fn new(guid_prefix: GuidPrefix) -> Self {
         Self {
-            version: (2, 5),
+            // RTPS 2.1 wire header matches CycloneDDS/FastDDS discovery interop (see interop fixtures).
+            version: (2, 1),
             vendor_id: VendorId::THIS_IMPLEMENTATION,
             guid_prefix,
         }
@@ -348,6 +354,8 @@ pub struct Heartbeat {
     pub last_sn: SequenceNumber,
     /// Identifies the state of the writer.
     pub count: i32,
+    /// RTPS submessage flags (includes `FLAG_LIVELINESS` when asserting liveliness).
+    pub flags: u8,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -363,6 +371,8 @@ pub struct AckNack {
     pub reader_id: EntityId,
     /// Set of sequence numbers the reader has not received yet.
     pub reader_sn_state: Vec<SequenceNumber>,
+    /// When `reader_sn_state` is empty, pure-ACK all sequence numbers through this value.
+    pub ack_through: Option<SequenceNumber>,
     /// Identifies state of the reader.
     pub count: i32,
 }
@@ -385,6 +395,46 @@ pub struct Gap {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// NackFrag Submessage (RTPS §8.3.7.14)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `NackFrag` submessage sent by readers to request missing fragments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NackFrag {
+    /// Destination writer ID.
+    pub writer_id: EntityId,
+    /// Source reader ID.
+    pub reader_id: EntityId,
+    /// Sequence number of the fragmented sample.
+    pub writer_sn: SequenceNumber,
+    /// Base fragment number for the fragment bitmap.
+    pub fragment_starting_num: u32,
+    /// Fragment numbers the reader has not received.
+    pub fragment_state: Vec<u32>,
+    /// Identifies state of the reader.
+    pub count: i32,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// HeartbeatFrag Submessage (RTPS §8.3.7.15)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `HeartbeatFrag` submessage sent by writers to notify readers of available fragments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeartbeatFrag {
+    /// Destination reader ID.
+    pub reader_id: EntityId,
+    /// Source writer ID.
+    pub writer_id: EntityId,
+    /// Sequence number of the fragmented sample.
+    pub writer_sn: SequenceNumber,
+    /// Highest fragment number available in the writer cache.
+    pub last_fragment_num: u32,
+    /// Identifies state of the writer.
+    pub count: i32,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Representation of a full RTPS Submessage
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -395,7 +445,9 @@ pub enum Submessage {
     Data(Data),
     DataFrag(DataFrag),
     Heartbeat(Heartbeat),
+    HeartbeatFrag(HeartbeatFrag),
     AckNack(AckNack),
+    NackFrag(NackFrag),
     Gap(Gap),
     InfoSrc(InfoSrc),
     InfoDst(InfoDst),
@@ -518,11 +570,21 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                 }
                 SubmessageKind::InfoReply => {
                     let multicast_flag = (flags & FLAG_MULTICAST) != 0;
-                    // For simplicity, we just stub this out as it's complex to parse locator lists without dds-rtps locator list parser
-                    // A proper implementation would parse the locator lists.
+                    let mut loc_offset = 4; // skip reserved long
+                    let unicast_locator_list =
+                        parse_locator_list(sub_payload, &mut loc_offset, little_endian)
+                            .unwrap_or_default();
+                    let multicast_locator_list = if multicast_flag {
+                        Some(
+                            parse_locator_list(sub_payload, &mut loc_offset, little_endian)
+                                .unwrap_or_default(),
+                        )
+                    } else {
+                        None
+                    };
                     submessages.push(Submessage::InfoReply(InfoReply {
-                        unicast_locator_list: vec![],
-                        multicast_locator_list: multicast_flag.then(|| vec![]),
+                        unicast_locator_list,
+                        multicast_locator_list,
                     }));
                 }
                 SubmessageKind::Data => {
@@ -689,6 +751,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             first_sn,
                             last_sn,
                             count,
+                            flags,
                         }));
                     }
                 }
@@ -703,6 +766,31 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                         let writer_id = EntityId::new(writer_bytes);
 
                         let mut set_offset = 8;
+                        let ack_through = if sub_payload.len() >= 20 {
+                            let base_high = if little_endian {
+                                LittleEndian::read_i32(&sub_payload[8..12])
+                            } else {
+                                BigEndian::read_i32(&sub_payload[8..12])
+                            };
+                            let base_low = if little_endian {
+                                LittleEndian::read_u32(&sub_payload[12..16])
+                            } else {
+                                BigEndian::read_u32(&sub_payload[12..16])
+                            };
+                            let base = SequenceNumber::from_high_low(base_high, base_low);
+                            let num_bits = if little_endian {
+                                LittleEndian::read_u32(&sub_payload[16..20])
+                            } else {
+                                BigEndian::read_u32(&sub_payload[16..20])
+                            };
+                            if num_bits == 0 && base.value() > 0 {
+                                Some(SequenceNumber::new(base.value() - 1))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
                         if let Ok(reader_sn_state) = deserialize_sequence_number_set(
                             sub_payload,
                             &mut set_offset,
@@ -722,6 +810,7 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                                 writer_id,
                                 reader_id,
                                 reader_sn_state,
+                                ack_through,
                                 count,
                             }));
                         }
@@ -765,6 +854,105 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                         }));
                     }
                 }
+                SubmessageKind::NackFrag => {
+                    if sub_payload.len() >= 24 {
+                        let mut reader_bytes = [0_u8; 4];
+                        reader_bytes.copy_from_slice(&sub_payload[0..4]);
+                        let reader_id = EntityId::new(reader_bytes);
+
+                        let mut writer_bytes = [0_u8; 4];
+                        writer_bytes.copy_from_slice(&sub_payload[4..8]);
+                        let writer_id = EntityId::new(writer_bytes);
+
+                        let sn_high = if little_endian {
+                            LittleEndian::read_i32(&sub_payload[8..12])
+                        } else {
+                            BigEndian::read_i32(&sub_payload[8..12])
+                        };
+                        let sn_low = if little_endian {
+                            LittleEndian::read_u32(&sub_payload[12..16])
+                        } else {
+                            BigEndian::read_u32(&sub_payload[12..16])
+                        };
+                        let writer_sn = SequenceNumber::from_high_low(sn_high, sn_low);
+
+                        let fragment_starting_num = if little_endian {
+                            LittleEndian::read_u32(&sub_payload[16..20])
+                        } else {
+                            BigEndian::read_u32(&sub_payload[16..20])
+                        };
+
+                        let mut set_offset = 20;
+                        let fragment_state = deserialize_fragment_number_set(
+                            &sub_payload,
+                            &mut set_offset,
+                            little_endian,
+                        )
+                        .unwrap_or_default();
+
+                        let count = if sub_payload.len() >= set_offset + 4 {
+                            if little_endian {
+                                LittleEndian::read_i32(&sub_payload[set_offset..set_offset + 4])
+                            } else {
+                                BigEndian::read_i32(&sub_payload[set_offset..set_offset + 4])
+                            }
+                        } else {
+                            0
+                        };
+
+                        submessages.push(Submessage::NackFrag(NackFrag {
+                            reader_id,
+                            writer_id,
+                            writer_sn,
+                            fragment_starting_num,
+                            fragment_state,
+                            count,
+                        }));
+                    }
+                }
+                SubmessageKind::HeartbeatFrag => {
+                    if sub_payload.len() >= 24 {
+                        let mut reader_bytes = [0_u8; 4];
+                        reader_bytes.copy_from_slice(&sub_payload[0..4]);
+                        let reader_id = EntityId::new(reader_bytes);
+
+                        let mut writer_bytes = [0_u8; 4];
+                        writer_bytes.copy_from_slice(&sub_payload[4..8]);
+                        let writer_id = EntityId::new(writer_bytes);
+
+                        let sn_high = if little_endian {
+                            LittleEndian::read_i32(&sub_payload[8..12])
+                        } else {
+                            BigEndian::read_i32(&sub_payload[8..12])
+                        };
+                        let sn_low = if little_endian {
+                            LittleEndian::read_u32(&sub_payload[12..16])
+                        } else {
+                            BigEndian::read_u32(&sub_payload[12..16])
+                        };
+                        let writer_sn = SequenceNumber::from_high_low(sn_high, sn_low);
+
+                        let last_fragment_num = if little_endian {
+                            LittleEndian::read_u32(&sub_payload[16..20])
+                        } else {
+                            BigEndian::read_u32(&sub_payload[16..20])
+                        };
+
+                        let count = if little_endian {
+                            LittleEndian::read_i32(&sub_payload[20..24])
+                        } else {
+                            BigEndian::read_i32(&sub_payload[20..24])
+                        };
+
+                        submessages.push(Submessage::HeartbeatFrag(HeartbeatFrag {
+                            reader_id,
+                            writer_id,
+                            writer_sn,
+                            last_fragment_num,
+                            count,
+                        }));
+                    }
+                }
                 _ => {
                     submessages.push(Submessage::Unsupported(kind));
                 }
@@ -772,6 +960,8 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
         }
 
         offset = submessage_end;
+        // Submessages are aligned to 4-byte boundaries from the start of the message.
+        offset += (4 - (offset % 4)) % 4;
     }
 
     Ok((header, submessages))
@@ -796,6 +986,7 @@ pub fn serialize_rtps_message(
     for sub in submessages {
         let is_le = endian == Endianness::LittleEndian;
         let flags = u8::from(is_le);
+        let start_len = buf.len();
 
         match sub {
             Submessage::InfoTs(info) => {
@@ -850,7 +1041,7 @@ pub fn serialize_rtps_message(
                 if is_le {
                     buf.put_u16_le(submessage_len as u16);
                     buf.put_u16_le(0); // extraFlags
-                    buf.put_u16_le(DATA_SUBMESSAGE_HEADER_LENGTH);
+                    buf.put_u16_le(DATA_OCTETS_TO_INLINE_QOS);
                     buf.put_slice(data.reader_id.as_bytes());
                     buf.put_slice(data.writer_id.as_bytes());
                     let (high, low) = data.writer_sn.to_high_low();
@@ -859,7 +1050,7 @@ pub fn serialize_rtps_message(
                 } else {
                     buf.put_u16(submessage_len as u16);
                     buf.put_u16(0);
-                    buf.put_u16(DATA_SUBMESSAGE_HEADER_LENGTH);
+                    buf.put_u16(DATA_OCTETS_TO_INLINE_QOS);
                     buf.put_slice(data.reader_id.as_bytes());
                     buf.put_slice(data.writer_id.as_bytes());
                     let (high, low) = data.writer_sn.to_high_low();
@@ -909,7 +1100,7 @@ pub fn serialize_rtps_message(
             }
             Submessage::Heartbeat(hb) => {
                 buf.put_u8(SubmessageKind::Heartbeat as u8);
-                buf.put_u8(flags);
+                buf.put_u8(hb.flags | flags);
 
                 if is_le {
                     buf.put_u16_le(28); // submessage size
@@ -940,7 +1131,15 @@ pub fn serialize_rtps_message(
                 buf.put_u8(flags);
 
                 let mut sns_buf = BytesMut::new();
-                serialize_sequence_number_set(&mut sns_buf, &ack.reader_sn_state, endian);
+                if ack.reader_sn_state.is_empty() {
+                    if let Some(through) = ack.ack_through {
+                        serialize_sequence_number_set_ack_through(&mut sns_buf, through, endian);
+                    } else {
+                        serialize_sequence_number_set(&mut sns_buf, &ack.reader_sn_state, endian);
+                    }
+                } else {
+                    serialize_sequence_number_set(&mut sns_buf, &ack.reader_sn_state, endian);
+                }
 
                 let submessage_len = 4 + 4 + sns_buf.len() + 4; // readerId + writerId + sn_state + count
                 if is_le {
@@ -983,7 +1182,119 @@ pub fn serialize_rtps_message(
                     buf.put_slice(&sns_buf);
                 }
             }
+            Submessage::InfoReply(info) => {
+                buf.put_u8(SubmessageKind::InfoReply as u8);
+                let mut reply_flags = flags;
+                if info.multicast_locator_list.is_some() {
+                    reply_flags |= FLAG_MULTICAST;
+                }
+                buf.put_u8(reply_flags);
+
+                let mut payload = BytesMut::new();
+                if is_le {
+                    payload.put_u32_le(0); // reserved
+                } else {
+                    payload.put_u32(0);
+                }
+                serialize_locator_list(&mut payload, &info.unicast_locator_list, endian);
+                if let Some(ref mcast) = info.multicast_locator_list {
+                    serialize_locator_list(&mut payload, mcast, endian);
+                }
+
+                if is_le {
+                    buf.put_u16_le(payload.len() as u16);
+                } else {
+                    buf.put_u16(payload.len() as u16);
+                }
+                buf.put_slice(&payload);
+            }
+            Submessage::NackFrag(nf) => {
+                buf.put_u8(SubmessageKind::NackFrag as u8);
+                buf.put_u8(flags);
+
+                let mut frag_buf = BytesMut::new();
+                serialize_fragment_number_set(&mut frag_buf, nf.fragment_starting_num, &nf.fragment_state, endian);
+
+                let submessage_len = 4 + 4 + 8 + 4 + frag_buf.len() + 4;
+                let (sn_high, sn_low) = nf.writer_sn.to_high_low();
+
+                if is_le {
+                    buf.put_u16_le(submessage_len as u16);
+                    buf.put_slice(nf.reader_id.as_bytes());
+                    buf.put_slice(nf.writer_id.as_bytes());
+                    buf.put_i32_le(sn_high);
+                    buf.put_u32_le(sn_low);
+                    buf.put_u32_le(nf.fragment_starting_num);
+                    buf.put_slice(&frag_buf);
+                    buf.put_i32_le(nf.count);
+                } else {
+                    buf.put_u16(submessage_len as u16);
+                    buf.put_slice(nf.reader_id.as_bytes());
+                    buf.put_slice(nf.writer_id.as_bytes());
+                    buf.put_i32(sn_high);
+                    buf.put_u32(sn_low);
+                    buf.put_u32(nf.fragment_starting_num);
+                    buf.put_slice(&frag_buf);
+                    buf.put_i32(nf.count);
+                }
+            }
+            Submessage::HeartbeatFrag(hbf) => {
+                buf.put_u8(SubmessageKind::HeartbeatFrag as u8);
+                buf.put_u8(flags);
+
+                let (sn_high, sn_low) = hbf.writer_sn.to_high_low();
+                if is_le {
+                    buf.put_u16_le(24);
+                    buf.put_slice(hbf.reader_id.as_bytes());
+                    buf.put_slice(hbf.writer_id.as_bytes());
+                    buf.put_i32_le(sn_high);
+                    buf.put_u32_le(sn_low);
+                    buf.put_u32_le(hbf.last_fragment_num);
+                    buf.put_i32_le(hbf.count);
+                } else {
+                    buf.put_u16(24);
+                    buf.put_slice(hbf.reader_id.as_bytes());
+                    buf.put_slice(hbf.writer_id.as_bytes());
+                    buf.put_i32(sn_high);
+                    buf.put_u32(sn_low);
+                    buf.put_u32(hbf.last_fragment_num);
+                    buf.put_i32(hbf.count);
+                }
+            }
+            Submessage::InfoSrc(info) => {
+                buf.put_u8(SubmessageKind::InfoSrc as u8);
+                buf.put_u8(flags);
+                if is_le {
+                    buf.put_u16_le(20);
+                    buf.put_u8(info.protocol_version.0);
+                    buf.put_u8(info.protocol_version.1);
+                    buf.put_slice(&info.vendor_id.0);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                } else {
+                    buf.put_u16(20);
+                    buf.put_u8(info.protocol_version.0);
+                    buf.put_u8(info.protocol_version.1);
+                    buf.put_slice(&info.vendor_id.0);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                }
+            }
+            Submessage::InfoDst(info) => {
+                buf.put_u8(SubmessageKind::InfoDst as u8);
+                buf.put_u8(flags);
+                if is_le {
+                    buf.put_u16_le(12);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                } else {
+                    buf.put_u16(12);
+                    buf.put_slice(info.guid_prefix.as_bytes());
+                }
+            }
             _ => {}
+        }
+
+        // RTPS submessages must be 4-byte aligned relative to the message start.
+        while (buf.len() - start_len) % 4 != 0 {
+            buf.put_u8(0);
         }
     }
 
@@ -1073,7 +1384,7 @@ impl RtpsEngine {
         transport: &UdpTransport,
         encrypt_fn: &Option<Arc<dyn Fn(&[u8], GuidPrefix) -> Option<Vec<u8>> + Send + Sync>>,
     ) {
-        let mut w = writer.lock().unwrap();
+        let mut w = lock(writer);
         let guid_prefix = w.guid.prefix;
 
         // Collect indices and unsent changes without borrowing proxies mutably yet
@@ -1093,6 +1404,20 @@ impl RtpsEngine {
             }
         }
 
+        if std::env::var("AIDDS_RTPS_DEBUG").is_ok() && (proxy_count > 0 || !w.writer_cache.get_changes().is_empty()) {
+            let cache_sns: Vec<_> = w.writer_cache.get_changes().iter().map(|c| c.sequence_number.0).collect();
+            let proxy_sns: Vec<_> = w.reader_proxies.iter().map(|p| p.next_unsent_sn.0).collect();
+            eprintln!(
+                "[rtps-engine] writer={:?} proxies={} cache={} cache_sns={:?} proxy_next_sn={:?} to_send_batches={}",
+                w.guid.entity_id,
+                proxy_count,
+                w.writer_cache.get_changes().len(),
+                cache_sns,
+                proxy_sns,
+                to_send.len()
+            );
+        }
+
         for (idx, changes) in to_send {
             let reader_id = w.reader_proxies[idx].remote_reader_guid.entity_id;
             let writer_id = w.guid.entity_id;
@@ -1104,7 +1429,6 @@ impl RtpsEngine {
                 .collect();
 
             let header = RtpsHeader::new(guid_prefix);
-            let mut max_sn = w.reader_proxies[idx].next_unsent_sn;
 
             let remote_prefix = w.reader_proxies[idx].remote_reader_guid.prefix;
 
@@ -1121,6 +1445,9 @@ impl RtpsEngine {
 
                 let payload_bytes = bytes::Bytes::from(raw_bytes);
 
+                let info_dst = || Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                });
                 if payload_bytes.len() > max_payload {
                     let total_size = payload_bytes.len();
                     let num_frags = total_size.div_ceil(max_payload);
@@ -1141,6 +1468,7 @@ impl RtpsEngine {
                         };
 
                         let subs = [
+                            info_dst(),
                             Submessage::InfoTs(InfoTs { timestamp: change.source_timestamp }),
                             Submessage::DataFrag(df),
                         ];
@@ -1151,6 +1479,7 @@ impl RtpsEngine {
                     }
                 } else {
                     let subs = [
+                        info_dst(),
                         Submessage::InfoTs(InfoTs { timestamp: change.source_timestamp }),
                         Submessage::Data(Data {
                             reader_id,
@@ -1161,15 +1490,31 @@ impl RtpsEngine {
                         }),
                     ];
                     let msg = serialize_rtps_message(&header, &subs, Endianness::LittleEndian);
-                    for locator in &locators {
-                        let _ = transport.send(&msg, locator);
+                    if locators.is_empty() {
+                        if std::env::var("AIDDS_RTPS_DEBUG").is_ok() {
+                            eprintln!(
+                                "[rtps-engine] drop DATA sn={} — no locators for reader {:?}",
+                                change.sequence_number.0,
+                                reader_id
+                            );
+                        }
+                    } else {
+                        if std::env::var("AIDDS_RTPS_DEBUG").is_ok() {
+                            let local_port = transport.local_port().unwrap_or(0);
+                            eprintln!(
+                                "[rtps-engine] send DATA sn={} bytes={} from_port={} to locators {:?}",
+                                change.sequence_number.0,
+                                msg.len(),
+                                local_port,
+                                locators
+                            );
+                        }
+                        for locator in &locators {
+                            let _ = transport.send(&msg, locator);
+                        }
                     }
                 }
-                if change.sequence_number >= max_sn {
-                    max_sn = SequenceNumber::new(change.sequence_number.value() + 1);
-                }
             }
-            w.reader_proxies[idx].next_unsent_sn = max_sn;
         }
 
         // Send Heartbeat to all matched reader proxies to drive reliable transfer state
@@ -1194,13 +1539,41 @@ impl RtpsEngine {
                 first_sn,
                 last_sn,
                 count,
+                flags: FLAG_LIVELINESS,
             };
 
-            let subs = [Submessage::Heartbeat(hb)];
+            let remote_prefix = w.reader_proxies[idx].remote_reader_guid.prefix;
+            let subs = [
+                Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                Submessage::Heartbeat(hb),
+            ];
             let header = RtpsHeader::new(guid_prefix);
             let msg = serialize_rtps_message(&header, &subs, Endianness::LittleEndian);
             for locator in &locators {
                 let _ = transport.send(&msg, locator);
+            }
+            // Also send an undirected Heartbeat (reader_id UNKNOWN) for stacks like OpenDDS
+            // that complete passive transport association on the first HB.
+            let undirected_hb = Heartbeat {
+                reader_id: EntityId::UNKNOWN,
+                writer_id,
+                first_sn,
+                last_sn,
+                count,
+                flags: FLAG_LIVELINESS | FLAG_FINAL,
+            };
+            let undirected_subs = [
+                Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                Submessage::Heartbeat(undirected_hb),
+            ];
+            let undirected_msg =
+                serialize_rtps_message(&header, &undirected_subs, Endianness::LittleEndian);
+            for locator in &locators {
+                let _ = transport.send(&undirected_msg, locator);
             }
         }
     }
@@ -1232,11 +1605,13 @@ impl HistoryCache {
         }
     }
 
-    pub fn add_change(&mut self, change: CacheChange) {
-        // Enforce max_samples_per_instance
+    pub fn add_change(&mut self, change: CacheChange) -> bool {
         if self.max_samples_per_instance != dds_types::qos::LENGTH_UNLIMITED
             && self.changes.len() >= self.max_samples_per_instance as usize
         {
+            if matches!(self.history_kind, dds_types::qos::HistoryKind::KeepAll) {
+                return false;
+            }
             self.changes.remove(0);
         }
 
@@ -1254,6 +1629,7 @@ impl HistoryCache {
                 self.changes.remove(0);
             }
         }
+        true
     }
 
     pub fn remove_change(&mut self, sequence_number: SequenceNumber) {
@@ -1324,6 +1700,144 @@ impl StatefulWriter {
     pub fn matched_reader_remove(&mut self, reader_guid: &Guid) {
         self.reader_proxies
             .retain(|p| &p.remote_reader_guid != reader_guid);
+    }
+
+    /// Apply an AckNack from a matched reader: advance `next_unsent_sn` on pure ACK
+    /// and return any missing samples that need retransmission.
+    #[must_use]
+    pub fn apply_reader_acknack(
+        &mut self,
+        ack: &AckNack,
+        remote_reader_prefix: GuidPrefix,
+    ) -> Vec<CacheChange> {
+        let mut to_retransmit = Vec::new();
+        let remote_reader = Guid::new(remote_reader_prefix, ack.reader_id);
+        for proxy in &mut self.reader_proxies {
+            if proxy.remote_reader_guid != remote_reader {
+                continue;
+            }
+            if let Some(through) = ack.ack_through {
+                let new_sn = SequenceNumber::new(through.value() + 1);
+                if new_sn > proxy.next_unsent_sn {
+                    proxy.next_unsent_sn = new_sn;
+                }
+            }
+            for sn in &ack.reader_sn_state {
+                if let Some(change) = self
+                    .writer_cache
+                    .get_changes()
+                    .iter()
+                    .find(|c| c.sequence_number == *sn)
+                {
+                    to_retransmit.push(change.clone());
+                }
+            }
+        }
+        to_retransmit
+    }
+}
+
+/// Representation of a remote Writer used by a `StatefulReader`.
+#[derive(Debug, Clone)]
+pub struct WriterProxy {
+    pub remote_writer_guid: Guid,
+    pub unicast_locator_list: Vec<Locator>,
+    pub multicast_locator_list: Vec<Locator>,
+    pub highest_sn_received: SequenceNumber,
+    pub last_heartbeat_count: i32,
+}
+
+/// Stateful RTPS Reader that tracks the state of matched remote writers.
+#[derive(Debug)]
+pub struct StatefulReader {
+    pub guid: Guid,
+    pub writer_proxies: Vec<WriterProxy>,
+    pub reader_cache: HistoryCache,
+    pub acknack_count: i32,
+}
+
+impl StatefulReader {
+    #[must_use]
+    pub const fn new(
+        guid: Guid,
+        history_kind: dds_types::qos::HistoryKind,
+        history_depth: i32,
+        max_samples_per_instance: i32,
+    ) -> Self {
+        Self {
+            guid,
+            writer_proxies: Vec::new(),
+            reader_cache: HistoryCache::new(history_kind, history_depth, max_samples_per_instance),
+            acknack_count: 0,
+        }
+    }
+
+    pub fn matched_writer_add(&mut self, proxy: WriterProxy) {
+        self.writer_proxies.push(proxy);
+    }
+
+    pub fn matched_writer_remove(&mut self, writer_guid: &Guid) {
+        self.writer_proxies
+            .retain(|p| &p.remote_writer_guid != writer_guid);
+    }
+
+    /// Process a Heartbeat and return an AckNack if missing sequences are detected.
+    #[must_use]
+    pub fn process_heartbeat(&mut self, hb: &Heartbeat) -> Option<AckNack> {
+        for proxy in &mut self.writer_proxies {
+            if proxy.remote_writer_guid.entity_id != hb.writer_id {
+                continue;
+            }
+            proxy.last_heartbeat_count = hb.count;
+
+            let mut missing = Vec::new();
+            let mut sn = hb.first_sn;
+            while sn <= hb.last_sn {
+                let received = self
+                    .reader_cache
+                    .get_changes()
+                    .iter()
+                    .any(|c| c.sequence_number == sn);
+                if !received {
+                    missing.push(sn);
+                }
+                sn = SequenceNumber::new(sn.value() + 1);
+            }
+
+            if missing.is_empty() {
+                return None;
+            }
+
+            self.acknack_count += 1;
+            return Some(AckNack {
+                reader_id: self.guid.entity_id,
+                writer_id: hb.writer_id,
+                reader_sn_state: missing,
+                ack_through: None,
+                count: self.acknack_count,
+            });
+        }
+        None
+    }
+
+    /// Build a NackFrag for missing fragments of a fragmented sample.
+    #[must_use]
+    pub fn build_nack_frag(
+        &mut self,
+        writer_id: EntityId,
+        writer_sn: SequenceNumber,
+        fragment_starting_num: u32,
+        missing_frags: Vec<u32>,
+    ) -> NackFrag {
+        self.acknack_count += 1;
+        NackFrag {
+            reader_id: self.guid.entity_id,
+            writer_id,
+            writer_sn,
+            fragment_starting_num,
+            fragment_state: missing_frags,
+            count: self.acknack_count,
+        }
     }
 }
 
@@ -1412,6 +1926,38 @@ impl UdpTransport {
         Ok(())
     }
 
+    /// Clone the underlying socket (for a dedicated blocking receive thread).
+    pub fn try_clone(&self) -> RtpsResult<Self> {
+        Ok(Self {
+            socket: self
+                .socket
+                .try_clone()
+                .map_err(|e| RtpsError::TransportError(format!("socket clone failed: {e}")))?,
+        })
+    }
+
+    /// Configure blocking mode on this transport socket.
+    pub fn set_blocking(&self, blocking: bool) -> RtpsResult<()> {
+        self.socket
+            .set_nonblocking(!blocking)
+            .map_err(|e| RtpsError::TransportError(format!("set_blocking failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Local UDP port this transport is bound to.
+    #[must_use]
+    pub fn local_port(&self) -> RtpsResult<u16> {
+        self.socket
+            .local_addr()
+            .map(|a| a.port())
+            .map_err(|e| RtpsError::TransportError(format!("local_addr failed: {e}")))
+    }
+
+    /// Blocking `recv_from` for dedicated receive threads.
+    pub fn recv_from_blocking(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        self.socket.recv_from(buf)
+    }
+
     /// Try to receive a packet from the network.
     ///
     /// Returns Ok(None) if no data is currently available (non-blocking).
@@ -1425,6 +1971,26 @@ impl UdpTransport {
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
             Err(e) => Err(RtpsError::TransportError(format!("recv_from failed: {e}"))),
         }
+    }
+}
+
+/// Serialize a pure ACK (all sequence numbers through `through` received).
+pub fn serialize_sequence_number_set_ack_through(
+    buf: &mut BytesMut,
+    through: SequenceNumber,
+    endian: Endianness,
+) {
+    let is_le = endian == Endianness::LittleEndian;
+    let base_sn = through.next();
+    let (base_high, base_low) = base_sn.to_high_low();
+    if is_le {
+        buf.put_i32_le(base_high);
+        buf.put_u32_le(base_low);
+        buf.put_u32_le(0);
+    } else {
+        buf.put_i32(base_high);
+        buf.put_u32(base_low);
+        buf.put_u32(0);
     }
 }
 
@@ -1552,6 +2118,166 @@ pub fn deserialize_sequence_number_set(
     Ok(sns)
 }
 
+/// Parse a locator list from an InfoReply submessage payload.
+pub fn parse_locator_list(
+    payload: &[u8],
+    offset: &mut usize,
+    little_endian: bool,
+) -> RtpsResult<Vec<Locator>> {
+    if *offset + 4 > payload.len() {
+        return Ok(Vec::new());
+    }
+    let count = if little_endian {
+        LittleEndian::read_u32(&payload[*offset..*offset + 4])
+    } else {
+        BigEndian::read_u32(&payload[*offset..*offset + 4])
+    };
+    *offset += 4;
+
+    let mut locators = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        if *offset + 24 > payload.len() {
+            break;
+        }
+        let kind = if little_endian {
+            LittleEndian::read_i32(&payload[*offset..*offset + 4])
+        } else {
+            BigEndian::read_i32(&payload[*offset..*offset + 4])
+        };
+        let port = if little_endian {
+            LittleEndian::read_u32(&payload[*offset + 4..*offset + 8])
+        } else {
+            BigEndian::read_u32(&payload[*offset + 4..*offset + 8])
+        };
+        let mut address = [0_u8; 16];
+        address.copy_from_slice(&payload[*offset + 8..*offset + 24]);
+        locators.push(Locator::from_raw(
+            dds_types::locator::LocatorKind::from_i32(kind),
+            port,
+            address,
+        ));
+        *offset += 24;
+    }
+    Ok(locators)
+}
+
+/// Serialize a locator list into a byte buffer.
+pub fn serialize_locator_list(buf: &mut BytesMut, locators: &[Locator], endian: Endianness) {
+    let is_le = endian == Endianness::LittleEndian;
+    if is_le {
+        buf.put_u32_le(locators.len() as u32);
+    } else {
+        buf.put_u32(locators.len() as u32);
+    }
+    for loc in locators {
+        if is_le {
+            buf.put_i32_le(loc.kind as i32);
+            buf.put_u32_le(loc.port);
+        } else {
+            buf.put_i32(loc.kind as i32);
+            buf.put_u32(loc.port);
+        }
+        buf.put_slice(&loc.address);
+    }
+}
+
+/// Serialize a FragmentNumberSet to the byte buffer.
+pub fn serialize_fragment_number_set(
+    buf: &mut BytesMut,
+    base: u32,
+    fragments: &[u32],
+    endian: Endianness,
+) {
+    let is_le = endian == Endianness::LittleEndian;
+    if is_le {
+        buf.put_u32_le(base);
+    } else {
+        buf.put_u32(base);
+    }
+
+    if fragments.is_empty() {
+        if is_le {
+            buf.put_u32_le(0);
+        } else {
+            buf.put_u32(0);
+        }
+        return;
+    }
+
+    let max_frag = fragments.iter().copied().max().unwrap_or(base);
+    let num_bits = ((max_frag - base + 1).max(0).min(256)) as u32;
+    if is_le {
+        buf.put_u32_le(num_bits);
+    } else {
+        buf.put_u32(num_bits);
+    }
+
+    let num_longs = ((num_bits + 31) / 32) as usize;
+    let mut bitmap = vec![0_u32; num_longs];
+    for frag in fragments {
+        let diff = frag.saturating_sub(base);
+        if diff < num_bits {
+            let word_idx = (diff / 32) as usize;
+            let bit_idx = 31 - (diff % 32);
+            bitmap[word_idx] |= 1 << bit_idx;
+        }
+    }
+    for word in bitmap {
+        if is_le {
+            buf.put_u32_le(word);
+        } else {
+            buf.put_u32(word);
+        }
+    }
+}
+
+/// Deserialize a FragmentNumberSet from a payload slice.
+pub fn deserialize_fragment_number_set(
+    payload: &[u8],
+    offset: &mut usize,
+    little_endian: bool,
+) -> RtpsResult<Vec<u32>> {
+    if *offset + 8 > payload.len() {
+        return Err(RtpsError::InvalidMessage("FragmentNumberSet too short".into()));
+    }
+    let base = if little_endian {
+        LittleEndian::read_u32(&payload[*offset..*offset + 4])
+    } else {
+        BigEndian::read_u32(&payload[*offset..*offset + 4])
+    };
+    let num_bits = if little_endian {
+        LittleEndian::read_u32(&payload[*offset + 4..*offset + 8])
+    } else {
+        BigEndian::read_u32(&payload[*offset + 4..*offset + 8])
+    };
+    *offset += 8;
+
+    let num_longs = ((num_bits + 31) / 32) as usize;
+    if *offset + 4 * num_longs > payload.len() {
+        return Err(RtpsError::InvalidMessage("FragmentNumberSet bitmap truncated".into()));
+    }
+
+    let mut bitmap = vec![0_u32; num_longs];
+    for word in &mut bitmap {
+        *word = if little_endian {
+            LittleEndian::read_u32(&payload[*offset..*offset + 4])
+        } else {
+            BigEndian::read_u32(&payload[*offset..*offset + 4])
+        };
+        *offset += 4;
+    }
+
+    let mut frags = Vec::new();
+    for i in 0..num_bits {
+        let word_idx = (i / 32) as usize;
+        let bit_idx = 31 - (i % 32);
+        if (bitmap[word_idx] & (1 << bit_idx)) != 0 {
+            frags.push(base + i);
+        }
+    }
+    Ok(frags)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endianness {
     BigEndian,
@@ -1564,6 +2290,8 @@ pub enum Endianness {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     #[test]
@@ -1624,6 +2352,13 @@ mod tests {
         } else {
             panic!("Expected Data submessage");
         }
+
+        // CycloneDDS locates serializedPayload at smhdr + 8 + octetsToInlineQos (8 = through otiq field).
+        let sub_off = RTPS_HEADER_SIZE;
+        let octets_to_inline_qos = LittleEndian::read_u16(&msg[sub_off + 6..sub_off + 8]);
+        assert_eq!(octets_to_inline_qos, DATA_OCTETS_TO_INLINE_QOS);
+        let payload_off = sub_off + 8 + usize::from(octets_to_inline_qos);
+        assert_eq!(&msg[payload_off..payload_off + 3], &[10, 20, 30]);
     }
 
     #[test]
@@ -1674,6 +2409,7 @@ mod tests {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
             reader_sn_state: vec![SequenceNumber::new(10)],
+            ack_through: None,
             count: 5,
         };
 
@@ -1696,6 +2432,7 @@ mod tests {
             reader_id: EntityId::new([1, 0, 0, 4]),
             writer_id: EntityId::new([2, 0, 0, 3]),
             reader_sn_state: vec![SequenceNumber::new(10), SequenceNumber::new(12)],
+            ack_through: None,
             count: 7,
         };
         let subs_complex = vec![Submessage::AckNack(ack_complex.clone())];
@@ -1707,6 +2444,42 @@ mod tests {
             assert_eq!(parsed_ack.count, 7);
         } else {
             panic!("Expected complex AckNack");
+        }
+    }
+
+    #[test]
+    fn test_infodst_acknack_roundtrip() {
+        let our_prefix = GuidPrefix::new([0x47, 0x02, 0xb2, 0x93, 0x02, 0, 0, 0, 0, 0, 0, 0]);
+        let remote_prefix = GuidPrefix::new([0x11, 0x0a, 0xd2, 0xe8, 0x82, 0xbc, 0xf3, 0x01, 0x9e, 0x87, 0x86, 0xf1]);
+        let header = RtpsHeader::new(our_prefix);
+        let ack = AckNack {
+            reader_id: EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER,
+            writer_id: EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER,
+            reader_sn_state: vec![SequenceNumber::new(1)],
+            ack_through: None,
+            count: 1,
+        };
+        let msg = serialize_rtps_message(
+            &header,
+            &[
+                Submessage::InfoDst(InfoDst {
+                    guid_prefix: remote_prefix,
+                }),
+                Submessage::AckNack(ack.clone()),
+            ],
+            Endianness::LittleEndian,
+        );
+        let (_, parsed) = parse_rtps_message(&msg).unwrap();
+        assert_eq!(parsed.len(), 2);
+        if let Submessage::InfoDst(info) = &parsed[0] {
+            assert_eq!(info.guid_prefix, remote_prefix);
+        } else {
+            panic!("expected InfoDst");
+        }
+        if let Submessage::AckNack(parsed_ack) = &parsed[1] {
+            assert_eq!(parsed_ack.reader_sn_state, vec![SequenceNumber::new(1)]);
+        } else {
+            panic!("expected AckNack");
         }
     }
 
@@ -1867,7 +2640,144 @@ mod tests {
         // Sleep a short duration to let thread execute state transitions
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let w = shared_writer.lock().unwrap();
-        assert!(w.reader_proxies[0].next_unsent_sn.value() > 1);
+        let mut w = shared_writer.lock().unwrap();
+        // Without an AckNack, unsent SN must not advance (reliable retransmit).
+        assert_eq!(w.reader_proxies[0].next_unsent_sn.0, 1);
+        let ack = AckNack {
+            reader_id: EntityId::new([0, 0, 2, 7]),
+            writer_id: EntityId::new([0, 0, 1, 2]),
+            reader_sn_state: vec![],
+            ack_through: Some(SequenceNumber::new(5)),
+            count: 1,
+        };
+        w.apply_reader_acknack(&ack, GuidPrefix::new([2; 12]));
+        assert!(w.reader_proxies[0].next_unsent_sn.0 > 1);
+    }
+
+    #[test]
+    fn test_nack_frag_submessage_serialization() {
+        let prefix = GuidPrefix::new([0x01; 12]);
+        let header = RtpsHeader::new(prefix);
+        let nf = NackFrag {
+            reader_id: EntityId::new([1, 0, 0, 7]),
+            writer_id: EntityId::new([2, 0, 0, 3]),
+            writer_sn: SequenceNumber::new(10),
+            fragment_starting_num: 1,
+            fragment_state: vec![1, 3, 5],
+            count: 2,
+        };
+        let msg = serialize_rtps_message(&header, &[Submessage::NackFrag(nf.clone())], Endianness::LittleEndian);
+        let (_, parsed) = parse_rtps_message(&msg).unwrap();
+        assert_eq!(parsed.len(), 1);
+        if let Submessage::NackFrag(parsed_nf) = &parsed[0] {
+            assert_eq!(parsed_nf.writer_sn, nf.writer_sn);
+            assert_eq!(parsed_nf.fragment_state, nf.fragment_state);
+            assert_eq!(parsed_nf.count, nf.count);
+        } else {
+            panic!("Expected NackFrag");
+        }
+    }
+
+    #[test]
+    fn test_heartbeat_frag_submessage_serialization() {
+        let prefix = GuidPrefix::new([0x01; 12]);
+        let header = RtpsHeader::new(prefix);
+        let hbf = HeartbeatFrag {
+            reader_id: EntityId::new([1, 0, 0, 7]),
+            writer_id: EntityId::new([2, 0, 0, 3]),
+            writer_sn: SequenceNumber::new(10),
+            last_fragment_num: 8,
+            count: 1,
+        };
+        let msg = serialize_rtps_message(&header, &[Submessage::HeartbeatFrag(hbf)], Endianness::LittleEndian);
+        let (_, parsed) = parse_rtps_message(&msg).unwrap();
+        if let Submessage::HeartbeatFrag(parsed_hbf) = &parsed[0] {
+            assert_eq!(parsed_hbf.last_fragment_num, 8);
+            assert_eq!(parsed_hbf.writer_sn, SequenceNumber::new(10));
+        } else {
+            panic!("Expected HeartbeatFrag");
+        }
+    }
+
+    #[test]
+    fn test_info_reply_locator_roundtrip() {
+        let prefix = GuidPrefix::new([0x01; 12]);
+        let header = RtpsHeader::new(prefix);
+        let loc = Locator::udpv4(std::net::Ipv4Addr::new(127, 0, 0, 1), 7400);
+        let info = InfoReply {
+            unicast_locator_list: vec![loc],
+            multicast_locator_list: Some(vec![loc]),
+        };
+        let msg = serialize_rtps_message(&header, &[Submessage::InfoReply(info.clone())], Endianness::LittleEndian);
+        let (_, parsed) = parse_rtps_message(&msg).unwrap();
+        if let Submessage::InfoReply(parsed_info) = &parsed[0] {
+            assert_eq!(parsed_info.unicast_locator_list.len(), 1);
+            assert_eq!(parsed_info.unicast_locator_list[0].port, 7400);
+            assert!(parsed_info.multicast_locator_list.is_some());
+        } else {
+            panic!("Expected InfoReply");
+        }
+    }
+
+    #[test]
+    fn test_heartbeat_submessage_serialization() {
+        let header = RtpsHeader::new(GuidPrefix::new([9; 12]));
+        let hb = Heartbeat {
+            reader_id: EntityId::new([0, 0, 0, 4]),
+            writer_id: EntityId::new([0, 0, 1, 3]),
+            first_sn: SequenceNumber::new(1),
+            last_sn: SequenceNumber::new(1),
+            count: 1,
+            flags: FLAG_LIVELINESS,
+        };
+        let msg = serialize_rtps_message(
+            &header,
+            &[Submessage::Heartbeat(hb)],
+            Endianness::LittleEndian,
+        );
+        assert_eq!(msg[20], SubmessageKind::Heartbeat as u8);
+        assert_eq!(msg[21], FLAG_LIVELINESS | FLAG_LITTLE_ENDIAN);
+        let (_hdr, parsed) = parse_rtps_message(&msg).expect("parse heartbeat message");
+        assert!(matches!(parsed.as_slice(), [Submessage::Heartbeat(parsed_hb)] if parsed_hb.count == 1));
+    }
+
+    #[test]
+    fn test_stateful_reader_process_heartbeat() {
+        let reader_guid = Guid::new(GuidPrefix::new([1; 12]), EntityId::new([0, 0, 1, 7]));
+        let writer_id = EntityId::new([0, 0, 2, 3]);
+        let mut reader = StatefulReader::new(
+            reader_guid,
+            dds_types::qos::HistoryKind::KeepLast,
+            10,
+            dds_types::qos::LENGTH_UNLIMITED,
+        );
+        reader.matched_writer_add(WriterProxy {
+            remote_writer_guid: Guid::new(GuidPrefix::new([2; 12]), writer_id),
+            unicast_locator_list: vec![],
+            multicast_locator_list: vec![],
+            highest_sn_received: SequenceNumber::new(0),
+            last_heartbeat_count: 0,
+        });
+        reader.reader_cache.add_change(CacheChange {
+            kind: ChangeKind::Alive,
+            writer_guid: Guid::new(GuidPrefix::new([2; 12]), writer_id),
+            instance_handle: dds_types::instance::InstanceHandle::NIL,
+            sequence_number: SequenceNumber::new(1),
+            data_value: Bytes::from_static(b"a"),
+            source_timestamp: None,
+        });
+        let hb = Heartbeat {
+            reader_id: reader_guid.entity_id,
+            writer_id,
+            first_sn: SequenceNumber::new(1),
+            last_sn: SequenceNumber::new(3),
+            count: 1,
+            flags: 0,
+        };
+        let ack = reader.process_heartbeat(&hb);
+        assert!(ack.is_some());
+        let ack = ack.unwrap();
+        assert!(ack.reader_sn_state.contains(&SequenceNumber::new(2)));
+        assert!(ack.reader_sn_state.contains(&SequenceNumber::new(3)));
     }
 }

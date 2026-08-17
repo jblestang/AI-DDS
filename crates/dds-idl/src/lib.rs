@@ -49,7 +49,6 @@
     clippy::question_mark_used,
     clippy::single_char_lifetime_names,
     clippy::panic_in_result_fn,
-    clippy::unwrap_used,
     clippy::unwrap_in_result,
     clippy::cognitive_complexity,
     clippy::tests_outside_test_module,
@@ -62,6 +61,7 @@
     clippy::separated_literal_suffix,
     reason = "IDL Parser implementation requires standard library conversions, standard returns, and parser parsing loops."
 )]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use nom::{
     bytes::complete::{tag, take_while1},
@@ -110,12 +110,22 @@ pub struct StructMember {
     pub annotations: Vec<Annotation>,
 }
 
+/// Struct extensibility per XTypes §7.2.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Extensibility {
+    #[default]
+    Final,
+    Appendable,
+    Mutable,
+}
+
 /// Represents an IDL Struct definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDef {
     pub name: String,
     pub members: Vec<StructMember>,
     pub annotations: Vec<Annotation>,
+    pub extensibility: Extensibility,
 }
 
 /// Represents an IDL Enum definition.
@@ -256,7 +266,19 @@ fn parse_annotation(input: &str) -> IResult<&str, Annotation> {
 
 /// Parses zero or more annotations.
 fn parse_annotations(input: &str) -> IResult<&str, Vec<Annotation>> {
-    return many0(preceded(multispace0, parse_annotation))(input)
+    many0(preceded(multispace0, parse_annotation))(input)
+}
+
+fn extensibility_from_annotations(annotations: &[Annotation]) -> Extensibility {
+    for a in annotations {
+        match a.name.as_str() {
+            "appendable" => return Extensibility::Appendable,
+            "mutable" => return Extensibility::Mutable,
+            "final" => return Extensibility::Final,
+            _ => {}
+        }
+    }
+    Extensibility::Final
 }
 
 fn parse_struct_member(input: &str) -> IResult<&str, StructMember> {
@@ -314,7 +336,8 @@ pub fn parse_struct(input: &str) -> IResult<&str, StructDef> {
         StructDef {
             name: name.to_owned(),
             members,
-            annotations,
+            annotations: annotations.clone(),
+            extensibility: extensibility_from_annotations(&annotations),
         },
     ))
 }
@@ -530,6 +553,8 @@ pub fn parse_idl(input: &str) -> Result<Vec<AstNode>, String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     #[test]
@@ -578,6 +603,25 @@ mod tests {
             assert_eq!(m.nodes.len(), 1);
         } else {
             panic!("Expected Module node");
+        }
+    }
+
+    #[test]
+    fn test_parse_struct_extensibility() {
+        let idl = "@appendable struct Position { long x; long y; };";
+        let nodes = parse_idl(idl).unwrap();
+        if let AstNode::Struct(s) = &nodes[0] {
+            assert_eq!(s.extensibility, Extensibility::Appendable);
+        } else {
+            panic!("expected struct");
+        }
+
+        let idl2 = "@mutable struct Flexible { long id; };";
+        let nodes2 = parse_idl(idl2).unwrap();
+        if let AstNode::Struct(s) = &nodes2[0] {
+            assert_eq!(s.extensibility, Extensibility::Mutable);
+        } else {
+            panic!("expected struct");
         }
     }
 }

@@ -41,7 +41,6 @@
     clippy::cast_possible_truncation,
     clippy::as_conversions,
     clippy::too_many_lines,
-    clippy::panic,
     clippy::field_reassign_with_default,
     clippy::clone_on_ref_ptr,
     clippy::arithmetic_side_effects,
@@ -191,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (len, _) = socket.recv_from(&mut buf)?;
             println!("[Reader] Received sample packet over UDP (len = {}).", len);
 
-            reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec());
+            reader.push_sample(dds::types::instance::InstanceHandle::NIL, buf[..len].to_vec(), None);
 
             let received_boxed = reader.read_next()?;
             if let Some(received) = received_boxed.downcast_ref::<ReliableTelemetry>() {
@@ -200,7 +199,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  -> Value: {}", received.value);
                 assert_eq!(received.id, SAMPLE_ID);
             } else {
-                panic!("Failed to downcast received sample!");
+                return Err(dds::types::return_code::DdsError::BadParameter(
+                    "failed to downcast received sample to ReliableTelemetry".into(),
+                )
+                .into());
             }
             println!("==============================================================");
         }
@@ -250,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Simulate loopback network delivery.
             let serialized = ts.serialize(&sample)?;
-            reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized);
+            reader.push_sample(dds::types::instance::InstanceHandle::NIL, serialized, None);
 
             // 6. Read and assert the reliable sample.
             let received_boxed = reader.read_next()?;
@@ -260,7 +262,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  -> Value: {}", received.value);
                 assert_eq!(received.id, SAMPLE_ID);
             } else {
-                panic!("Failed to downcast received sample!");
+                return Err(dds::types::return_code::DdsError::BadParameter(
+                    "failed to downcast received sample to ReliableTelemetry".into(),
+                )
+                .into());
             }
 
             println!("==============================================================");

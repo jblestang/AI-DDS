@@ -10,6 +10,7 @@ dds-types = { workspace = true }
 dds-cdr = { workspace = true }
 dds-rtps = { workspace = true }
 dds-xtypes = { workspace = true }
+bytes = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
