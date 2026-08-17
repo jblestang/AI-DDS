@@ -21,17 +21,17 @@ use support::shapes_vendor::{
 #[test]
 #[ignore = "requires CycloneDDS shapes binaries (see interop/README.md)"]
 fn shapes_cyclonedds_publishes_square_aidds_receives() {
-    vendor_publishes_shapes_aidds_receives(InteropVendor::CycloneDds, "Square");
+    vendor_publishes_shapes_aidds_receives(InteropVendor::CycloneDds, "Square", 0);
 }
 
 #[test]
 #[ignore = "requires CycloneDDS shapes binaries (see interop/README.md)"]
 fn shapes_cyclonedds_all_topics_to_aidds() {
-    all_shapes_topics_vendor_to_aidds(InteropVendor::CycloneDds);
+    all_shapes_topics_vendor_to_aidds(InteropVendor::CycloneDds, 10);
 }
 
 #[test]
 #[ignore = "requires CycloneDDS shapes binaries (see interop/README.md)"]
 fn shapes_aidds_all_topics_to_cyclonedds() {
-    all_shapes_topics_aidds_to_vendor(InteropVendor::CycloneDds);
+    all_shapes_topics_aidds_to_vendor(InteropVendor::CycloneDds, 20);
 }

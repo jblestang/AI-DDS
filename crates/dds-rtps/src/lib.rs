@@ -142,8 +142,8 @@ pub const FLAG_LIVELINESS: u8 = 0x04;
 /// Submessage flag indicating invalid time
 pub const FLAG_INVALID_TIME: u8 = 0x02;
 
-/// Octets from after the `octetsToInlineQos` field to inline QoS (readerId + writerId + writerSN).
-/// CycloneDDS sets this to 16; using 20 shifts the payload pointer and breaks PL-CDR deserialization.
+/// Octets from after the `octetsToInlineQos` field to inline QoS / serializedPayload.
+/// RTPS §9.4.5.3.3: equals `octetsToInlineQos` (typically 16 when content starts at byte 20).
 pub const DATA_OCTETS_TO_INLINE_QOS: u16 = 16;
 
 /// Bytes in a Data submessage before inline QoS / serialized payload (extraFlags through writerSN).
@@ -456,13 +456,111 @@ pub enum Submessage {
     Unsupported(SubmessageKind),
 }
 
-/// Trim trailing zero bytes added for 4-byte RTPS submessage alignment.
-fn trim_submessage_padding(payload: &[u8]) -> Bytes {
-    let mut end = payload.len();
-    while end > 0 && payload[end - 1] == 0 {
-        end -= 1;
+/// RTPS §9.4.5.3.3 / §9.4.5.5: offset from submessage *body* start to inlineQos or
+/// serializedPayload (= bytes after `octetsToInlineQos` field + `octetsToInlineQos`).
+fn rtps_content_offset(octets_to_inline_qos: usize) -> usize {
+    4 + octets_to_inline_qos
+}
+
+/// Slice serializedPayload through end of submessage body (RTPS §9.4.5.1.3).
+///
+/// Submessage alignment padding at the body tail is included; CDR/XCDR2 decoders
+/// use explicit lengths and ignore trailing pad octets (same as CycloneDDS/Fast DDS).
+fn serialized_payload_bytes(sub_payload: &[u8], payload_start: usize) -> Bytes {
+    if payload_start < sub_payload.len() {
+        Bytes::copy_from_slice(&sub_payload[payload_start..])
+    } else {
+        Bytes::new()
     }
-    Bytes::copy_from_slice(&payload[..end])
+}
+
+/// Parse RTPS-standard inline QoS parameters (PID/length/value per §9.6.3).
+///
+/// Vendor stacks (Fast DDS, CycloneDDS) encode inline QoS without the internal
+/// length prefix used by AI-DDS's PL-CDR `ParameterList` serializer.
+pub fn parse_rtps_inline_qos(
+    data: &[u8],
+    little_endian: bool,
+) -> RtpsResult<(dds_cdr::ParameterList, usize)> {
+    use dds_cdr::ParameterId;
+    let mut plist = dds_cdr::ParameterList::new();
+    let mut offset = 0usize;
+    loop {
+        if offset + 4 > data.len() {
+            return Err(RtpsError::InvalidMessage(
+                "truncated inline QoS parameter header".into(),
+            ));
+        }
+        let pid = if little_endian {
+            LittleEndian::read_u16(&data[offset..offset + 2])
+        } else {
+            BigEndian::read_u16(&data[offset..offset + 2])
+        };
+        let length = if little_endian {
+            LittleEndian::read_u16(&data[offset + 2..offset + 4]) as usize
+        } else {
+            BigEndian::read_u16(&data[offset + 2..offset + 4]) as usize
+        };
+        if pid == ParameterId::PID_SENTINEL.0 {
+            return Ok((plist, offset + 4));
+        }
+        if pid == ParameterId::PID_PAD.0 {
+            let padded = (length + 3) & !3;
+            offset = offset.saturating_add(4).saturating_add(padded);
+            continue;
+        }
+        if offset + 4 + length > data.len() {
+            return Err(RtpsError::InvalidMessage(
+                "truncated inline QoS parameter value".into(),
+            ));
+        }
+        let value = data[offset + 4..offset + 4 + length].to_vec();
+        plist.add(ParameterId(pid), value);
+        let padded = (length + 3) & !3;
+        offset += 4 + padded;
+    }
+}
+
+/// Parse inline QoS from a DATA submessage, accepting both vendor RTPS layout and
+/// AI-DDS's extended PL-CDR parameter encoding.
+fn parse_data_inline_qos(
+    qos_slice: &[u8],
+    little_endian: bool,
+) -> Option<(dds_cdr::ParameterList, usize)> {
+    let endian = if little_endian {
+        dds_cdr::Endianness::LittleEndian
+    } else {
+        dds_cdr::Endianness::BigEndian
+    };
+
+    // AI-DDS prepends a u32 unpadded length inside each parameter value; RTPS does not.
+    let uses_aidds_layout = qos_slice.len() >= 8
+        && {
+            let param_len = if little_endian {
+                LittleEndian::read_u16(&qos_slice[2..4]) as usize
+            } else {
+                BigEndian::read_u16(&qos_slice[2..4]) as usize
+            };
+            if param_len < 4 || qos_slice.len() < 4 + param_len {
+                false
+            } else {
+                let inner_len = if little_endian {
+                    LittleEndian::read_u32(&qos_slice[4..8]) as usize
+                } else {
+                    BigEndian::read_u32(&qos_slice[4..8]) as usize
+                };
+                inner_len + 4 == param_len
+            }
+        };
+
+    if uses_aidds_layout {
+        let mut legacy_de = dds_cdr::CdrDeserializer::new(qos_slice, endian);
+        if let Ok(qos) = dds_cdr::ParameterList::deserialize(&mut legacy_de) {
+            return Some((qos, legacy_de.offset()));
+        }
+    }
+
+    parse_rtps_inline_qos(qos_slice, little_endian).ok()
 }
 
 pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>)> {
@@ -613,28 +711,30 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                         };
                         let writer_sn = SequenceNumber::from_high_low(sn_high, sn_low);
 
-                        let has_inline_qos = (flags & FLAG_INLINE_QOS) != 0;
-                        let mut payload_start = DATA_SUBMESSAGE_FIXED_SIZE;
-                        let mut inline_qos = None;
-
-                        if has_inline_qos && sub_payload.len() > DATA_SUBMESSAGE_FIXED_SIZE {
-                            let endian = if little_endian {
-                                dds_cdr::Endianness::LittleEndian
-                            } else {
-                                dds_cdr::Endianness::BigEndian
-                            };
-                            let mut deserializer = dds_cdr::CdrDeserializer::new(&sub_payload[20..], endian);
-                            if let Ok(qos) = dds_cdr::ParameterList::deserialize(&mut deserializer) {
-                                payload_start = 20 + deserializer.offset();
-                                inline_qos = Some(qos);
-                            }
-                        }
-
-                        let payload = if sub_payload.len() > payload_start {
-                            trim_submessage_padding(&sub_payload[payload_start..])
+                        let octets_to_inline_qos = if little_endian {
+                            LittleEndian::read_u16(&sub_payload[2..4])
                         } else {
-                            Bytes::new()
+                            BigEndian::read_u16(&sub_payload[2..4])
+                        } as usize;
+
+                        let has_inline_qos = (flags & FLAG_INLINE_QOS) != 0;
+                        let content_offset = rtps_content_offset(octets_to_inline_qos);
+                        let mut inline_qos = None;
+                        let payload_start = if has_inline_qos {
+                            let qos_slice = sub_payload.get(content_offset..).unwrap_or(&[]);
+                            if let Some((qos, consumed)) =
+                                parse_data_inline_qos(qos_slice, little_endian)
+                            {
+                                inline_qos = Some(qos);
+                                content_offset + consumed
+                            } else {
+                                content_offset
+                            }
+                        } else {
+                            content_offset
                         };
+
+                        let payload = serialized_payload_bytes(sub_payload, payload_start);
 
                         submessages.push(Submessage::Data(Data {
                             reader_id,
@@ -691,11 +791,28 @@ pub fn parse_rtps_message(buf: &[u8]) -> RtpsResult<(RtpsHeader, Vec<Submessage>
                             BigEndian::read_u32(&sub_payload[28..32])
                         };
 
-                        let payload = if sub_payload.len() > 32 {
-                            trim_submessage_padding(&sub_payload[32..])
+                        let octets_to_inline_qos = if little_endian {
+                            LittleEndian::read_u16(&sub_payload[2..4])
                         } else {
-                            Bytes::new()
+                            BigEndian::read_u16(&sub_payload[2..4])
+                        } as usize;
+
+                        let has_inline_qos = (flags & FLAG_INLINE_QOS) != 0;
+                        let content_offset = rtps_content_offset(octets_to_inline_qos);
+                        let payload_start = if has_inline_qos {
+                            let qos_slice = sub_payload.get(content_offset..).unwrap_or(&[]);
+                            if let Some((_qos, consumed)) =
+                                parse_data_inline_qos(qos_slice, little_endian)
+                            {
+                                content_offset + consumed
+                            } else {
+                                content_offset
+                            }
+                        } else {
+                            content_offset
                         };
+
+                        let payload = serialized_payload_bytes(sub_payload, payload_start);
 
                         submessages.push(Submessage::DataFrag(DataFrag {
                             reader_id,
@@ -1076,7 +1193,7 @@ pub fn serialize_rtps_message(
                 if is_le {
                     buf.put_u16_le(submessage_len as u16);
                     buf.put_u16_le(0); // extraFlags
-                    buf.put_u16_le(32); // octetsToSerializedPayload
+                    buf.put_u16_le((DATA_FRAG_SUBMESSAGE_FIXED_SIZE - 4) as u16);
                     buf.put_slice(df.reader_id.as_bytes());
                     buf.put_slice(df.writer_id.as_bytes());
                     let (sn_high, sn_low) = df.writer_sn.to_high_low();
@@ -1089,7 +1206,7 @@ pub fn serialize_rtps_message(
                 } else {
                     buf.put_u16(submessage_len as u16);
                     buf.put_u16(0);
-                    buf.put_u16(32);
+                    buf.put_u16((DATA_FRAG_SUBMESSAGE_FIXED_SIZE - 4) as u16);
                     buf.put_slice(df.reader_id.as_bytes());
                     buf.put_slice(df.writer_id.as_bytes());
                     let (sn_high, sn_low) = df.writer_sn.to_high_low();
@@ -2370,12 +2487,19 @@ mod tests {
             assert_eq!(parsed_data.reader_id, data.reader_id);
             assert_eq!(parsed_data.writer_id, data.writer_id);
             assert_eq!(parsed_data.writer_sn, data.writer_sn);
-            assert_eq!(parsed_data.serialized_payload, data.serialized_payload);
+            assert_eq!(
+                &parsed_data.serialized_payload[..data.serialized_payload.len()],
+                data.serialized_payload.as_ref()
+            );
+            assert!(
+                parsed_data.serialized_payload.len() >= data.serialized_payload.len(),
+                "parsed payload may include RTPS submessage alignment padding"
+            );
         } else {
             panic!("Expected Data submessage");
         }
 
-        // CycloneDDS locates serializedPayload at smhdr + 8 + octetsToInlineQos (8 = through otiq field).
+        // RTPS §9.4.5.3.3: serializedPayload at submessage + 8 + octetsToInlineQos.
         let sub_off = RTPS_HEADER_SIZE;
         let octets_to_inline_qos = LittleEndian::read_u16(&msg[sub_off + 6..sub_off + 8]);
         assert_eq!(octets_to_inline_qos, DATA_OCTETS_TO_INLINE_QOS);
@@ -2559,10 +2683,83 @@ mod tests {
             assert_eq!(parsed_df.fragments_in_submessage, df.fragments_in_submessage);
             assert_eq!(parsed_df.fragment_size, df.fragment_size);
             assert_eq!(parsed_df.data_size, df.data_size);
-            assert_eq!(parsed_df.serialized_payload, df.serialized_payload);
+            assert_eq!(
+                &parsed_df.serialized_payload[..df.serialized_payload.len()],
+                df.serialized_payload.as_ref()
+            );
+            assert!(
+                parsed_df.serialized_payload.len() >= df.serialized_payload.len(),
+                "parsed payload may include RTPS submessage alignment padding"
+            );
         } else {
             panic!("Expected DataFrag submessage");
         }
+    }
+
+    #[test]
+    fn test_parse_rtps_inline_qos_key_hash() {
+        let mut inline_qos = Vec::new();
+        inline_qos.extend_from_slice(&0x0070u16.to_le_bytes());
+        inline_qos.extend_from_slice(&16u16.to_le_bytes());
+        inline_qos.extend_from_slice(&[0xAB; 16]);
+        inline_qos.extend_from_slice(&0x0001u16.to_le_bytes());
+        inline_qos.extend_from_slice(&0u16.to_le_bytes());
+
+        let (plist, consumed) =
+            parse_rtps_inline_qos(&inline_qos, true).expect("parse FastDDS inline QoS");
+        assert_eq!(consumed, inline_qos.len());
+        let key_hash = plist
+            .parameters
+            .iter()
+            .find(|p| p.parameter_id == dds_cdr::ParameterId::PID_KEY_HASH)
+            .map(|p| p.value.as_slice());
+        assert_eq!(key_hash, Some([0xAB; 16].as_slice()));
+    }
+
+    #[test]
+    fn test_parse_fastdds_keyed_data_inline_qos() {
+        let shape_payload: &[u8] = &[
+            0x00, 0x01, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x53, 0x71, 0x75, 0x61, 0x72, 0x65,
+            0x2d, 0x66, 0x61, 0x73, 0x74, 0x64, 0x64, 0x73, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00,
+        ];
+        let mut inline_qos = Vec::new();
+        inline_qos.extend_from_slice(&0x0070u16.to_le_bytes());
+        inline_qos.extend_from_slice(&16u16.to_le_bytes());
+        inline_qos.extend_from_slice(&[0xAB; 16]);
+        inline_qos.extend_from_slice(&0x0001u16.to_le_bytes());
+        inline_qos.extend_from_slice(&0u16.to_le_bytes());
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&0u16.to_le_bytes());
+        let octets_to_inline_qos = 16u16;
+        body.extend_from_slice(&octets_to_inline_qos.to_le_bytes());
+        body.extend_from_slice(EntityId::UNKNOWN.as_bytes());
+        body.extend_from_slice(EntityId::new([0, 0, 1, 0x02]).as_bytes());
+        body.extend_from_slice(&1i32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&inline_qos);
+        body.extend_from_slice(shape_payload);
+
+        let prefix = GuidPrefix::new([0x01; 12]);
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"RTPS");
+        msg.push(2);
+        msg.push(3);
+        msg.extend_from_slice(&[0, 0]);
+        msg.extend_from_slice(prefix.as_bytes());
+        let data_flags = FLAG_LITTLE_ENDIAN | FLAG_INLINE_QOS | FLAG_DATA_PAYLOAD;
+        msg.push(SubmessageKind::Data as u8);
+        msg.push(data_flags);
+        msg.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        msg.extend_from_slice(&body);
+
+        let (_, parsed) = parse_rtps_message(&msg).unwrap();
+        let Submessage::Data(parsed_data) = &parsed[0] else {
+            panic!("expected Data");
+        };
+        assert!(parsed_data.inline_qos.is_some());
+        assert_eq!(parsed_data.serialized_payload.as_ref(), shape_payload);
     }
 
     #[test]
@@ -2598,7 +2795,14 @@ mod tests {
                 .find(|p| p.parameter_id == dds_cdr::ParameterId::PID_KEY_HASH)
                 .map(|p| &p.value);
             assert_eq!(key_hash, Some(&vec![7; 16]));
-            assert_eq!(parsed_data.serialized_payload, data.serialized_payload);
+            assert_eq!(
+                &parsed_data.serialized_payload[..data.serialized_payload.len()],
+                data.serialized_payload.as_ref()
+            );
+            assert!(
+                parsed_data.serialized_payload.len() >= data.serialized_payload.len(),
+                "parsed payload may include RTPS submessage alignment padding"
+            );
         } else {
             panic!("Expected Data submessage with inline QoS");
         }
