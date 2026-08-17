@@ -16,7 +16,8 @@ pub const SHAPES_TYPE: &str = "org::omg::dds::demo::ShapeType";
 
 pub const SHAPES_TOPICS: &[&str] = &["Square", "Circle", "Triangle"];
 
-/// Base domain id per vendor for shapes tests (offsets +0, +1, +2 per test).
+/// Base domain id per vendor for shapes tests.
+/// Individual tests pass `domain_offset`; `all_topics_*` helpers add +0/+1/+2 per topic.
 pub fn shapes_base_domain(vendor: InteropVendor) -> u32 {
     match vendor {
         InteropVendor::CycloneDds => 120,

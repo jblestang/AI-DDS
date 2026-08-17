@@ -36,13 +36,17 @@ pub fn skip_if_no_shapes(vendor: InteropVendor) {
     }
 }
 
-pub fn vendor_publishes_shapes_aidds_receives(vendor: InteropVendor, topic: &str) {
+pub fn vendor_publishes_shapes_aidds_receives(
+    vendor: InteropVendor,
+    topic: &str,
+    domain_offset: u32,
+) {
     skip_if_no_shapes(vendor);
     if !shapes_available(vendor) {
         return;
     }
 
-    let domain = shapes_base_domain(vendor);
+    let domain = shapes_base_domain(vendor) + domain_offset;
     let shape = ShapeType::sample(topic, vendor.slug());
     let ts = Arc::new(ShapeTypeSupport);
     let participant =
@@ -96,14 +100,18 @@ pub fn vendor_publishes_shapes_aidds_receives(vendor: InteropVendor, topic: &str
     assert_eq!(received.unwrap(), shape);
 }
 
-pub fn aidds_publishes_shapes_vendor_receives(vendor: InteropVendor, topic: &str) {
+pub fn aidds_publishes_shapes_vendor_receives(
+    vendor: InteropVendor,
+    topic: &str,
+    domain_offset: u32,
+) {
     skip_if_no_shapes(vendor);
     if !shapes_available(vendor) {
         return;
     }
 
     let shape = ShapeType::sample(topic, "aidds");
-    let domain = shapes_base_domain(vendor) + 1;
+    let domain = shapes_base_domain(vendor) + domain_offset;
 
     let ts = Arc::new(ShapeTypeSupport);
     let participant =
@@ -156,14 +164,14 @@ pub fn aidds_publishes_shapes_vendor_receives(vendor: InteropVendor, topic: &str
     );
 }
 
-pub fn all_shapes_topics_vendor_to_aidds(vendor: InteropVendor) {
-    for topic in SHAPES_TOPICS {
-        vendor_publishes_shapes_aidds_receives(vendor, topic);
+pub fn all_shapes_topics_vendor_to_aidds(vendor: InteropVendor, domain_offset: u32) {
+    for (i, topic) in SHAPES_TOPICS.iter().enumerate() {
+        vendor_publishes_shapes_aidds_receives(vendor, topic, domain_offset + i as u32);
     }
 }
 
-pub fn all_shapes_topics_aidds_to_vendor(vendor: InteropVendor) {
-    for topic in SHAPES_TOPICS {
-        aidds_publishes_shapes_vendor_receives(vendor, topic);
+pub fn all_shapes_topics_aidds_to_vendor(vendor: InteropVendor, domain_offset: u32) {
+    for (i, topic) in SHAPES_TOPICS.iter().enumerate() {
+        aidds_publishes_shapes_vendor_receives(vendor, topic, domain_offset + i as u32);
     }
 }
