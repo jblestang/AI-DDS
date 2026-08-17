@@ -294,13 +294,34 @@ impl TypeSupport for InteropTypeSupport {
     }
 
     fn type_information_wire(&self) -> Option<&[u8]> {
-        Some(INTEROP_MESSAGE_TYPE_INFORMATION)
+        // CycloneDDS 0.10.x rejects our XCDR2 TypeInformation in SEDP (pid 0x0075).
+        // Plain IDL interop matches on type name alone; OpenDDS/Fast DDS tests that
+        // require TypeInformation wire it via env (see interop_opendds / interop_fastdds).
+        if std::env::var("AIDDS_INTEROP_TYPE_INFORMATION").is_ok() {
+            Some(INTEROP_MESSAGE_TYPE_INFORMATION)
+        } else {
+            None
+        }
     }
 }
 
 #[cfg(test)]
 mod interop_type_tests {
     use super::*;
+
+    #[test]
+    fn deserialize_cyclonedds_live_wire_payload_without_string_null() {
+        let ts = InteropTypeSupport;
+        // Captured from CycloneDDS interop publisher (length includes NUL, body omits it).
+        let wire: [u8; 27] = [
+            0x00, 0x01, 0x00, 0x00, 0x29, 0x23, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x66, 0x72,
+            0x6f, 0x6d, 0x2d, 0x63, 0x79, 0x63, 0x6c, 0x6f, 0x6e, 0x65, 0x64, 0x64, 0x73,
+        ];
+        let boxed = ts.deserialize(&wire).expect("deserialize cyclone wire");
+        let msg = boxed.downcast_ref::<InteropMessage>().unwrap();
+        assert_eq!(msg.id, 9001);
+        assert_eq!(msg.payload, "from-cyclonedds");
+    }
 
     #[test]
     fn deserialize_cyclonedds_cdr_le_encapsulated_payload() {

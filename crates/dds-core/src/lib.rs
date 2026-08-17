@@ -1379,18 +1379,22 @@ impl ParticipantHooks {
             if disc.local_endpoints().contains_key(remote_guid) {
                 continue;
             }
-            let Some(remote_participant) = disc.discovered_participants().get(&remote_ep.guid.prefix)
-            else {
-                continue;
-            };
-            let remote_locators =
-                dds_discovery::DiscoveryManager::user_traffic_locators(remote_ep, remote_participant);
-            if remote_locators.is_empty() {
-                continue;
-            }
+            let remote_locators = disc
+                .discovered_participants()
+                .get(&remote_ep.guid.prefix)
+                .map(|remote_participant| {
+                    dds_discovery::DiscoveryManager::user_traffic_locators(
+                        remote_ep,
+                        remote_participant,
+                    )
+                })
+                .unwrap_or_default();
 
-            // Remote readers -> local writers
+            // Remote readers -> local writers (outbound DATA needs remote locators)
             if let Some(ref remote_reader_qos) = remote_ep.qos_reader {
+                if remote_locators.is_empty() {
+                    continue;
+                }
                 for publisher in publishers.iter() {
                     if !check_partition_compatibility(&remote_ep.partition, &publisher.qos().partition) {
                         continue;
@@ -1460,6 +1464,19 @@ impl ParticipantHooks {
                         || !check_qos_compatibility(remote_writer_qos, reader.qos())
                         || !check_partition_names(&remote_ep.partition, local_partition)
                     {
+                        if std::env::var("AIDDS_RTPS_DEBUG").is_ok() {
+                            eprintln!(
+                                "[matchmaking] skip writer {:?}: topic={}/{} type={}/{} qos={} partition={:?}/{:?}",
+                                remote_guid,
+                                reader.topic().name(),
+                                remote_ep.topic_name,
+                                reader.topic().type_name(),
+                                remote_ep.type_name,
+                                check_qos_compatibility(remote_writer_qos, reader.qos()),
+                                remote_ep.partition,
+                                local_partition,
+                            );
+                        }
                         continue;
                     }
                     let mut matched = lock(&reader.matched_writers);
@@ -1611,6 +1628,22 @@ fn ingest_remote_sedp_endpoint(
     };
     if let std::net::SocketAddr::V4(v4) = from {
         dds_discovery::DiscoveryManager::remap_loopback_locators(&mut endpoint, *v4.ip());
+        let mut disc = lock(&discovery);
+        if !disc.discovered_participants().contains_key(&remote_prefix) {
+            let loc = dds_types::locator::Locator::udpv4(*v4.ip(), u32::from(v4.port()));
+            disc.process_spdp_packet_from(
+                dds_discovery::DiscoveredParticipant {
+                    guid_prefix: remote_prefix,
+                    unicast_locators: vec![loc],
+                    metatraffic_unicast_locators: vec![loc],
+                    multicast_locators: vec![],
+                    lease_duration: dds_types::time::Duration::from_secs(120),
+                    last_contact: std::time::Instant::now(),
+                },
+                Some(*v4.ip()),
+            );
+        }
+        drop(disc);
     }
     {
         let disc = lock(&discovery);
@@ -1627,7 +1660,8 @@ fn ingest_remote_sedp_endpoint(
         .process_sedp_endpoint(endpoint.clone());
     if std::env::var("AIDDS_RTPS_DEBUG").is_ok() {
         eprintln!(
-            "[sedp-ingest] prefix={} topic={} type={} writer={} unicast={:?} meta={:?}",
+            "[sedp-ingest] guid={:?} prefix={} topic={} type={} writer={} unicast={:?} meta={:?}",
+            endpoint.guid,
             remote_prefix,
             endpoint.topic_name,
             endpoint.type_name,
@@ -2218,6 +2252,14 @@ impl DomainParticipant {
                                     if dds_discovery::DiscoveryManager::is_builtin_endpoint(&d.writer_id) {
                                         continue;
                                     }
+                                    if std::env::var("AIDDS_RTPS_DEBUG").is_ok() {
+                                        eprintln!(
+                                            "[user-rx] DATA from prefix={} writer={:?} bytes={}",
+                                            header.guid_prefix,
+                                            d.writer_id,
+                                            d.serialized_payload.len()
+                                        );
+                                    }
                                     let mut final_payload = d.serialized_payload.to_vec();
                                     let sender_prefix = header.guid_prefix;
                                     if let Some(remote_crypto_handle) =
@@ -2264,25 +2306,43 @@ impl DomainParticipant {
                                             writer_guid,
                                             user_guid_prefix,
                                         ) {
+                                            if std::env::var("AIDDS_RTPS_DEBUG").is_ok() {
+                                                eprintln!(
+                                                    "[user-rx] drop DATA from {:?} — reader not matched",
+                                                    writer_guid
+                                                );
+                                            }
                                             continue;
                                         }
-                                        if reader.type_support.deserialize(&final_payload).is_ok() {
-                                            reader.push_sample_sn(
-                                                dds_types::instance::InstanceHandle::NIL,
-                                                final_payload.clone(),
-                                                d.writer_sn,
-                                                writer_guid,
-                                            );
-                                            send_reliable_reader_acknack_for_sn(
-                                                &reader,
-                                                d.writer_id,
-                                                d.writer_sn,
-                                                user_guid_prefix,
-                                                header.guid_prefix,
-                                                &user_transport_arc,
-                                                from,
-                                            );
-                                            break;
+                                        match reader.type_support.deserialize(&final_payload) {
+                                            Ok(_) => {
+                                                reader.push_sample_sn(
+                                                    dds_types::instance::InstanceHandle::NIL,
+                                                    final_payload.clone(),
+                                                    d.writer_sn,
+                                                    writer_guid,
+                                                );
+                                                send_reliable_reader_acknack_for_sn(
+                                                    &reader,
+                                                    d.writer_id,
+                                                    d.writer_sn,
+                                                    user_guid_prefix,
+                                                    header.guid_prefix,
+                                                    &user_transport_arc,
+                                                    from,
+                                                );
+                                                break;
+                                            }
+                                            Err(e) if std::env::var("AIDDS_RTPS_DEBUG").is_ok() => {
+                                                eprintln!(
+                                                    "[user-rx] deserialize failed from {:?}: {:?} payload_len={} hex={}",
+                                                    writer_guid,
+                                                    e,
+                                                    final_payload.len(),
+                                                    final_payload.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("")
+                                                );
+                                            }
+                                            Err(_) => {}
                                         }
                                     }
                                 }

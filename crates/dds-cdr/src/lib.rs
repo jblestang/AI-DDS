@@ -539,17 +539,26 @@ impl<'a> CdrDeserializer<'a> {
         if len == 0 {
             return Err(CdrError::InvalidString("Null string has length 0".into()));
         }
-        if self.offset + len > self.buf.len() {
-            return Err(CdrError::RemainingBytesMismatch {
-                expected: len,
-                found: self.remaining(),
-            });
+        let available = self.remaining();
+        if available >= len {
+            let str_bytes = &self.buf[self.offset..self.offset + len - 1]; // omit null terminator
+            let s = String::from_utf8(str_bytes.to_vec())
+                .map_err(|e| CdrError::InvalidString(e.to_string()))?;
+            self.offset += len;
+            return Ok(s);
         }
-        let str_bytes = &self.buf[self.offset..self.offset + len - 1]; // omit null terminator
-        let s = String::from_utf8(str_bytes.to_vec())
-            .map_err(|e| CdrError::InvalidString(e.to_string()))?;
-        self.offset += len;
-        Ok(s)
+        if available + 1 == len {
+            // CycloneDDS and some peers omit the trailing NUL while length includes it.
+            let str_bytes = &self.buf[self.offset..self.offset + available];
+            let s = String::from_utf8(str_bytes.to_vec())
+                .map_err(|e| CdrError::InvalidString(e.to_string()))?;
+            self.offset += available;
+            return Ok(s);
+        }
+        Err(CdrError::RemainingBytesMismatch {
+            expected: len,
+            found: available,
+        })
     }
 
     /// Read raw slice from the buffer.

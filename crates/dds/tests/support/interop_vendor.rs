@@ -67,7 +67,8 @@ pub fn vendor_publishes_aidds_receives(vendor: InteropVendor) {
         .unwrap();
 
     let mut reader_qos = DataReaderQos::default();
-    reader_qos.reliability.kind = ReliabilityKind::Reliable;
+    // Cyclone SEDP often omits reliability; default parsed writer QoS is BestEffort.
+    reader_qos.reliability.kind = ReliabilityKind::BestEffort;
     reader_qos.reliability.max_blocking_time = DdsDuration::INFINITE;
     let subscriber = participant.create_subscriber(SubscriberQos::default()).unwrap();
     let reader = subscriber
